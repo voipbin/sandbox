@@ -1,0 +1,651 @@
+services:
+  # Database (Custom voipbin DB)
+  db:
+    image: voipbin/bin-database:f11ea167b0756517ca386492b4fdd4704da3bedf
+    container_name: voipbin-db
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+
+  redis:
+    image: redis:alpine
+    container_name: voipbin-redis
+  
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: voipbin-mq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    entrypoint: >
+      /bin/sh -c "
+      if [ ! -f /plugins/rabbitmq_delayed_message_exchange-3.12.0.ez ]; then
+        wget -P /plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.12.0/rabbitmq_delayed_message_exchange-3.12.0.ez;
+      fi;
+      rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange;
+      exec docker-entrypoint.sh rabbitmq-server
+      "
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+
+  asterisk-call:
+    image: voipbin/voip-asterisk-call:latest
+    # image: voipbin/voip-asterisk-call:39898a70e7551b03e8d09ad073959aafd56897fa
+    container_name: voipbin-ast-call
+    restart: always
+    command: /k8s_start.sh
+    environment:
+      - ENABLE_REALTIME=1
+      - DATABASE_HOSTNAME=db
+      - DATABASE_PORT=3306
+      - DATABASE_USERNAME=root
+      - DATABASE_PASSWORD=root_password
+      - DATABASE_NAME=asterisk
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show help"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - asterisk-call-recording:/var/spool/asterisk/recording
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10050:10000-10050/udp"
+
+  asterisk-call-proxy:
+    image: voipbin/voip-asterisk-proxy:5a153a4f4f762fd194674edb8345deddfe1782f5
+    container_name: voipbin-ast-call-proxy
+    network_mode: "service:asterisk-call"
+    command: ./asterisk-proxy
+    depends_on:
+      asterisk-call:
+        condition: service_healthy
+    environment:
+      - TARGET_SERVICE=call
+      - AMI_EVENT_FILTER=
+      - AMI_HOST=127.0.0.1
+      - AMI_PASSWORD=asterisk
+      - AMI_PORT=5038
+      - AMI_USERNAME=asterisk
+      - ARI_ACCOUNT=asterisk:asterisk
+      - ARI_ADDRESS=localhost:8088
+      - ARI_APPLICATION=voipbin
+      - ARI_SUBSCRIBE_ALL=true
+      - INTERFACE_NAME=eth0
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2113
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - RABBITMQ_QUEUE_LISTEN=asterisk.call.request
+      - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
+      - RECORDING_BUCKET_DIRECTORY=recording
+      - RECORDING_BUCKET_NAME=voipbin-voip-media-bucket-europe-west4
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - REDIS_PASSWORD=
+      - KUBERNETES_DISABLED=true
+    volumes:
+      - asterisk-call-recording:/var/spool/asterisk/recording
+
+  # asterisk-conference:
+  #   image: voipbin/voip-asterisk-conference:9ed24cc50b1c04a4634d1f78d15a48436ec7a565
+  #   container_name: voipbin-ast-conf
+  #   restart: always
+  #   command: /k8s_start.sh ${VOIP_INTERFACE:-eth0} 
+  #   healthcheck:
+  #     test: ["CMD", "asterisk", "-rx", "core show help"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+
+  # asterisk-conference-proxy:
+  #   image: voipbin/voip-asterisk-proxy:5a153a4f4f762fd194674edb8345deddfe1782f5
+  #   container_name: voipbin-ast-conference-proxy
+  #   network_mode: "service:asterisk-conference"
+  #   command: ./asterisk-proxy
+  #   depends_on:
+  #     asterisk-conference:
+  #       condition: service_healthy
+  #   environment:
+  #     - TARGET_SERVICE=conference
+  #     - AMI_EVENT_FILTER=
+  #     - AMI_HOST=127.0.0.1
+  #     - AMI_PASSWORD=asterisk
+  #     - AMI_PORT=5038
+  #     - AMI_USERNAME=asterisk
+  #     - ARI_ACCOUNT=asterisk:asterisk
+  #     - ARI_ADDRESS=localhost:8088
+  #     - ARI_APPLICATION=voipbin
+  #     - ARI_SUBSCRIBE_ALL=true
+  #     - INTERFACE_NAME=eth0
+  #     - PROMETHEUS_ENDPOINT=/metrics
+  #     - PROMETHEUS_LISTEN_ADDRESS=:2113
+  #     - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+  #     - RABBITMQ_QUEUE_LISTEN=asterisk.call.request
+  #     - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
+  #     - RECORDING_BUCKET_DIRECTORY=recording
+  #     - RECORDING_BUCKET_NAME=voipbin-voip-media-bucket-europe-west4
+  #     - REDIS_ADDRESS=redis:6379
+  #     - REDIS_DATABASE=1
+  #     - REDIS_PASSWORD=
+  #     - KUBERNETES_DISABLED=true
+  #   volumes:
+  #     - asterisk-call-recording:/var/spool/asterisk/recording
+
+
+  # Applications
+  agent-manager:
+    image: voipbin/bin-agent-manager:f6541e0207cfd84679eba2b595eabecd217d7f80
+    container_name: voipbin-agent-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./agent-manager
+
+  ai-manager:
+    image: voipbin/bin-ai-manager:latest
+    container_name: voipbin-ai-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - ENGINE_KEY_CHATGPT=${OPENAI_API_KEY:-}
+    command: ./ai-manager
+
+  api-manager:
+    image: voipbin/bin-api-manager:latest
+    container_name: voipbin-api-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - SSL_CERT_BASE64=${API_SSL_CERT_BASE64:-}
+      - SSL_PRIVKEY_BASE64=${API_SSL_PRIVKEY_BASE64:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    ports:
+      - "8443:443"
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/google_service_account.json:ro
+    command: ./api-manager
+
+  billing-manager:
+    image: voipbin/bin-billing-manager:latest
+    container_name: voipbin-billing-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./billing-manager
+
+  call-manager:
+    image: voipbin/bin-call-manager:latest
+    container_name: voipbin-call-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+      - asterisk-call-proxy
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./call-manager
+
+  campaign-manager:
+    image: voipbin/bin-campaign-manager:latest
+    container_name: voipbin-campaign-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./campaign-manager
+
+  chat-manager:
+    image: voipbin/bin-chat-manager:latest
+    container_name: voipbin-chat-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./chat-manager
+
+  conference-manager:
+    image: voipbin/bin-conference-manager:latest
+    container_name: voipbin-conference-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./conference-manager
+
+  conversation-manager:
+    image: voipbin/bin-conversation-manager:latest
+    container_name: voipbin-conversation-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./conversation-manager
+
+  customer-manager:
+    image: voipbin/bin-customer-manager:latest
+    container_name: voipbin-customer-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./customer-manager
+
+
+  email-manager:
+    image: voipbin/bin-email-manager:latest
+    container_name: voipbin-email-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-}
+      - MAILGUN_API_KEY=${MAILGUN_API_KEY:-}
+    command: ./email-manager
+
+  flow-manager:
+    image: voipbin/bin-flow-manager:latest
+    container_name: voipbin-flow-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./flow-manager
+
+  hook-manager:
+    image: voipbin/bin-hook-manager:latest
+    container_name: voipbin-hook-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - SSL_PRIVKEY_BASE64=${HOOK_SSL_PRIVKEY_BASE64:-}
+      - SSL_CERT_BASE64=${HOOK_SSL_CERT_BASE64:-}
+    command: ./hook-manager
+
+  message-manager:
+    image: voipbin/bin-message-manager:latest
+    container_name: voipbin-message-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - AUTHTOKEN_MESSAGEBIRD=${MESSAGEBIRD_API_KEY:-}
+      - AUTHTOKEN_TELNYX=${TELNYX_API_KEY:-}
+    command: ./message-manager
+
+  number-manager:
+    image: voipbin/bin-number-manager:latest
+    container_name: voipbin-number-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - TWILIO_SID=${TWILIO_SID:-}
+      - TWILIO_TOKEN=${TWILIO_API_KEY:-}
+      - TELNYX_CONNECTION_ID=${TELNYX_CONNECTION_ID:-}
+      - TELNYX_PROFILE_ID=${TELNYX_PROFILE_ID:-}
+      - TELNYX_TOKEN=${TELNYX_API_KEY:-}
+    command: ./number-manager
+
+  outdial-manager:
+    image: voipbin/bin-outdial-manager:latest
+    container_name: voipbin-outdial-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./outdial-manager
+
+  pipecat-manager:
+    image: voipbin/bin-pipecat-manager:latest
+    container_name: voipbin-pipecat-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+    command: ./pipecat-manager
+
+  queue-manager:
+    image: voipbin/bin-queue-manager:latest
+    container_name: voipbin-queue-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./queue-manager
+
+  registrar-manager:
+    image: voipbin/bin-registrar-manager:latest
+    container_name: voipbin-registrar-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN_BIN=root:root_password@tcp(db:3306)/bin_manager
+      - DATABASE_DSN_ASTERISK=root:root_password@tcp(db:3306)/asterisk
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - DOMAIN_NAME_EXTENSION=${DOMAIN_NAME_EXTENSION:-}
+      - DOMAIN_NAME_TRUNK=${DOMAIN_NAME_TRUNK:-}
+    command: ./registrar-manager
+
+  route-manager:
+    image: voipbin/bin-route-manager:latest
+    container_name: voipbin-route-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./route-manager
+
+  sentinel-manager:
+    image: voipbin/bin-sentinel-manager:latest
+    container_name: voipbin-sentinel-mgr
+    restart: always
+    depends_on:
+      - rabbitmq
+    environment:
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./sentinel-manager
+
+  storage-manager:
+    image: voipbin/bin-storage-manager:latest
+    container_name: voipbin-storage-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GCP_BUCKET_NAME_TMP=${GCP_BUCKET_NAME_TMP:-}
+      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-}
+      - JWT_KEY=${STORAGE_JWT_KEY:-}
+    command: ./storage-manager
+
+  tag-manager:
+    image: voipbin/bin-tag-manager:latest
+    container_name: voipbin-tag-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./tag-manager
+
+  transcribe-manager:
+    image: voipbin/bin-transcribe-manager:f8ec494fce3b68172197a6fc971fd2163eb16168
+    container_name: voipbin-transcribe-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
+      - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
+      - POD_IP=127.0.0.1
+      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
+      - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    command: ./transcribe-manager
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/google_service_account.json:ro
+
+  transfer-manager:
+    image: voipbin/bin-transfer-manager:latest
+    container_name: voipbin-transfer-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./transfer-manager
+
+  tts-manager:
+    image: voipbin/bin-tts-manager:latest
+    container_name: voipbin-tts-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
+      - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+    command: ./tts-manager
+
+  webhook-manager:
+    image: voipbin/bin-webhook-manager:latest
+    container_name: voipbin-webhook-mgr
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./webhook-manager
+
+  square-admin:
+    image: voipbin/square-admin:latest
+    container_name: voipbin-admin
+    hostname: voipbin-admin-host 
+    restart: always
+    ports:
+      - "3003:80"
+    depends_on:
+      - api-manager
+    environment:
+      - REACT_APP_API_HOSTNAME=https://localhost:8443
+      - REACT_APP_WEBSOCKET_URL=wss://localhost:8443/v1.0/ws
+
+volumes:
+  db_data:
+  asterisk-call-recording:
