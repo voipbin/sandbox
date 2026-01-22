@@ -1,5 +1,9 @@
 services:
-  # Database (Custom voipbin DB)
+  # ===========================================================================
+  # Infrastructure Services
+  # ===========================================================================
+
+  # Database (Custom voipbin DB with pre-seeded schema)
   db:
     image: voipbin/bin-database:f11ea167b0756517ca386492b4fdd4704da3bedf
     container_name: voipbin-db
@@ -7,11 +11,24 @@ services:
       - "3306:3306"
     volumes:
       - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   redis:
     image: redis:alpine
     container_name: voipbin-redis
-  
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: voipbin-mq
@@ -20,8 +37,9 @@ services:
       - "15672:15672"
     entrypoint: >
       /bin/sh -c "
-      if [ ! -f /plugins/rabbitmq_delayed_message_exchange-3.12.0.ez ]; then
-        wget -P /plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.12.0/rabbitmq_delayed_message_exchange-3.12.0.ez;
+      if [ ! -f /plugins/rabbitmq_delayed_message_exchange-3.13.0.ez ]; then
+        rm -f /plugins/rabbitmq_delayed_message_exchange-*.ez 2>/dev/null;
+        wget -P /plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.13.0/rabbitmq_delayed_message_exchange-3.13.0.ez;
       fi;
       rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange;
       exec docker-entrypoint.sh rabbitmq-server
@@ -29,12 +47,147 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=guest
       - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
+  # ===========================================================================
+  # SIP Edge Layer (Kamailio + RTPEngine)
+  # ===========================================================================
+
+  # RTPEngine - Media proxy for RTP/SRTP handling
+  # Uses host network for optimal media performance
+  rtpengine:
+    image: voipbin/voip-rtpengine:latest
+    container_name: voipbin-rtpengine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - RTPENGINE_INTERFACE_MODE=manual
+      - RTPENGINE_INTERFACE=${RTPENGINE_INTERFACE:-any}
+      - RTPENGINE_LISTEN_HTTP=${RTPENGINE_LISTEN_HTTP:-9101}
+      - RTPENGINE_LISTEN_CLI=127.0.0.1:2220
+      - RTPENGINE_PORT_MIN=${RTPENGINE_PORT_MIN:-20000}
+      - RTPENGINE_PORT_MAX=${RTPENGINE_PORT_MAX:-30000}
+      - RTPENGINE_TIMEOUT=60
+      - RTPENGINE_SILENT_TIMEOUT=3600
+      - RTPENGINE_LOG_LEVEL=6
+      - RTPENGINE_NUM_THREADS=4
+      - RTPENGINE_TOS=184
+    volumes:
+      - rtpengine-logs:/var/log/rtpengine
+      - rtpengine-run:/var/run/rtpengine
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9101/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Kamailio config generator - runs once to create config files
+  # Builds from the monorepo voip-kamailio-docker project
+  kamailio-config:
+    build:
+      context: ../monorepo-voip/voip-kamailio-docker/config-generator
+      dockerfile: Dockerfile
+    container_name: voipbin-kamailio-config
+    restart: "no"
+    volumes:
+      - kamailio-config:/config
+    environment:
+      # Network addresses - for local dev, use host IP
+      # These are used for SIP Via/Contact headers
+      - KAMAILIO_EXTERNAL_LB_ADDR=${KAMAILIO_EXTERNAL_ADDR:-127.0.0.1}
+      - KAMAILIO_INTERNAL_LB_ADDR=${KAMAILIO_INTERNAL_ADDR:-127.0.0.1}
+      - KAMAILIO_INTERNAL_ADDR=${KAMAILIO_INTERNAL_ADDR:-127.0.0.1}
+      # Database for SIP authentication
+      # Uses localhost since Kamailio runs on host network and DB port is exposed
+      - KAMAILIO_AUTH_DB_URL=mysql://root:root_password@127.0.0.1:3306/bin_manager
+      - KAMAILIO_AUTH_USER_COLUMN=username
+      - KAMAILIO_AUTH_DOMAIN_COLUMN=realm
+      - KAMAILIO_AUTH_PASSWORD_COLUMN=password
+      # Asterisk backends - using localhost with container-mapped ports
+      # asterisk-call is on port 5080, asterisk-registrar on 5082
+      - ASTERISK_CALL_LB_ADDR=127.0.0.1:5080
+      - ASTERISK_REGISTRAR_LB_ADDR=127.0.0.1:5082
+      - ASTERISK_CONFERENCE_LB_ADDR=127.0.0.1:5081
+      - ASTERISK_LISTEN_PORT=5060
+      # RTPEngine WebSocket endpoint (on host network)
+      - RTPENGINE_SOCKS=ws://127.0.0.1:9101/ng
+      # Optional monitoring - must be set or script fails
+      - HOMER_URI=${HOMER_URI:-sip:127.0.0.1:9060}
+      # Redis for cache (exposed on host port 6379)
+      - REDIS_CACHE_ADDRESS=127.0.0.1
+      # PSTN whitelist (empty for local dev)
+      - PSTN_WHITELIST_IPS=${PSTN_WHITELIST_IPS:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Kamailio SIP proxy - uses host network for SIP/RTP
+  kamailio:
+    image: voipbin/voip-kamailio:latest
+    container_name: voipbin-kamailio
+    restart: unless-stopped
+    network_mode: host
+    user: root  # Needed to create symlinks in /usr/local/etc
+    entrypoint: ["/sandbox/kamailio-entrypoint.sh"]
+    command: ["kamailio", "-DD", "-E", "-f", "/config/kamailio.cfg"]
+    volumes:
+      - kamailio-config:/config:ro
+      - kamailio-logs:/var/log/kamailio
+      - ${CERTS_PATH:-./certs}:/certs:ro
+      - ./scripts/kamailio-entrypoint.sh:/sandbox/kamailio-entrypoint.sh:ro
+      # Override kamailio.cfg for local dev (relaxes loop detection for same-host testing)
+      - ./config/kamailio/kamailio.cfg:/config/kamailio.cfg:ro
+    environment:
+      - SHM_SIZE=64
+      - PKG_SIZE=64
+    depends_on:
+      kamailio-config:
+        condition: service_completed_successfully
+      rtpengine:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Health check verifies Kamailio process is running (using full path)
+      test: ["CMD", "/usr/bin/pgrep", "kamailio"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================================================
+  # Asterisk Media Servers
+  # ===========================================================================
+
+  # Asterisk Call Server - handles call routing and media
   asterisk-call:
     image: voipbin/voip-asterisk-call:latest
     container_name: voipbin-ast-call
-    restart: always
-    command: /k8s_start.sh
+    restart: unless-stopped
+    # Use custom entrypoint to fix entityid to match container MAC
+    command: /sandbox/asterisk-call-entrypoint.sh
+    hostname: voipbin-ast-call
     environment:
       - ENABLE_REALTIME=1
       - DATABASE_HOSTNAME=db
@@ -42,21 +195,40 @@ services:
       - DATABASE_USERNAME=root
       - DATABASE_PASSWORD=root_password
       - DATABASE_NAME=asterisk
+      # Kamailio LB name not needed in local dev (no K8s LB)
+      - KAMAILIO_INTERNAL_LB_NAME=
+      # Kamailio outbound proxy address for routing calls through SIP proxy
+      # Must use the host's LAN IP (not host.docker.internal) because Kamailio
+      # binds to the LAN interface, not the docker0 bridge interface
+      - KAMAILIO_OUTBOUND_ADDR=${KAMAILIO_HOST_IP:-192.168.45.152}:5060
     healthcheck:
       test: ["CMD", "asterisk", "-rx", "core show help"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     volumes:
       - asterisk-call-recording:/var/spool/asterisk/recording
+      - ./scripts/asterisk-call-entrypoint.sh:/sandbox/asterisk-call-entrypoint.sh:ro
     ports:
-      - "5060:5060/udp"
-      - "5060:5060/tcp"
+      # Internal SIP - Kamailio connects here via host network
+      - "5080:5060/udp"
+      - "5080:5060/tcp"
+      # RTP ports for direct media (when not using RTPEngine)
       - "10000-10050:10000-10050/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
+  # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Call server
   asterisk-call-proxy:
-    image: voipbin/voip-asterisk-proxy:5a153a4f4f762fd194674edb8345deddfe1782f5
+    image: voipbin/voip-asterisk-proxy:latest
     container_name: voipbin-ast-call-proxy
+    restart: unless-stopped
     network_mode: "service:asterisk-call"
     command: ./asterisk-proxy
     depends_on:
@@ -73,14 +245,14 @@ services:
       - ARI_ADDRESS=localhost:8088
       - ARI_APPLICATION=voipbin
       - ARI_SUBSCRIBE_ALL=true
-      - INTERFACE_NAME=eth0
+      - ASTERISK_ID=2a:6a:f8:3f:54:75
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2113
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
       - RABBITMQ_QUEUE_LISTEN=asterisk.call.request
       - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
       - RECORDING_BUCKET_DIRECTORY=recording
-      - RECORDING_BUCKET_NAME=voipbin-voip-media-bucket-europe-west4
+      - RECORDING_BUCKET_NAME=${GCP_BUCKET_NAME_MEDIA:-voipbin-voip-media-bucket}
       - REDIS_ADDRESS=redis:6379
       - REDIS_DATABASE=1
       - REDIS_PASSWORD=
@@ -88,61 +260,150 @@ services:
     volumes:
       - asterisk-call-recording:/var/spool/asterisk/recording
 
-  # asterisk-conference:
-  #   image: voipbin/voip-asterisk-conference:9ed24cc50b1c04a4634d1f78d15a48436ec7a565
-  #   container_name: voipbin-ast-conf
-  #   restart: always
-  #   command: /k8s_start.sh ${VOIP_INTERFACE:-eth0} 
-  #   healthcheck:
-  #     test: ["CMD", "asterisk", "-rx", "core show help"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 5
+  # Asterisk Conference Server - handles conference/confbridge calls
+  asterisk-conference:
+    image: voipbin/voip-asterisk-conference:latest
+    container_name: voipbin-ast-conf
+    restart: unless-stopped
+    command: /k8s_start.sh
+    hostname: voipbin-ast-conf
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show help"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - asterisk-conf-recording:/var/spool/asterisk/recording
+    ports:
+      # Internal SIP for conference - Kamailio connects here
+      - "5081:5060/udp"
+      - "5081:5060/tcp"
+      # RTP ports for conference media
+      - "10100-10150:10100-10150/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  # asterisk-conference-proxy:
-  #   image: voipbin/voip-asterisk-proxy:5a153a4f4f762fd194674edb8345deddfe1782f5
-  #   container_name: voipbin-ast-conference-proxy
-  #   network_mode: "service:asterisk-conference"
-  #   command: ./asterisk-proxy
-  #   depends_on:
-  #     asterisk-conference:
-  #       condition: service_healthy
-  #   environment:
-  #     - TARGET_SERVICE=conference
-  #     - AMI_EVENT_FILTER=
-  #     - AMI_HOST=127.0.0.1
-  #     - AMI_PASSWORD=asterisk
-  #     - AMI_PORT=5038
-  #     - AMI_USERNAME=asterisk
-  #     - ARI_ACCOUNT=asterisk:asterisk
-  #     - ARI_ADDRESS=localhost:8088
-  #     - ARI_APPLICATION=voipbin
-  #     - ARI_SUBSCRIBE_ALL=true
-  #     - INTERFACE_NAME=eth0
-  #     - PROMETHEUS_ENDPOINT=/metrics
-  #     - PROMETHEUS_LISTEN_ADDRESS=:2113
-  #     - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
-  #     - RABBITMQ_QUEUE_LISTEN=asterisk.call.request
-  #     - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
-  #     - RECORDING_BUCKET_DIRECTORY=recording
-  #     - RECORDING_BUCKET_NAME=voipbin-voip-media-bucket-europe-west4
-  #     - REDIS_ADDRESS=redis:6379
-  #     - REDIS_DATABASE=1
-  #     - REDIS_PASSWORD=
-  #     - KUBERNETES_DISABLED=true
-  #   volumes:
-  #     - asterisk-call-recording:/var/spool/asterisk/recording
+  # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Conference server
+  asterisk-conference-proxy:
+    image: voipbin/voip-asterisk-proxy:latest
+    container_name: voipbin-ast-conf-proxy
+    restart: unless-stopped
+    network_mode: "service:asterisk-conference"
+    command: ./asterisk-proxy
+    depends_on:
+      asterisk-conference:
+        condition: service_healthy
+    environment:
+      - TARGET_SERVICE=conference
+      - AMI_EVENT_FILTER=
+      - AMI_HOST=127.0.0.1
+      - AMI_PASSWORD=asterisk
+      - AMI_PORT=5038
+      - AMI_USERNAME=asterisk
+      - ARI_ACCOUNT=asterisk:asterisk
+      - ARI_ADDRESS=localhost:8088
+      - ARI_APPLICATION=voipbin
+      - ARI_SUBSCRIBE_ALL=true
+      - INTERFACE_NAME=eth0
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2113
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - RABBITMQ_QUEUE_LISTEN=asterisk.conference.request
+      - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
+      - RECORDING_BUCKET_DIRECTORY=recording
+      - RECORDING_BUCKET_NAME=${GCP_BUCKET_NAME_MEDIA:-voipbin-voip-media-bucket}
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - REDIS_PASSWORD=
+      - KUBERNETES_DISABLED=true
+    volumes:
+      - asterisk-conf-recording:/var/spool/asterisk/recording
 
+  # Asterisk Registrar Server - handles SIP registration for extensions
+  asterisk-registrar:
+    image: voipbin/voip-asterisk-registrar:latest
+    container_name: voipbin-ast-registrar
+    restart: unless-stopped
+    hostname: voipbin-ast-registrar
+    command: /start.sh
+    environment:
+      - DATABASE_ASTERISK_HOST=db
+      - DATABASE_ASTERISK_PORT=3306
+      - DATABASE_ASTERISK_DATABASE=asterisk
+      - DATABASE_ASTERISK_USERNAME=root
+      - DATABASE_ASTERISK_PASSWORD=root_password
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show help"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      # Internal SIP for registrar - Kamailio connects here
+      - "5082:5060/udp"
+      - "5082:5060/tcp"
+      # RTP ports for registrar media
+      - "10200-10250:10200-10250/udp"
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  # Applications
+  # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Registrar server
+  asterisk-registrar-proxy:
+    image: voipbin/voip-asterisk-proxy:latest
+    container_name: voipbin-ast-registrar-proxy
+    restart: unless-stopped
+    network_mode: "service:asterisk-registrar"
+    command: ./asterisk-proxy
+    depends_on:
+      asterisk-registrar:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - TARGET_SERVICE=registrar
+      - AMI_EVENT_FILTER=
+      - AMI_HOST=127.0.0.1
+      - AMI_PASSWORD=asterisk
+      - AMI_PORT=5038
+      - AMI_USERNAME=asterisk
+      - ARI_ACCOUNT=asterisk:asterisk
+      - ARI_ADDRESS=localhost:8088
+      - ARI_APPLICATION=voipbin
+      - ARI_SUBSCRIBE_ALL=true
+      - INTERFACE_NAME=eth0
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2113
+      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
+      - RABBITMQ_QUEUE_LISTEN=asterisk.registrar.request
+      - REDIS_ADDRESS=redis:6379
+      - REDIS_DATABASE=1
+      - REDIS_PASSWORD=
+      - KUBERNETES_DISABLED=true
+
+  # ===========================================================================
+  # Backend Manager Services
+  # ===========================================================================
+
   agent-manager:
     image: voipbin/bin-agent-manager:f6541e0207cfd84679eba2b595eabecd217d7f80
     container_name: voipbin-agent-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -157,9 +418,12 @@ services:
     container_name: voipbin-ai-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -175,9 +439,12 @@ services:
     container_name: voipbin-api-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -191,7 +458,7 @@ services:
     ports:
       - "8443:443"
     volumes:
-      - ${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/google_service_account.json:ro
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/tmp/google_service_account.json:ro
     command: ./api-manager
 
   billing-manager:
@@ -199,9 +466,12 @@ services:
     container_name: voipbin-billing-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -216,10 +486,14 @@ services:
     container_name: voipbin-call-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
-      - asterisk-call-proxy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      asterisk-call-proxy:
+        condition: service_started
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -234,9 +508,12 @@ services:
     container_name: voipbin-campaign-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -251,9 +528,12 @@ services:
     container_name: voipbin-chat-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -268,9 +548,12 @@ services:
     container_name: voipbin-conference-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -285,9 +568,12 @@ services:
     container_name: voipbin-conversation-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -302,9 +588,12 @@ services:
     container_name: voipbin-customer-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -314,15 +603,17 @@ services:
       - PROMETHEUS_LISTEN_ADDRESS=:2112
     command: ./customer-manager
 
-
   email-manager:
     image: voipbin/bin-email-manager:latest
     container_name: voipbin-email-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -339,9 +630,12 @@ services:
     container_name: voipbin-flow-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -356,9 +650,12 @@ services:
     container_name: voipbin-hook-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -375,9 +672,12 @@ services:
     container_name: voipbin-message-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -394,9 +694,12 @@ services:
     container_name: voipbin-number-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -416,9 +719,12 @@ services:
     container_name: voipbin-outdial-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -433,9 +739,12 @@ services:
     container_name: voipbin-pipecat-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -454,9 +763,12 @@ services:
     container_name: voipbin-queue-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -471,9 +783,12 @@ services:
     container_name: voipbin-registrar-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN_BIN=root:root_password@tcp(db:3306)/bin_manager
       - DATABASE_DSN_ASTERISK=root:root_password@tcp(db:3306)/asterisk
@@ -482,8 +797,8 @@ services:
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
-      - DOMAIN_NAME_EXTENSION=${DOMAIN_NAME_EXTENSION:-}
-      - DOMAIN_NAME_TRUNK=${DOMAIN_NAME_TRUNK:-}
+      - DOMAIN_NAME_EXTENSION=${DOMAIN_NAME_EXTENSION:-registrar.voipbin.net}
+      - DOMAIN_NAME_TRUNK=${DOMAIN_NAME_TRUNK:-trunk.voipbin.net}
     command: ./registrar-manager
 
   route-manager:
@@ -491,9 +806,12 @@ services:
     container_name: voipbin-route-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -508,7 +826,8 @@ services:
     container_name: voipbin-sentinel-mgr
     restart: always
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     environment:
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
       - PROMETHEUS_ENDPOINT=/metrics
@@ -520,9 +839,12 @@ services:
     container_name: voipbin-storage-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -541,9 +863,12 @@ services:
     container_name: voipbin-tag-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -558,9 +883,12 @@ services:
     container_name: voipbin-transcribe-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -571,21 +899,22 @@ services:
       - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
       - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
       - POD_IP=127.0.0.1
-      - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
-      - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
     command: ./transcribe-manager
     volumes:
-      - ${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/google_service_account.json:ro
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/tmp/google_service_account.json:ro
 
   transfer-manager:
     image: voipbin/bin-transfer-manager:latest
     container_name: voipbin-transfer-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -600,9 +929,12 @@ services:
     container_name: voipbin-tts-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -620,9 +952,12 @@ services:
     container_name: voipbin-webhook-mgr
     restart: always
     depends_on:
-      - db
-      - redis
-      - rabbitmq
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -632,10 +967,14 @@ services:
       - PROMETHEUS_LISTEN_ADDRESS=:2112
     command: ./webhook-manager
 
+  # ===========================================================================
+  # Frontend
+  # ===========================================================================
+
   square-admin:
     image: voipbin/square-admin:latest
     container_name: voipbin-admin
-    hostname: voipbin-admin-host 
+    hostname: voipbin-admin-host
     restart: always
     ports:
       - "3003:80"
@@ -648,3 +987,16 @@ services:
 volumes:
   db_data:
   asterisk-call-recording:
+  asterisk-conf-recording:
+  kamailio-config:
+  kamailio-logs:
+  rtpengine-logs:
+  rtpengine-run:
+
+# Default network for services that don't use host mode
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
