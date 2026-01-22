@@ -38,6 +38,8 @@ Copy `.env` and configure required API keys. Key variables:
 | `TELNYX_API_KEY` / `TELNYX_CONNECTION_ID` | Telnyx telephony |
 | `SENDGRID_API_KEY` / `MAILGUN_API_KEY` | Email delivery |
 | `AWS_ACCESS_KEY` / `AWS_SECRET_KEY` | Transcription (AWS Transcribe) |
+| `DOMAIN_NAME_EXTENSION` | SIP domain suffix for extensions (default: `registrar.localhost`) |
+| `KAMAILIO_EXTERNAL_ADDR` | External IP for SIP Contact headers (your LAN IP for softphone access) |
 
 ## Architecture
 
@@ -164,7 +166,14 @@ All SIP requests from external clients must use the correct domain for Kamailio 
 
 Example: `9e75d9a8-c289-4104-9ea6-8f6e238501f4.registrar.localhost`
 
-**Known Issue**: The API currently creates database records with `.localhost` suffix, but Kamailio expects `.registrar.localhost`. This causes authentication failures. Workaround: The registrar-manager/API needs to be configured to use the correct domain suffix.
+**Important**: Configure `DOMAIN_NAME_EXTENSION=registrar.localhost` in `.env` for correct domain format. The registrar-manager uses this to generate the full domain `{customer_id}.registrar.localhost`.
+
+**Troubleshooting**: If extensions are created with wrong domain (e.g., `.localhost` instead of `.registrar.localhost`):
+1. Check for shell environment variables overriding `.env`: `env | grep DOMAIN_NAME`
+2. Unset any conflicting vars: `unset DOMAIN_NAME_EXTENSION DOMAIN_NAME_TRUNK`
+3. Verify docker compose sees correct values: `docker compose config | grep DOMAIN`
+4. Recreate registrar-manager: `docker compose rm -fsv registrar-manager && docker compose up -d registrar-manager`
+5. Delete and recreate extensions via API to regenerate with correct domain
 
 ## Common Operations
 

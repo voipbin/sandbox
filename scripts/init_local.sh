@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 CUSTOMER_NAME="Test Customer"
-CUSTOMER_EMAIL="test@voipbin.local"
+CUSTOMER_EMAIL="test@example.com"
 EXTENSION_2000_PASS="pass2000"
 EXTENSION_3000_PASS="pass3000"
 API_HOST="${API_HOST:-localhost}"
