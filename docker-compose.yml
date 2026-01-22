@@ -32,7 +32,6 @@ services:
 
   asterisk-call:
     image: voipbin/voip-asterisk-call:latest
-    # image: voipbin/voip-asterisk-call:39898a70e7551b03e8d09ad073959aafd56897fa
     container_name: voipbin-ast-call
     restart: always
     command: /k8s_start.sh
