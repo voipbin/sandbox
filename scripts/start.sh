@@ -432,12 +432,22 @@ setup_test_customer() {
             -d "{\"extension\": \"$ext\", \"password\": \"pass$ext\", \"name\": \"Extension $ext\"}" > /dev/null 2>&1 || true
     done
 
-    # Get customer ID
+    # Get customer ID and billing account ID
     local customer_info
     customer_info=$(curl -sk -X GET "https://${api_host}:${api_port}/v1.0/customer" \
         -H "Authorization: Bearer $token")
 
     CUSTOMER_ID=$(echo "$customer_info" | jq -r '.id' 2>/dev/null)
+    local billing_account_id
+    billing_account_id=$(echo "$customer_info" | jq -r '.billing_account_id' 2>/dev/null)
+
+    # Add initial balance to billing account
+    if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ]; then
+        log_info "  Adding initial balance to billing account..."
+        docker exec voipbin-billing-mgr /app/bin/billing-control account add-balance \
+            --id "$billing_account_id" \
+            --amount 100 2>&1 | grep -v severity || true
+    fi
 
     # Create marker file to indicate test data was initialized
     touch "$PROJECT_DIR/.test_data_initialized"
