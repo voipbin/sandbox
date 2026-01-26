@@ -180,29 +180,41 @@ SIDECAR_COMMANDS = {
 
 # Required arguments for sidecar commands
 SIDECAR_REQUIRED_ARGS = {
+    # billing commands
     ("billing", "account", "create"): ["customer-id"],
     ("billing", "account", "get"): ["id"],
     ("billing", "account", "delete"): ["id"],
     ("billing", "account", "add-balance"): ["id", "amount"],
     ("billing", "account", "subtract-balance"): ["id", "amount"],
     ("billing", "billing", "get"): ["id"],
+    # customer commands
     ("customer", "customer", "create"): ["email"],
     ("customer", "customer", "get"): ["id"],
     ("customer", "customer", "delete"): ["id"],
-    ("number", "number", "create"): ["number"],
+    # number commands
+    ("number", "number", "list"): ["customer_id"],
+    ("number", "number", "create"): ["customer_id", "number"],
     ("number", "number", "get"): ["id"],
     ("number", "number", "delete"): ["id"],
-    ("number", "number", "register"): ["number"],
+    ("number", "number", "register"): ["customer_id", "number"],
+    # registrar extension commands
+    ("registrar", "extension", "list"): ["customer_id"],
+    ("registrar", "extension", "create"): ["customer_id", "username", "password"],
     ("registrar", "extension", "get"): ["id"],
     ("registrar", "extension", "delete"): ["id"],
     ("registrar", "extension", "update"): ["id"],
+    # registrar trunk commands
+    ("registrar", "trunk", "list"): ["customer_id"],
+    ("registrar", "trunk", "create"): ["customer_id", "domain"],
     ("registrar", "trunk", "get"): ["id"],
     ("registrar", "trunk", "delete"): ["id"],
     ("registrar", "trunk", "update"): ["id"],
+    # agent commands
+    ("agent", "agent", "list"): ["customer_id"],
     ("agent", "agent", "create"): ["customer_id", "username", "password"],
     ("agent", "agent", "get"): ["id"],
     ("agent", "agent", "delete"): ["id"],
-    ("agent", "agent", "update-password"): ["id"],
+    ("agent", "agent", "update-password"): ["id", "password"],
     ("agent", "agent", "update-permission"): ["id"],
 }
 
@@ -884,9 +896,9 @@ class VoIPBinCLI:
             "ext": ("Manage extensions", "ext <command>\n  ext list                 List all extensions\n  ext create 4000 pass     Create extension\n  ext delete <id>          Delete extension"),
             "billing": ("Billing management", "billing <subcommand> <action> [options]\n  billing account list                             List billing accounts\n  billing account create --customer-id ID          Create account\n  billing account get --id ID                      Get account details\n  billing account delete --id ID                   Delete account\n  billing account add-balance --id ID --amount N   Add balance\n  billing billing list                             List billing records\n  Type 'billing help' for more details"),
             "customer": ("Customer management", "customer <action> [options]\n  customer list                   List all customers\n  customer create --email EMAIL   Create customer\n  customer get --id ID            Get customer details\n  customer delete --id ID         Delete customer\n  Type 'customer help' for more details"),
-            "number": ("Phone number management", "number <action> [options]\n  number list                        List all numbers\n  number create --number +1555...    Create number\n  number get --id ID                 Get number details\n  number delete --id ID              Delete number\n  number register --number +1555...  Register number\n  Type 'number help' for more details"),
-            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  registrar extension list     List extensions\n  registrar extension create   Create extension\n  registrar trunk list         List trunks\n  registrar trunk create       Create trunk\n  Type 'registrar help' for more details"),
-            "agent": ("Agent management", "agent <action> [options]\n  agent list              List all agents\n  agent create            Create agent\n  agent get --id ID       Get agent details\n  agent delete --id ID    Delete agent\n  Type 'agent help' for more details"),
+            "number": ("Phone number management", "number <action> [options]\n  number list --customer_id ID                    List all numbers\n  number create --customer_id ID --number +1555   Create number\n  number get --id ID                              Get number details\n  number delete --id ID                           Delete number\n  number register --customer_id ID --number +1555 Register number\n  Type 'number help' for more details"),
+            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  registrar extension list --customer_id ID     List extensions\n  registrar extension create --customer_id ID   Create extension\n  registrar trunk list --customer_id ID         List trunks\n  registrar trunk create --customer_id ID       Create trunk\n  Type 'registrar help' for more details"),
+            "agent": ("Agent management", "agent <action> [options]\n  agent list --customer_id ID              List all agents\n  agent create --customer_id ID            Create agent\n  agent get --id ID                        Get agent details\n  agent delete --id ID                     Delete agent\n  Type 'agent help' for more details"),
             "config": ("View/set configuration", "config [key] [value]\n  config                Show all settings\n  config log_lines 100  Set value\n  config reset          Reset to defaults"),
             "dns": ("DNS setup for SIP domains", "dns [status|list|setup|regenerate|test]\n  dns status       Check DNS configuration\n  dns list         List all DNS domains and their purposes\n  dns setup        Setup DNS forwarding to CoreDNS (requires sudo)\n  dns regenerate   Regenerate Corefile and restart CoreDNS (requires sudo)\n  dns test         Test domain resolution"),
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
@@ -1949,22 +1961,21 @@ Type 'billing <subcommand> help' for more details.
 {blue('Usage:')} number <command> [options]
 
 {blue('Examples:')}
-  number list
-  number list --customer-id abc123
-  number create --number +15551234567 --name "Main Line"
+  number list --customer_id abc123
+  number create --customer_id abc123 --number +15551234567 --name "Main Line"
   number get --id xyz789
   number delete --id xyz789
-  number register --number +15551234567 --customer-id abc123
+  number register --customer_id abc123 --number +15551234567
 """)
 
     def _show_number_action_help(self, action):
         """Show help for specific number action"""
         help_info = {
-            "list": ("List all phone numbers", [], [("customer-id", "Filter by customer ID"), ("limit", "Max results (default: 100)")]),
-            "create": ("Create a new number entry", [("number", "Phone number (e.g., +15551234567)")], [("customer-id", "Customer ID"), ("name", "Number name"), ("detail", "Description"), ("call-flow-id", "Call flow ID"), ("message-flow-id", "Message flow ID")]),
+            "list": ("List all phone numbers", [("customer_id", "Customer ID")], [("limit", "Max results (default: 100)")]),
+            "create": ("Create a new number entry", [("customer_id", "Customer ID"), ("number", "Phone number (e.g., +15551234567)")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
             "get": ("Get number details", [("id", "Number ID")], []),
             "delete": ("Delete a number", [("id", "Number ID")], []),
-            "register": ("Register a new number", [("number", "Phone number (e.g., +15551234567)")], [("customer-id", "Customer ID"), ("name", "Number name"), ("detail", "Description"), ("call-flow-id", "Call flow ID"), ("message-flow-id", "Message flow ID")]),
+            "register": ("Register a new number", [("customer_id", "Customer ID"), ("number", "Phone number (e.g., +15551234567)")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
         }
 
         if action not in help_info:
@@ -2103,9 +2114,8 @@ Type 'registrar <subcommand> help' for more details.
 {blue('Usage:')} registrar extension <command> [options]
 
 {blue('Examples:')}
-  registrar extension list
   registrar extension list --customer_id abc123
-  registrar extension create --customer_id abc123 --extension_number 1000 --password secret
+  registrar extension create --customer_id abc123 --username 1000 --password secret
   registrar extension get --id xyz789
   registrar extension delete --id xyz789
 """)
@@ -2126,9 +2136,8 @@ Type 'registrar <subcommand> help' for more details.
 {blue('Usage:')} registrar trunk <command> [options]
 
 {blue('Examples:')}
-  registrar trunk list
   registrar trunk list --customer_id abc123
-  registrar trunk create --customer_id abc123 --name "Main Trunk" --username user1
+  registrar trunk create --customer_id abc123 --domain sip.example.com --name "Main Trunk"
   registrar trunk get --id xyz789
   registrar trunk delete --id xyz789
 """)
@@ -2136,16 +2145,16 @@ Type 'registrar <subcommand> help' for more details.
     def _show_registrar_action_help(self, subcmd, action):
         """Show help for specific registrar action"""
         help_info = {
-            ("extension", "list"): ("List extensions", [], [("customer_id", "Filter by customer ID"), ("extension_number", "Filter by extension"), ("limit", "Max results (default: 100)")]),
-            ("extension", "create"): ("Create a new extension", [], [("customer_id", "Customer ID"), ("extension_number", "Extension number"), ("username", "Username"), ("password", "Password"), ("domain", "Domain name")]),
+            ("extension", "list"): ("List extensions", [("customer_id", "Customer ID")], [("extension_number", "Filter by extension"), ("limit", "Max results (default: 100)")]),
+            ("extension", "create"): ("Create a new extension", [("customer_id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("extension_number", "Extension number"), ("domain", "Domain name")]),
             ("extension", "get"): ("Get extension details", [("id", "Extension ID")], []),
             ("extension", "delete"): ("Delete an extension", [("id", "Extension ID")], []),
-            ("extension", "update"): ("Update an extension", [("id", "Extension ID")], [("password", "New password")]),
-            ("trunk", "list"): ("List trunks", [], [("customer_id", "Filter by customer ID"), ("name", "Filter by name"), ("limit", "Max results (default: 100)")]),
-            ("trunk", "create"): ("Create a new trunk", [], [("customer_id", "Customer ID"), ("name", "Trunk name"), ("username", "Username"), ("password", "Password"), ("domain", "Domain name"), ("allowed_ips", "Allowed IPs (comma-separated)")]),
+            ("extension", "update"): ("Update an extension", [("id", "Extension ID")], [("password", "New password"), ("extension_number", "New extension number"), ("username", "New username")]),
+            ("trunk", "list"): ("List trunks", [("customer_id", "Customer ID")], [("name", "Filter by name"), ("limit", "Max results (default: 100)")]),
+            ("trunk", "create"): ("Create a new trunk", [("customer_id", "Customer ID"), ("domain", "Domain name")], [("name", "Trunk name"), ("username", "Username"), ("password", "Password"), ("allowed_ips", "Allowed IPs (comma-separated)")]),
             ("trunk", "get"): ("Get trunk details", [("id", "Trunk ID")], []),
             ("trunk", "delete"): ("Delete a trunk", [("id", "Trunk ID")], []),
-            ("trunk", "update"): ("Update a trunk", [("id", "Trunk ID")], [("password", "New password"), ("allowed_ips", "Allowed IPs")]),
+            ("trunk", "update"): ("Update a trunk", [("id", "Trunk ID")], [("password", "New password"), ("allowed_ips", "Allowed IPs"), ("name", "New name"), ("username", "New username")]),
         }
 
         key = (subcmd, action)
@@ -2290,22 +2299,21 @@ Type 'registrar <subcommand> help' for more details.
 {blue('Usage:')} agent <command> [options]
 
 {blue('Examples:')}
-  agent list
   agent list --customer_id abc123
   agent create --customer_id abc123 --username user1 --password secret
   agent get --id xyz789
   agent delete --id xyz789
-  agent update-password --id xyz789
+  agent update-password --id xyz789 --password newpass
 """)
 
     def _show_agent_action_help(self, action):
         """Show help for specific agent action"""
         help_info = {
-            "list": ("List all agents", [], [("customer_id", "Filter by customer ID"), ("limit", "Max results (default: 100)")]),
+            "list": ("List all agents", [("customer_id", "Customer ID")], [("limit", "Max results (default: 100)")]),
             "create": ("Create a new agent", [("customer_id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("name", "Agent name"), ("detail", "Description"), ("permission", "Permission level")]),
             "get": ("Get agent details", [("id", "Agent ID")], []),
             "delete": ("Delete an agent", [("id", "Agent ID")], []),
-            "update-password": ("Update agent password", [("id", "Agent ID")], [("password", "New password")]),
+            "update-password": ("Update agent password", [("id", "Agent ID"), ("password", "New password")], []),
             "update-permission": ("Update agent permission", [("id", "Agent ID")], [("permission", "New permission level")]),
         }
 
