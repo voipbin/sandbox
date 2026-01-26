@@ -3019,6 +3019,7 @@ Type 'registrar <subcommand> help' for more details.
             files_to_remove = [
                 ("certs", "certificates directory"),
                 (".env", ".env file"),
+                (".test_data_initialized", "test data marker"),
                 ("config/coredns", "CoreDNS config"),
                 ("config/dummy-gcp-credentials.json", "dummy GCP credentials"),
                 ("tmp", "tmp directory"),
