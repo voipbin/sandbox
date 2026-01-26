@@ -446,7 +446,7 @@ setup_test_customer() {
         log_info "  Adding initial balance to billing account..."
         docker exec voipbin-billing-mgr /app/bin/billing-control account add-balance \
             --id "$billing_account_id" \
-            --amount 100 2>&1 | grep -v severity || true
+            --amount 100000 2>&1 | grep -v severity || true
     fi
 
     # Create marker file to indicate test data was initialized
