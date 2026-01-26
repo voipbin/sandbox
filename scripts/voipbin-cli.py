@@ -731,7 +731,14 @@ def prompt_missing_args(command_key, provided_args):
                 if not value:
                     print("Cancelled.")
                     return None
-                updated_args[arg] = value
+
+                # Check if user entered flags (e.g., "--customer_id abc123" or full command)
+                if "--" in value:
+                    # Parse as flag arguments and merge into updated_args
+                    parsed = parse_sidecar_args(value.split())
+                    updated_args.update(parsed)
+                else:
+                    updated_args[arg] = value
             except (KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return None
