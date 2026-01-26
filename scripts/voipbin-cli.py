@@ -877,23 +877,23 @@ class VoIPBinCLI:
             "stop": ("Stop services", "stop [service]\n  stop            Stop all services\n  stop kamailio   Stop specific service"),
             "restart": ("Restart services", "restart [service]"),
             "logs": ("View service logs", "logs [-f] <service>\n  logs api-manager     Last 50 lines\n  logs -f api-manager  Follow logs (Ctrl+C to stop)"),
-            "ast": ("Asterisk CLI", "ast [command]\n  ast                    Enter Asterisk context\n  ast pjsip show endpoints   Run single command"),
-            "kam": ("Kamailio kamcmd", "kam [command]\n  kam                    Enter Kamailio context\n  kam ul.dump            Run single command"),
-            "db": ("MySQL queries", "db [query]\n  db                     Enter database context\n  db SELECT * FROM extensions LIMIT 5"),
-            "api": ("REST API client", "api [method] [path] [data]\n  api                    Enter API context\n  api get /v1.0/extensions"),
-            "ext": ("Manage extensions", "ext <command>\n  ext list               List all extensions\n  ext create 4000 pass   Create extension\n  ext delete <id>        Delete extension"),
-            "billing": ("Billing management", "billing <subcommand> <action> [options]\n  billing account list                        List billing accounts\n  billing account create --customer-id ID     Create account\n  billing account get --id ID                 Get account details\n  billing account delete --id ID              Delete account\n  billing account add-balance --id ID --amount N   Add balance\n  billing billing list                        List billing records\n  Type 'billing help' for more details"),
-            "customer": ("Customer management", "customer <action> [options]\n  customer list                    List all customers\n  customer create --email EMAIL    Create customer\n  customer get --id ID             Get customer details\n  customer delete --id ID          Delete customer\n  Type 'customer help' for more details"),
-            "number": ("Phone number management", "number <action> [options]\n  number list                         List all numbers\n  number create --number +1555...     Create number\n  number get --id ID                  Get number details\n  number delete --id ID               Delete number\n  number register --number +1555...   Register number\n  Type 'number help' for more details"),
-            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  registrar extension list      List extensions\n  registrar extension create    Create extension\n  registrar trunk list          List trunks\n  registrar trunk create        Create trunk\n  Type 'registrar help' for more details"),
-            "agent": ("Agent management", "agent <action> [options]\n  agent list                 List all agents\n  agent create               Create agent\n  agent get --id ID          Get agent details\n  agent delete --id ID       Delete agent\n  Type 'agent help' for more details"),
-            "config": ("View/set configuration", "config [key] [value]\n  config                 Show all settings\n  config log_lines 100   Set value\n  config reset           Reset to defaults"),
-            "dns": ("DNS setup for SIP domains", "dns [status|list|setup|regenerate|test]\n  dns status      Check DNS configuration\n  dns list        List all DNS domains and their purposes\n  dns setup       Setup DNS forwarding to CoreDNS (requires sudo)\n  dns regenerate  Regenerate Corefile and restart CoreDNS (requires sudo)\n  dns test        Test domain resolution"),
-            "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status    Check certificate configuration\n  certs trust     Install mkcert CA for browser-trusted certificates"),
-            "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                     Show current network configuration\n  network setup                      Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                   Remove VoIP network interfaces"),
+            "ast": ("Asterisk CLI", "ast [command]\n  ast                          Enter Asterisk context\n  ast pjsip show endpoints     Run single command"),
+            "kam": ("Kamailio kamcmd", "kam [command]\n  kam              Enter Kamailio context\n  kam ul.dump      Run single command"),
+            "db": ("MySQL queries", "db [query]\n  db                                    Enter database context\n  db SELECT * FROM extensions LIMIT 5   Run single query"),
+            "api": ("REST API client", "api [method] [path] [data]\n  api                        Enter API context\n  api get /v1.0/extensions   Run single API call"),
+            "ext": ("Manage extensions", "ext <command>\n  ext list                 List all extensions\n  ext create 4000 pass     Create extension\n  ext delete <id>          Delete extension"),
+            "billing": ("Billing management", "billing <subcommand> <action> [options]\n  billing account list                             List billing accounts\n  billing account create --customer-id ID          Create account\n  billing account get --id ID                      Get account details\n  billing account delete --id ID                   Delete account\n  billing account add-balance --id ID --amount N   Add balance\n  billing billing list                             List billing records\n  Type 'billing help' for more details"),
+            "customer": ("Customer management", "customer <action> [options]\n  customer list                   List all customers\n  customer create --email EMAIL   Create customer\n  customer get --id ID            Get customer details\n  customer delete --id ID         Delete customer\n  Type 'customer help' for more details"),
+            "number": ("Phone number management", "number <action> [options]\n  number list                        List all numbers\n  number create --number +1555...    Create number\n  number get --id ID                 Get number details\n  number delete --id ID              Delete number\n  number register --number +1555...  Register number\n  Type 'number help' for more details"),
+            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  registrar extension list     List extensions\n  registrar extension create   Create extension\n  registrar trunk list         List trunks\n  registrar trunk create       Create trunk\n  Type 'registrar help' for more details"),
+            "agent": ("Agent management", "agent <action> [options]\n  agent list              List all agents\n  agent create            Create agent\n  agent get --id ID       Get agent details\n  agent delete --id ID    Delete agent\n  Type 'agent help' for more details"),
+            "config": ("View/set configuration", "config [key] [value]\n  config                Show all settings\n  config log_lines 100  Set value\n  config reset          Reset to defaults"),
+            "dns": ("DNS setup for SIP domains", "dns [status|list|setup|regenerate|test]\n  dns status       Check DNS configuration\n  dns list         List all DNS domains and their purposes\n  dns setup        Setup DNS forwarding to CoreDNS (requires sudo)\n  dns regenerate   Regenerate Corefile and restart CoreDNS (requires sudo)\n  dns test         Test domain resolution"),
+            "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
+            "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                       Show current network configuration\n  network setup                        Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                     Remove VoIP network interfaces"),
             "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
             "clean": ("Cleanup sandbox", "clean [options]\n  clean --volumes   Remove docker volumes (database, recordings)\n  clean --images    Remove docker images\n  clean --network   Teardown VoIP network interfaces\n  clean --dns       Remove DNS configuration\n  clean --purge     Remove generated files (.env, certs, configs)\n  clean --all       All of the above (full reset)"),
-            "update": ("Update sandbox", "update [options]\n  update            Pull latest images and run DB migrations\n  update --images   Only pull latest Docker images\n  update --migrate  Only run database migrations"),
+            "update": ("Update sandbox", "update [options]\n  update             Pull latest images and run DB migrations\n  update --images    Only pull latest Docker images\n  update --migrate   Only run database migrations"),
             "exit": ("Exit CLI", "exit"),
             "clear": ("Clear screen", "clear"),
         }
@@ -1625,12 +1625,12 @@ Type 'billing <subcommand> help' for more details.
 {bold('Billing Account Management')}
 
 {blue('Available Commands:')}
-  list             List billing accounts
-  create           Create a new billing account
-  get              Get account details by ID
-  delete           Delete an account
-  add-balance      Add balance to an account
-  subtract-balance Subtract balance from an account
+  list              List billing accounts
+  create            Create a new billing account
+  get               Get account details by ID
+  delete            Delete an account
+  add-balance       Add balance to an account
+  subtract-balance  Subtract balance from an account
 
 {blue('Usage:')} billing account <command> [options]
 
