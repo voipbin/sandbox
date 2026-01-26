@@ -152,6 +152,30 @@ SIDECAR_COMMANDS = {
             },
         },
     },
+    "registrar": {
+        "container": "voipbin-registrar-mgr",
+        "binary": "/app/bin/registrar-control",
+        "subcommands": {
+            "extension": {
+                "commands": ["list", "create", "get", "delete", "update"],
+                "description": "Manage SIP extensions",
+            },
+            "trunk": {
+                "commands": ["list", "create", "get", "delete", "update"],
+                "description": "Manage SIP trunks",
+            },
+        },
+    },
+    "agent": {
+        "container": "voipbin-agent-mgr",
+        "binary": "/app/bin/agent-control",
+        "subcommands": {
+            "agent": {
+                "commands": ["list", "create", "get", "delete", "update-password", "update-permission"],
+                "description": "Manage agents",
+            },
+        },
+    },
 }
 
 # Required arguments for sidecar commands
@@ -169,6 +193,17 @@ SIDECAR_REQUIRED_ARGS = {
     ("number", "number", "get"): ["id"],
     ("number", "number", "delete"): ["id"],
     ("number", "number", "register"): ["number"],
+    ("registrar", "extension", "get"): ["id"],
+    ("registrar", "extension", "delete"): ["id"],
+    ("registrar", "extension", "update"): ["id"],
+    ("registrar", "trunk", "get"): ["id"],
+    ("registrar", "trunk", "delete"): ["id"],
+    ("registrar", "trunk", "update"): ["id"],
+    ("agent", "agent", "create"): ["customer_id", "username", "password"],
+    ("agent", "agent", "get"): ["id"],
+    ("agent", "agent", "delete"): ["id"],
+    ("agent", "agent", "update-password"): ["id"],
+    ("agent", "agent", "update-permission"): ["id"],
 }
 
 # Commands that require delete confirmation
@@ -176,6 +211,9 @@ SIDECAR_DELETE_COMMANDS = [
     ("billing", "account", "delete"),
     ("customer", "customer", "delete"),
     ("number", "number", "delete"),
+    ("registrar", "extension", "delete"),
+    ("registrar", "trunk", "delete"),
+    ("agent", "agent", "delete"),
 ]
 
 # Table columns for list commands (command_key -> [(display_name, json_key, width)])
@@ -200,6 +238,23 @@ SIDECAR_TABLE_COLUMNS = {
     ("number", "number", "list"): [
         ("ID", "id", 36),
         ("Number", "number", 16),
+        ("Name", "name", 25),
+    ],
+    ("registrar", "extension", "list"): [
+        ("ID", "id", 36),
+        ("Extension", "extension", 12),
+        ("Username", "username", 20),
+        ("Realm", "realm", 40),
+    ],
+    ("registrar", "trunk", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 20),
+        ("Username", "username", 20),
+        ("Domain", "domain", 30),
+    ],
+    ("agent", "agent", "list"): [
+        ("ID", "id", 36),
+        ("Username", "username", 25),
         ("Name", "name", 25),
     ],
 }
@@ -241,6 +296,33 @@ SIDECAR_DETAIL_FIELDS = {
         ("Customer ID", "customer_id"),
         ("Call Flow ID", "call_flow_id"),
         ("Message Flow ID", "message_flow_id"),
+        ("Created", "tm_create"),
+    ],
+    ("registrar", "extension", "get"): [
+        ("ID", "id"),
+        ("Name", "name"),
+        ("Extension", "extension"),
+        ("Username", "username"),
+        ("Realm", "realm"),
+        ("Customer ID", "customer_id"),
+        ("Created", "tm_create"),
+    ],
+    ("registrar", "trunk", "get"): [
+        ("ID", "id"),
+        ("Name", "name"),
+        ("Username", "username"),
+        ("Domain", "domain"),
+        ("Customer ID", "customer_id"),
+        ("Allowed IPs", "allowed_ips"),
+        ("Created", "tm_create"),
+    ],
+    ("agent", "agent", "get"): [
+        ("ID", "id"),
+        ("Username", "username"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Customer ID", "customer_id"),
+        ("Permission", "permission"),
         ("Created", "tm_create"),
     ],
 }
@@ -538,23 +620,31 @@ def run_sidecar_command(container, binary, args, verbose=False):
     if not output:
         return True, []
 
-    # Parse output - filter log lines and extract JSON
+    # Parse output - filter log lines, info lines, and extract JSON
     lines = output.split("\n")
     json_lines = []
     log_lines = []
+    info_lines = []
 
     for line in lines:
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
             continue
         # Check if it's a log line (JSON with severity field)
-        if line.startswith("{") and '"severity"' in line:
-            log_lines.append(line)
-        else:
+        if stripped.startswith("{") and '"severity"' in stripped:
+            log_lines.append(stripped)
+        # Check if it's JSON data (starts with { or [ or is part of JSON array/object)
+        elif stripped.startswith("{") or stripped.startswith("[") or stripped.startswith('"') or stripped == "]" or stripped == "}," or stripped == "}":
+            json_lines.append(line)  # Keep original indentation for JSON
+        # Check if it's an indented JSON line (part of pretty-printed JSON)
+        elif line.startswith("  ") and ('"' in stripped or stripped in ["{", "}", "},", "]", "],"]):
             json_lines.append(line)
+        else:
+            # Info/status line (e.g., "Retrieving extensions...")
+            info_lines.append(stripped)
 
-    # Show logs if verbose
-    if verbose and log_lines:
+    # Show logs and info if verbose
+    if verbose:
         for log_line in log_lines:
             try:
                 log = json.loads(log_line)
@@ -568,7 +658,10 @@ def run_sidecar_command(container, binary, args, verbose=False):
                     print(f"[{severity}] {message}")
             except json.JSONDecodeError:
                 print(log_line)
-        print()
+        for info_line in info_lines:
+            print(f"{gray('[INFO]')} {info_line}")
+        if log_lines or info_lines:
+            print()
 
     # Parse JSON result
     json_str = "\n".join(json_lines)
@@ -762,6 +855,8 @@ class VoIPBinCLI:
             "billing": self.cmd_billing,
             "customer": self.cmd_customer,
             "number": self.cmd_number,
+            "registrar": self.cmd_registrar,
+            "agent": self.cmd_agent,
             "config": self.cmd_config,
             "dns": self.cmd_dns,
             "certs": self.cmd_certs,
@@ -788,8 +883,10 @@ class VoIPBinCLI:
             "api": ("REST API client", "api [method] [path] [data]\n  api                    Enter API context\n  api get /v1.0/extensions"),
             "ext": ("Manage extensions", "ext <command>\n  ext list               List all extensions\n  ext create 4000 pass   Create extension\n  ext delete <id>        Delete extension"),
             "billing": ("Billing management", "billing <subcommand> <action> [options]\n  billing account list              List billing accounts\n  billing account create --customer-id ID  Create account\n  billing account get --id ID       Get account details\n  billing account delete --id ID    Delete account\n  billing account add-balance --id ID --amount N  Add balance\n  billing billing list              List billing records\n  Type 'billing help' for more details"),
-            "customer": ("Customer management", "customer <action> [options]\n  customer list           List all customers\n  customer create --email EMAIL  Create customer\n  customer get --id ID    Get customer details\n  customer delete --id ID Delete customer\n  customer info           Show current customer (legacy)\n  Type 'customer help' for more details"),
+            "customer": ("Customer management", "customer <action> [options]\n  customer list           List all customers\n  customer create --email EMAIL  Create customer\n  customer get --id ID    Get customer details\n  customer delete --id ID Delete customer\n  Type 'customer help' for more details"),
             "number": ("Phone number management", "number <action> [options]\n  number list             List all numbers\n  number create --number +1555...  Create number\n  number get --id ID      Get number details\n  number delete --id ID   Delete number\n  number register --number +1555...  Register number\n  Type 'number help' for more details"),
+            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  registrar extension list   List extensions\n  registrar extension create Create extension\n  registrar trunk list       List trunks\n  registrar trunk create     Create trunk\n  Type 'registrar help' for more details"),
+            "agent": ("Agent management", "agent <action> [options]\n  agent list              List all agents\n  agent create            Create agent\n  agent get --id ID       Get agent details\n  agent delete --id ID    Delete agent\n  Type 'agent help' for more details"),
             "config": ("View/set configuration", "config [key] [value]\n  config                 Show all settings\n  config log_lines 100   Set value\n  config reset           Reset to defaults"),
             "dns": ("DNS setup for SIP domains", "dns [status|list|setup|regenerate|test]\n  dns status      Check DNS configuration\n  dns list        List all DNS domains and their purposes\n  dns setup       Setup DNS forwarding to CoreDNS (requires sudo)\n  dns regenerate  Regenerate Corefile and restart CoreDNS (requires sudo)\n  dns test        Test domain resolution"),
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status    Check certificate configuration\n  certs trust     Install mkcert CA for browser-trusted certificates"),
@@ -882,7 +979,8 @@ class VoIPBinCLI:
   billing           Billing and account management
   customer          Customer management
   number            Phone number management
-  ext               Extension management
+  registrar         Extension and trunk management
+  agent             Agent management
 
 {blue('Infrastructure:')}
   dns               DNS setup for SIP domains
@@ -1477,46 +1575,8 @@ Type 'help <command>' for detailed usage.
         else:
             print(result)
 
-    def cmd_customer(self, args):
-        """Manage customer - delegates to new sidecar-based implementation"""
-        # Delegate to the new implementation
-        self.cmd_customer_new(args)
-
-    def customer_info(self):
-        """Show customer info"""
-        if not self.ensure_login():
-            return
-
-        host = self.config.get("api_host")
-        port = self.config.get("api_port")
-
-        result = run_cmd(
-            f'curl -sk "https://{host}:{port}/v1.0/customer" '
-            f'-H "Authorization: Bearer {self.api_token}"'
-        )
-
-        try:
-            data = json.loads(result)
-            print(f"\n{bold('Customer Info')}")
-            print("-" * 40)
-            print(f"  ID:    {data.get('id', 'N/A')}")
-            print(f"  Name:  {data.get('name', 'N/A')}")
-            print(f"  Email: {data.get('email', 'N/A')}")
-            print()
-        except json.JSONDecodeError:
-            print(result)
-
-    def customer_create(self, email):
-        """Create customer (legacy method for backward compatibility)"""
-        name = email.split("@")[0].replace(".", " ").title()
-        result = run_cmd(
-            f'docker exec voipbin-customer-mgr /app/bin/customer-control customer create '
-            f'--name "{name}" --email "{email}" 2>&1'
-        )
-        print(result)
-
     # -------------------------------------------------------------------------
-    # Sidecar Commands (billing, customer, number)
+    # Sidecar Commands (billing, customer, number, registrar, agent)
     # -------------------------------------------------------------------------
 
     def cmd_billing(self, args):
@@ -1717,7 +1777,7 @@ Type 'billing <subcommand> help' for more details.
                 print(f"{green('✓')} Balance updated for \"{name}\"")
                 print(f"  New balance: {new_balance}")
 
-    def cmd_customer_new(self, args):
+    def cmd_customer(self, args):
         """Customer management using sidecar commands"""
         if not args or args[0] in ("help", "-h", "--help"):
             self._show_customer_help(args[1:] if len(args) > 1 else [])
@@ -1725,21 +1785,12 @@ Type 'billing <subcommand> help' for more details.
 
         subcmd = args[0].lower()
 
-        # Handle legacy "info" command
-        if subcmd == "info":
-            self.customer_info()
-            return
-
         # Map commands to actions
         valid_actions = ["list", "create", "get", "delete"]
         if subcmd not in valid_actions:
             print(f"{red('✗')} Unknown subcommand: {subcmd}")
             print(f"  Available: {', '.join(valid_actions)}")
             print("  Type 'customer help' for usage.")
-            return
-
-        if subcmd in ("help", "-h", "--help"):
-            self._show_customer_action_help(args[1] if len(args) > 1 else None)
             return
 
         cmd_args = parse_sidecar_args(args[1:])
@@ -1760,7 +1811,6 @@ Type 'billing <subcommand> help' for more details.
   create           Create a new customer
   get              Get customer details by ID
   delete           Delete a customer
-  info             Show current customer info (legacy)
 
 {blue('Usage:')} customer <command> [options]
 
@@ -1997,6 +2047,351 @@ Type 'billing <subcommand> help' for more details.
 
         elif action == "delete":
             print(f"{green('✓')} Number deleted.")
+
+    def cmd_registrar(self, args):
+        """Registrar management (extensions and trunks)"""
+        if not args or args[0] in ("help", "-h", "--help"):
+            self._show_registrar_help(args[1:] if len(args) > 1 else [])
+            return
+
+        subcmd = args[0].lower()
+
+        if subcmd not in ("extension", "trunk"):
+            print(f"{red('✗')} Unknown subcommand: {subcmd}")
+            print("  Available: extension, trunk")
+            print("  Type 'registrar help' for usage.")
+            return
+
+        if len(args) < 2 or args[1] in ("help", "-h", "--help"):
+            self._show_registrar_subcommand_help(subcmd, args[2:] if len(args) > 2 else [])
+            return
+
+        action = args[1].lower()
+        cmd_args = parse_sidecar_args(args[2:])
+        verbose = cmd_args.pop("verbose", False)
+
+        self._run_registrar_command(subcmd, action, cmd_args, verbose)
+
+    def _show_registrar_help(self, args):
+        """Show registrar command help"""
+        print(f"""
+{bold('Registrar Management')}
+
+{blue('Available Commands:')}
+  registrar extension    Manage SIP extensions
+  registrar trunk        Manage SIP trunks
+
+Type 'registrar <subcommand> help' for more details.
+""")
+
+    def _show_registrar_subcommand_help(self, subcmd, args):
+        """Show help for registrar subcommand"""
+        if subcmd == "extension":
+            if args and args[0] not in ("help", "-h", "--help"):
+                self._show_registrar_action_help(subcmd, args[0])
+                return
+            print(f"""
+{bold('Extension Management')}
+
+{blue('Available Commands:')}
+  list             List extensions
+  create           Create a new extension
+  get              Get extension details by ID
+  delete           Delete an extension
+  update           Update an extension
+
+{blue('Usage:')} registrar extension <command> [options]
+
+{blue('Examples:')}
+  registrar extension list
+  registrar extension list --customer_id abc123
+  registrar extension create --customer_id abc123 --extension_number 1000 --password secret
+  registrar extension get --id xyz789
+  registrar extension delete --id xyz789
+""")
+        elif subcmd == "trunk":
+            if args and args[0] not in ("help", "-h", "--help"):
+                self._show_registrar_action_help(subcmd, args[0])
+                return
+            print(f"""
+{bold('Trunk Management')}
+
+{blue('Available Commands:')}
+  list             List trunks
+  create           Create a new trunk
+  get              Get trunk details by ID
+  delete           Delete a trunk
+  update           Update a trunk
+
+{blue('Usage:')} registrar trunk <command> [options]
+
+{blue('Examples:')}
+  registrar trunk list
+  registrar trunk list --customer_id abc123
+  registrar trunk create --customer_id abc123 --name "Main Trunk" --username user1
+  registrar trunk get --id xyz789
+  registrar trunk delete --id xyz789
+""")
+
+    def _show_registrar_action_help(self, subcmd, action):
+        """Show help for specific registrar action"""
+        help_info = {
+            ("extension", "list"): ("List extensions", [], [("customer_id", "Filter by customer ID"), ("extension_number", "Filter by extension"), ("limit", "Max results (default: 100)")]),
+            ("extension", "create"): ("Create a new extension", [], [("customer_id", "Customer ID"), ("extension_number", "Extension number"), ("username", "Username"), ("password", "Password"), ("domain", "Domain name")]),
+            ("extension", "get"): ("Get extension details", [("id", "Extension ID")], []),
+            ("extension", "delete"): ("Delete an extension", [("id", "Extension ID")], []),
+            ("extension", "update"): ("Update an extension", [("id", "Extension ID")], [("password", "New password")]),
+            ("trunk", "list"): ("List trunks", [], [("customer_id", "Filter by customer ID"), ("name", "Filter by name"), ("limit", "Max results (default: 100)")]),
+            ("trunk", "create"): ("Create a new trunk", [], [("customer_id", "Customer ID"), ("name", "Trunk name"), ("username", "Username"), ("password", "Password"), ("domain", "Domain name"), ("allowed_ips", "Allowed IPs (comma-separated)")]),
+            ("trunk", "get"): ("Get trunk details", [("id", "Trunk ID")], []),
+            ("trunk", "delete"): ("Delete a trunk", [("id", "Trunk ID")], []),
+            ("trunk", "update"): ("Update a trunk", [("id", "Trunk ID")], [("password", "New password"), ("allowed_ips", "Allowed IPs")]),
+        }
+
+        key = (subcmd, action)
+        if key not in help_info:
+            print(f"{red('✗')} Unknown command: registrar {subcmd} {action}")
+            return
+
+        desc, required, optional = help_info[key]
+        print(f"\n{bold(desc)}\n")
+        print(f"{blue('Usage:')} registrar {subcmd} {action} [options]\n")
+
+        if required:
+            print(f"{blue('Required:')}")
+            for arg, desc in required:
+                print(f"  --{arg:<20} {desc}")
+            print()
+
+        if optional:
+            print(f"{blue('Optional:')}")
+            for arg, desc in optional:
+                print(f"  --{arg:<20} {desc}")
+            print()
+
+    def _run_registrar_command(self, subcmd, action, args, verbose):
+        """Execute a registrar command"""
+        config = SIDECAR_COMMANDS["registrar"]
+        container = config["container"]
+        binary = config["binary"]
+        command_key = ("registrar", subcmd, action)
+
+        # Check if action is valid
+        valid_actions = config["subcommands"].get(subcmd, {}).get("commands", [])
+        if action not in valid_actions:
+            print(f"{red('✗')} Unknown command: registrar {subcmd} {action}")
+            print(f"  Available: {', '.join(valid_actions)}")
+            return
+
+        # Prompt for missing required args
+        args = prompt_missing_args(command_key, args)
+        if args is None:
+            return
+
+        # Add --format json for JSON output
+        args["format"] = "json"
+
+        # Confirm delete
+        if command_key in SIDECAR_DELETE_COMMANDS:
+            # First get the resource to show details
+            get_args = {"id": args.get("id"), "format": "json"}
+            success, data = run_sidecar_command(container, f"{binary} {subcmd} get", get_args, verbose=False)
+            if success and data:
+                resource_type = "extension" if subcmd == "extension" else "trunk"
+                if not confirm_delete(resource_type, data):
+                    return
+
+        success, data = run_sidecar_command(container, f"{binary} {subcmd} {action}", args, verbose)
+
+        if not success:
+            print(f"{red('✗')} {data}")
+            return
+
+        # Format output
+        self._format_registrar_output(subcmd, action, data, command_key)
+
+    def _format_registrar_output(self, subcmd, action, data, command_key):
+        """Format and display registrar command output"""
+        entity_name = "Extensions" if subcmd == "extension" else "Trunks"
+        entity_singular = "Extension" if subcmd == "extension" else "Trunk"
+
+        if action == "list":
+            if not data:
+                print(f"\nNo {entity_name.lower()} found.\n")
+                return
+            columns = SIDECAR_TABLE_COLUMNS.get(command_key)
+            if columns:
+                print(f"\n{bold(entity_name)} ({len(data)} found)\n")
+                format_table(data, columns)
+                print()
+
+        elif action == "get":
+            if not data:
+                print(f"{red('✗')} {entity_singular} not found.")
+                return
+            fields = SIDECAR_DETAIL_FIELDS.get(command_key)
+            if fields:
+                print(f"\n{bold(entity_singular)}")
+                format_details(data, fields)
+
+        elif action == "create":
+            if data:
+                item_id = data.get("id", "unknown")
+                if subcmd == "extension":
+                    ext_num = data.get("extension_number", "")
+                    print(f"{green('✓')} Extension created: {ext_num}")
+                else:
+                    name = data.get("name", "")
+                    print(f"{green('✓')} Trunk created: {name}")
+                print(f"  ID: {item_id}")
+
+        elif action == "delete":
+            print(f"{green('✓')} {entity_singular} deleted.")
+
+        elif action == "update":
+            print(f"{green('✓')} {entity_singular} updated.")
+
+    def cmd_agent(self, args):
+        """Agent management"""
+        if not args or args[0] in ("help", "-h", "--help"):
+            self._show_agent_help(args[1:] if len(args) > 1 else [])
+            return
+
+        action = args[0].lower()
+
+        valid_actions = ["list", "create", "get", "delete", "update-password", "update-permission"]
+        if action not in valid_actions:
+            print(f"{red('✗')} Unknown subcommand: {action}")
+            print(f"  Available: {', '.join(valid_actions)}")
+            print("  Type 'agent help' for usage.")
+            return
+
+        cmd_args = parse_sidecar_args(args[1:])
+        verbose = cmd_args.pop("verbose", False)
+
+        self._run_agent_command(action, cmd_args, verbose)
+
+    def _show_agent_help(self, args):
+        """Show agent command help"""
+        if args and args[0] not in ("help", "-h", "--help"):
+            self._show_agent_action_help(args[0])
+            return
+        print(f"""
+{bold('Agent Management')}
+
+{blue('Available Commands:')}
+  list               List all agents
+  create             Create a new agent
+  get                Get agent details by ID
+  delete             Delete an agent
+  update-password    Update agent password
+  update-permission  Update agent permission
+
+{blue('Usage:')} agent <command> [options]
+
+{blue('Examples:')}
+  agent list
+  agent list --customer_id abc123
+  agent create --customer_id abc123 --username user1 --password secret
+  agent get --id xyz789
+  agent delete --id xyz789
+  agent update-password --id xyz789
+""")
+
+    def _show_agent_action_help(self, action):
+        """Show help for specific agent action"""
+        help_info = {
+            "list": ("List all agents", [], [("customer_id", "Filter by customer ID"), ("limit", "Max results (default: 100)")]),
+            "create": ("Create a new agent", [("customer_id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("name", "Agent name"), ("detail", "Description"), ("permission", "Permission level")]),
+            "get": ("Get agent details", [("id", "Agent ID")], []),
+            "delete": ("Delete an agent", [("id", "Agent ID")], []),
+            "update-password": ("Update agent password", [("id", "Agent ID")], [("password", "New password")]),
+            "update-permission": ("Update agent permission", [("id", "Agent ID")], [("permission", "New permission level")]),
+        }
+
+        if action not in help_info:
+            self._show_agent_help([])
+            return
+
+        desc, required, optional = help_info[action]
+        print(f"\n{bold(desc)}\n")
+        print(f"{blue('Usage:')} agent {action} [options]\n")
+
+        if required:
+            print(f"{blue('Required:')}")
+            for arg, desc in required:
+                print(f"  --{arg:<20} {desc}")
+            print()
+
+        if optional:
+            print(f"{blue('Optional:')}")
+            for arg, desc in optional:
+                print(f"  --{arg:<20} {desc}")
+            print()
+
+    def _run_agent_command(self, action, args, verbose):
+        """Execute an agent command"""
+        config = SIDECAR_COMMANDS["agent"]
+        container = config["container"]
+        binary = config["binary"]
+        command_key = ("agent", "agent", action)
+
+        # Prompt for missing required args
+        args = prompt_missing_args(command_key, args)
+        if args is None:
+            return
+
+        # Confirm delete
+        if command_key in SIDECAR_DELETE_COMMANDS:
+            # First get the resource to show details
+            get_args = {"id": args.get("id")}
+            success, data = run_sidecar_command(container, f"{binary} agent get", get_args, verbose=False)
+            if success and data:
+                if not confirm_delete("agent", data):
+                    return
+
+        success, data = run_sidecar_command(container, f"{binary} agent {action}", args, verbose)
+
+        if not success:
+            print(f"{red('✗')} {data}")
+            return
+
+        # Format output
+        self._format_agent_output(action, data, command_key)
+
+    def _format_agent_output(self, action, data, command_key):
+        """Format and display agent command output"""
+        if action == "list":
+            if not data:
+                print("\nNo agents found.\n")
+                return
+            columns = SIDECAR_TABLE_COLUMNS.get(command_key)
+            if columns:
+                print(f"\n{bold('Agents')} ({len(data)} found)\n")
+                format_table(data, columns)
+                print()
+
+        elif action == "get":
+            if not data:
+                print(f"{red('✗')} Agent not found.")
+                return
+            fields = SIDECAR_DETAIL_FIELDS.get(command_key)
+            if fields:
+                print(f"\n{bold('Agent')}")
+                format_details(data, fields)
+
+        elif action == "create":
+            if data:
+                username = data.get("username", "unknown")
+                item_id = data.get("id", "unknown")
+                print(f"{green('✓')} Agent created: {username}")
+                print(f"  ID: {item_id}")
+
+        elif action == "delete":
+            print(f"{green('✓')} Agent deleted.")
+
+        elif action in ("update-password", "update-permission"):
+            print(f"{green('✓')} Agent updated.")
 
     def cmd_config(self, args):
         """View/set configuration"""
