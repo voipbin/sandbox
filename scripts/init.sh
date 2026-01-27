@@ -290,12 +290,16 @@ KAMAILIO_EXTERNAL_IP=$KAMAILIO_EXTERNAL_IP
 RTPENGINE_EXTERNAL_IP=$RTPENGINE_EXTERNAL_IP
 
 # ==============================================================================
-# Admin Console Configuration
+# Frontend Configuration
 # ==============================================================================
-# Base hostname for Admin Console API connections (includes port)
-# Default: voipbin.test:8443 (for local browser access)
-# For remote access: set to server's IP or hostname:port (e.g., 192.168.1.100:8443)
-BASE_HOSTNAME=voipbin.test:8443
+# Base hostname (used as fallback if per-service URLs not set)
+BASE_HOSTNAME=voipbin.test
+
+# Per-service URL overrides for local development
+# For remote access: set to server's IP/hostname with appropriate ports
+API_URL=https://api.voipbin.test:8443
+WEBSOCKET_URL=wss://api.voipbin.test:8443/v1.0/ws
+REGISTRAR_DOMAIN=registrar.voipbin.test
 
 # Domain names for extension and trunk registration
 DOMAIN_NAME_EXTENSION=registrar.voipbin.test
