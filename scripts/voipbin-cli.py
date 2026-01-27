@@ -924,7 +924,7 @@ class VoIPBinCLI:
             "status": ("Show service status", "status"),
             "ps": ("Alias for status", "ps"),
             "start": ("Start services", "start [service]\n  start           Start all services\n  start api-manager  Start specific service"),
-            "stop": ("Stop services", "stop [service]\n  stop            Stop all services\n  stop kamailio   Stop specific service"),
+            "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
             "restart": ("Restart services", "restart [service]"),
             "logs": ("View service logs", "logs [-f] <service>\n  logs api-manager     Last 50 lines\n  logs -f api-manager  Follow logs (Ctrl+C to stop)"),
             "ast": ("Asterisk CLI", "ast [command]\n  ast                          Enter Asterisk context\n  ast pjsip show endpoints     Run single command"),
@@ -1011,7 +1011,7 @@ class VoIPBinCLI:
 {blue('Service Commands:')}
   status, ps        Show service status
   start [service]   Start services
-  stop [service]    Stop services
+  stop [--all]      Stop app services (--all for everything)
   restart [service] Restart services
   logs <service>    View logs (-f to follow)
 
@@ -1318,10 +1318,15 @@ Type 'help <command>' for detailed usage.
 
     def cmd_stop(self, args):
         """Stop services"""
+        # Infrastructure services to keep running by default
+        INFRA_SERVICES = {"coredns", "redis", "rabbitmq", "db"}
+
+        stop_all = "--all" in args
+        args = [a for a in args if a != "--all"]
         service = args[0] if args else ""
 
         if service:
-            # Stop specific service (but warn if stopping coredns)
+            # Stop specific service
             if service == "coredns" or service == "dns":
                 print(yellow("Warning: Stopping CoreDNS may cause DNS resolution to fail."))
                 print(yellow("         Run 'dns setup' after restarting to restore DNS."))
@@ -1330,20 +1335,34 @@ Type 'help <command>' for detailed usage.
             if result:
                 print(result)
             print(green("✓ Done"))
+        elif stop_all:
+            # Stop all containers including infrastructure
+            print("Stopping all services (including infrastructure)...")
+            result = run_cmd("docker compose stop 2>&1")
+            if result:
+                print(result)
+            print(green("✓ All services stopped"))
         else:
-            # Stop all - use stop.sh (which restores DNS automatically)
-            script_dir = self.config.get("project_dir", ".")
-            script_path = os.path.join(script_dir, "scripts", "stop.sh")
+            # Stop only app containers, keep infrastructure running
+            print("Stopping app services (keeping infrastructure)...")
+            all_services = run_cmd("docker compose ps --services 2>/dev/null") or ""
+            if all_services:
+                services_to_stop = []
+                for svc in all_services.split('\n'):
+                    svc = svc.strip()
+                    if svc and svc not in INFRA_SERVICES:
+                        services_to_stop.append(svc)
 
-            if os.path.exists(script_path):
-                os.system(script_path)
+                if services_to_stop:
+                    result = run_cmd(f"docker compose stop {' '.join(services_to_stop)} 2>&1")
+                    if result:
+                        print(result)
+                    print(green(f"✓ Stopped {len(services_to_stop)} app services"))
+                    print(gray(f"  Infrastructure still running: {', '.join(sorted(INFRA_SERVICES))}"))
+                else:
+                    print("No app services to stop")
             else:
-                # Fallback to docker compose
-                print("Stopping all services...")
-                result = run_cmd("docker compose down 2>&1")
-                if result:
-                    print(result)
-                print(green("✓ Done"))
+                print("No services running")
 
     def cmd_restart(self, args):
         """Restart services"""
@@ -3640,7 +3659,7 @@ Usage:
 Commands:
   status              Show service status
   start [service]     Start all services (or specific service)
-  stop [service]      Stop all services (or specific service)
+  stop [--all]        Stop app services (--all for everything)
   restart [service]   Restart services
   logs <service>      View logs
   init                Initialize sandbox (generates .env and certs)

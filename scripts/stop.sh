@@ -84,14 +84,14 @@ main() {
     fi
 
     log_step "Stopping all services..."
-    docker compose down
+    docker compose stop
 
     echo ""
     echo "=============================================="
     echo "  Stopped"
     echo "=============================================="
     echo ""
-    log_info "All services stopped. Data preserved in volumes."
+    log_info "All services stopped. Containers preserved (not removed)."
     log_info "DNS restored to system default."
     log_info "Run 'start' to restart."
     echo ""
