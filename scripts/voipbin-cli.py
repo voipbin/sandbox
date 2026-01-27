@@ -14,9 +14,11 @@ import json
 import os
 import readline
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -49,6 +51,34 @@ DEFAULT_CONFIG = {
     "db_password": "root_password",
     "project_dir": str(Path(__file__).parent.parent),
 }
+
+# =============================================================================
+# Backup Configuration (for update scripts)
+# =============================================================================
+
+BACKUP_DIR = ".backup"
+MAX_BACKUPS = 5  # Keep last 5 backups
+
+# Files/directories that should never be touched during script updates
+PROTECTED_PATHS = [
+    ".env",
+    "certs/",
+    "tmp/",
+    ".backup/",
+    ".git/",
+    "__pycache__/",
+]
+
+# Files/directories that are tracked for script updates
+TRACKED_PATHS = [
+    "scripts/",
+    "docker-compose.yml",
+    ".env.template",
+    "config/",
+    "tests/",
+    "CLAUDE.md",
+    "README.md",
+]
 
 # =============================================================================
 # Colors
@@ -883,6 +913,7 @@ class VoIPBinCLI:
             "init": self.cmd_init,
             "clean": self.cmd_clean,
             "update": self.cmd_update,
+            "rollback": self.cmd_rollback,
             "exit": self.cmd_exit,
             "quit": self.cmd_exit,
             "clear": self.cmd_clear,
@@ -911,8 +942,9 @@ class VoIPBinCLI:
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
             "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                       Show current network configuration\n  network setup                        Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                     Remove VoIP network interfaces"),
             "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
-            "clean": ("Cleanup sandbox", "clean [options]\n  clean --volumes   Remove docker volumes (database, recordings)\n  clean --images    Remove docker images\n  clean --network   Teardown VoIP network interfaces\n  clean --dns       Remove DNS configuration\n  clean --purge     Remove generated files (.env, certs, configs)\n  clean --all       All of the above (full reset)"),
-            "update": ("Update sandbox", "update [options]\n  update             Pull latest images and run DB migrations\n  update --images    Only pull latest Docker images\n  update --migrate   Only run database migrations"),
+            "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
+            "update": ("Update sandbox", "update [subcommand] [--check]\n  update               Pull latest Docker images + restart services\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Both images and scripts\n  update all --check   Dry-run: show both"),
+            "rollback": ("Rollback to previous backup", "rollback [timestamp]\n  rollback             Restore from latest backup\n  rollback --list      Show available backups\n  rollback 2026-01-27  Restore from specific backup"),
             "exit": ("Exit CLI", "exit"),
             "clear": ("Clear screen", "clear"),
         }
@@ -2934,18 +2966,23 @@ Type 'registrar <subcommand> help' for more details.
     def cmd_clean(self, args):
         """Cleanup sandbox"""
         if not args:
-            print("Usage: clean [--volumes] [--images] [--network] [--dns] [--purge] [--all]")
+            print("Usage: clean [--containers] [--volumes] [--images] [--network] [--dns] [--purge] [--all]")
             print("")
             print("Options:")
-            print("  --volumes   Remove docker volumes (database, recordings)")
-            print("  --images    Remove docker images")
-            print("  --network   Teardown VoIP network interfaces")
-            print("  --dns       Remove DNS configuration")
-            print("  --purge     Remove generated files (.env, certs, configs)")
-            print("  --all       All of the above (full reset)")
+            print("  --containers  Remove app containers (keeps infrastructure: db, redis, mq, dns)")
+            print("  --volumes     Remove docker volumes (database, recordings)")
+            print("  --images      Remove docker images")
+            print("  --network     Teardown VoIP network interfaces")
+            print("  --dns         Remove DNS configuration")
+            print("  --purge       Remove generated files (.env, certs, configs)")
+            print("  --all         All of the above (full reset)")
             return
 
+        # Infrastructure services to keep when using --containers
+        INFRA_SERVICES = {"dns", "coredns", "redis", "rabbitmq", "mq", "db"}
+
         # Parse options
+        clean_containers = "--containers" in args
         clean_volumes = "--volumes" in args or "--all" in args
         clean_images = "--images" in args or "--all" in args
         teardown_network = "--network" in args or "--all" in args
@@ -2955,12 +2992,34 @@ Type 'registrar <subcommand> help' for more details.
         project_dir = self.config.get("project_dir", ".")
         scripts_dir = os.path.join(project_dir, "scripts")
 
-        # Stop services first
-        print("Stopping services...")
+        # Stop and remove containers/volumes
         if clean_volumes:
+            print("Stopping all services and removing volumes...")
             run_cmd("docker compose down -v 2>&1")
-            print(green("✓ Services stopped and volumes removed"))
+            print(green("✓ All containers and volumes removed"))
+        elif clean_containers:
+            # Remove only app containers, keep infrastructure
+            print("Removing app containers (keeping infrastructure)...")
+            all_services = run_cmd("docker compose ps --services 2>/dev/null") or ""
+            if all_services:
+                services_to_remove = []
+                for svc in all_services.split('\n'):
+                    svc = svc.strip()
+                    if svc and svc not in INFRA_SERVICES:
+                        services_to_remove.append(svc)
+
+                if services_to_remove:
+                    run_cmd(f"docker compose rm -fsv {' '.join(services_to_remove)} 2>&1")
+                    print(green(f"✓ Removed {len(services_to_remove)} app containers"))
+                    running_infra = INFRA_SERVICES & set(all_services.split())
+                    if running_infra:
+                        print(green(f"✓ Infrastructure still running: {', '.join(sorted(running_infra))}"))
+                else:
+                    print("No app containers to remove")
+            else:
+                print("No containers running")
         else:
+            print("Stopping services...")
             run_cmd("docker compose down 2>&1")
             print(green("✓ Services stopped"))
 
@@ -3041,69 +3100,379 @@ Type 'registrar <subcommand> help' for more details.
         print("Run 'init' to initialize, then 'start' to begin.")
 
     def cmd_update(self, args):
-        """Update sandbox - pull images and run migrations"""
-        pull_images = True
-        run_migrations = True
-
-        # Parse options
-        if args:
-            if "--images" in args:
-                pull_images = True
-                run_migrations = False
-            elif "--migrate" in args:
-                pull_images = False
-                run_migrations = True
-
+        """Update sandbox - pull images and/or update scripts from GitHub"""
         project_dir = self.config.get("project_dir", ".")
+        check_only = "--check" in args
+        args = [a for a in args if a != "--check"]
 
-        print(f"\n{bold('VoIPBin Sandbox Update')}")
+        # Determine what to update
+        subcommand = args[0] if args else ""
+
+        if subcommand == "scripts":
+            self._update_scripts(project_dir, check_only)
+        elif subcommand == "all":
+            self._update_scripts(project_dir, check_only)
+            if not check_only:
+                print("")
+            self._update_images(project_dir, check_only)
+        elif subcommand in ("", "images"):
+            self._update_images(project_dir, check_only)
+        else:
+            print(f"{red('Unknown subcommand:')} {subcommand}")
+            print("Usage: update [scripts|all] [--check]")
+
+    def _update_images(self, project_dir, check_only=False):
+        """Pull latest Docker images and restart services"""
+        print(f"\n{bold('Docker Image Update')}")
         print("=" * 50)
 
-        # Step 1: Pull latest Docker images
-        if pull_images:
-            print(f"\n{blue('==>')} Pulling latest Docker images...")
-            result = run_cmd("docker compose pull 2>&1")
+        if check_only:
+            print(f"\n{blue('==>')} Checking for image updates...")
+            result = run_cmd("docker compose images --format json 2>/dev/null")
             if result:
-                # Show summary of pulled images
-                lines = result.strip().split('\n')
-                for line in lines[-10:]:  # Show last 10 lines
-                    print(f"  {line}")
-            print(green("✓ Images updated"))
+                try:
+                    lines = [line.strip() for line in result.split('\n') if line.strip()]
+                    images = [json.loads(line) for line in lines]
+                    print(f"\n  {'SERVICE':<25} {'IMAGE':<40} {'TAG':<15}")
+                    print("  " + "-" * 80)
+                    for img in images:
+                        svc = img.get("Service", img.get("Container", ""))[:24]
+                        repo = img.get("Repository", "")[:39]
+                        tag = img.get("Tag", "")[:14]
+                        print(f"  {svc:<25} {repo:<40} {tag:<15}")
+                except (json.JSONDecodeError, TypeError):
+                    result = run_cmd("docker compose images 2>/dev/null")
+                    print(result)
+            print(f"\n{yellow('Dry-run mode:')} No changes made.")
+            print("Run 'update' without --check to pull images.")
+            return
 
-        # Step 2: Run database migrations
-        if run_migrations:
-            print(f"\n{blue('==>')} Running database migrations...")
+        print(f"\n{blue('==>')} Pulling latest Docker images...")
+        result = run_cmd("docker compose pull 2>&1")
+        if result:
+            lines = result.strip().split('\n')
+            for line in lines[-15:]:
+                print(f"  {line}")
+        print(green("✓ Images updated"))
 
-            # Check if alembic is available
-            alembic_check = run_cmd("which alembic 2>/dev/null")
-            if not alembic_check:
-                print(yellow("! Alembic not found. Install with: pip3 install alembic mysqlclient PyMySQL"))
-                print(yellow("  Skipping database migrations."))
+        print(f"\n{blue('==>')} Checking database migrations...")
+        alembic_check = run_cmd("which alembic 2>/dev/null")
+        if not alembic_check:
+            print(yellow("  ! Alembic not found. Skipping migrations."))
+        else:
+            db_check = run_cmd("docker exec voipbin-db mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
+            if not db_check:
+                print(yellow("  ! Database not running. Skipping migrations."))
             else:
-                # Check if database is running
-                db_check = run_cmd("docker exec voipbin-db mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
-                if not db_check:
-                    print(yellow("! Database not running. Start services first with 'start'."))
-                    print(yellow("  Skipping database migrations."))
-                else:
-                    # Run migrations using init_database.sh
-                    script_path = os.path.join(project_dir, "scripts", "init_database.sh")
-                    if os.path.exists(script_path):
-                        print("  Running alembic migrations...")
-                        os.system(f"{script_path}")
-                        print(green("✓ Database migrations complete"))
-                    else:
-                        print(yellow("! init_database.sh not found"))
+                script_path = os.path.join(project_dir, "scripts", "init_database.sh")
+                if os.path.exists(script_path):
+                    print("  Running alembic migrations...")
+                    os.system(f"{script_path}")
+                    print(green("  ✓ Database migrations complete"))
 
-        # Step 3: Restart services if they were running
         running_services = run_cmd("docker compose ps -q 2>/dev/null")
-        if running_services and pull_images:
+        if running_services:
             print(f"\n{blue('==>')} Restarting services with new images...")
             run_cmd("docker compose up -d 2>&1")
             print(green("✓ Services restarted"))
 
-        print(f"\n{bold('Update complete!')}")
+        print(f"\n{bold('Image update complete!')}")
+
+    def _update_scripts(self, project_dir, check_only=False):
+        """Update scripts and configs from GitHub"""
+        print(f"\n{bold('Script Update from GitHub')}")
+        print("=" * 50)
+
+        os.chdir(project_dir)
+
+        if not os.path.exists(".git"):
+            print(red("Error: Not a git repository."))
+            print("This command requires the sandbox to be cloned from GitHub.")
+            return
+
+        print(f"\n{blue('==>')} Fetching from remote...")
+        fetch_result = run_cmd("git fetch origin 2>&1")
+        if "error" in fetch_result.lower() or "fatal" in fetch_result.lower():
+            print(red(f"  Error fetching: {fetch_result}"))
+            return
+        print(green("  ✓ Fetched latest"))
+
+        current_branch = run_cmd("git rev-parse --abbrev-ref HEAD")
+        print(f"  Current branch: {current_branch}")
+
+        status = run_cmd("git status --porcelain")
+        local_changes = [line for line in status.split('\n') if line.strip()] if status else []
+
+        significant_changes = []
+        for change in local_changes:
+            file_path = change[3:] if len(change) > 3 else change
+            is_protected = any(file_path.startswith(p.rstrip('/')) for p in PROTECTED_PATHS)
+            if not is_protected:
+                significant_changes.append(change)
+
+        if significant_changes:
+            print(f"\n{yellow('Local changes detected:')}")
+            for change in significant_changes[:10]:
+                print(f"  {change}")
+            if len(significant_changes) > 10:
+                print(f"  ... and {len(significant_changes) - 10} more")
+
+        print(f"\n{blue('==>')} Checking for updates...")
+        diff_stat = run_cmd(f"git diff HEAD..origin/{current_branch} --stat 2>/dev/null")
+
+        if not diff_stat:
+            print(green("  Already up to date!"))
+            return
+
+        print(f"\n{yellow('Changes available:')}")
+        for line in diff_stat.split('\n')[-20:]:
+            print(f"  {line}")
+
+        print(f"\n{blue('==>')} Changes in tracked files:")
+        for tracked in TRACKED_PATHS:
+            diff = run_cmd(f"git diff HEAD..origin/{current_branch} --stat -- {tracked} 2>/dev/null")
+            if diff:
+                print(f"  {tracked}:")
+                for line in diff.split('\n')[:5]:
+                    if line.strip():
+                        print(f"    {line}")
+
+        if check_only:
+            print(f"\n{yellow('Dry-run mode:')} No changes made.")
+            print("Run 'update scripts' without --check to apply updates.")
+            return
+
+        backup_path = self._create_backup(project_dir, significant_changes)
+        if backup_path:
+            print(f"\n{green('✓')} Backup created: {backup_path}")
+
+        stashed = False
+        if significant_changes:
+            print(f"\n{blue('==>')} Stashing local changes...")
+            stash_result = run_cmd("git stash push -m 'voipbin-cli auto-stash before update'")
+            if "No local changes" not in stash_result:
+                stashed = True
+                print(green("  ✓ Changes stashed"))
+
+        print(f"\n{blue('==>')} Pulling updates...")
+        pull_result = run_cmd(f"git pull origin {current_branch} 2>&1")
+        if "error" in pull_result.lower() or "fatal" in pull_result.lower():
+            print(red(f"  Error: {pull_result}"))
+            if stashed:
+                print(f"\n{blue('==>')} Restoring stashed changes...")
+                run_cmd("git stash pop")
+            return
+
+        print(green("  ✓ Updated successfully"))
+
+        if stashed:
+            print(f"\n{blue('==>')} Restoring local changes...")
+            pop_result = run_cmd("git stash pop 2>&1")
+            if "CONFLICT" in pop_result:
+                print(yellow("  ! Merge conflicts detected. Please resolve manually."))
+                print(f"  Run 'git status' to see conflicts.")
+            else:
+                print(green("  ✓ Local changes restored"))
+
+        self._cleanup_old_backups(project_dir)
+
+        print(f"\n{bold('Script update complete!')}")
         print("Run 'status' to check service status.")
+
+    def _create_backup(self, project_dir, changed_files):
+        """Create a backup of modified files before updating"""
+        if not changed_files:
+            return None
+
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        backup_path = os.path.join(project_dir, BACKUP_DIR, timestamp)
+
+        try:
+            os.makedirs(backup_path, exist_ok=True)
+
+            manifest = {
+                "timestamp": timestamp,
+                "reason": "update scripts",
+                "files": []
+            }
+
+            for change in changed_files:
+                if len(change) < 4:
+                    continue
+                status = change[:2]
+                file_path = change[3:]
+
+                src_path = os.path.join(project_dir, file_path)
+                if not os.path.exists(src_path):
+                    continue
+
+                dst_path = os.path.join(backup_path, file_path)
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+
+                if os.path.isfile(src_path):
+                    shutil.copy2(src_path, dst_path)
+                    manifest["files"].append({
+                        "path": file_path,
+                        "status": status.strip(),
+                    })
+
+            manifest_path = os.path.join(backup_path, "manifest.json")
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            return backup_path
+
+        except Exception as e:
+            print(yellow(f"  Warning: Could not create backup: {e}"))
+            return None
+
+    def _cleanup_old_backups(self, project_dir):
+        """Keep only the last MAX_BACKUPS backups"""
+        backup_base = os.path.join(project_dir, BACKUP_DIR)
+        if not os.path.exists(backup_base):
+            return
+
+        backups = sorted([
+            d for d in os.listdir(backup_base)
+            if os.path.isdir(os.path.join(backup_base, d))
+        ], reverse=True)
+
+        for old_backup in backups[MAX_BACKUPS:]:
+            old_path = os.path.join(backup_base, old_backup)
+            try:
+                shutil.rmtree(old_path)
+                print(f"  Removed old backup: {old_backup}")
+            except Exception as e:
+                print(yellow(f"  Warning: Could not remove {old_backup}: {e}"))
+
+    def cmd_rollback(self, args):
+        """Rollback scripts to a previous backup"""
+        project_dir = self.config.get("project_dir", ".")
+        backup_base = os.path.join(project_dir, BACKUP_DIR)
+
+        if "--list" in args or "list" in args:
+            self._list_backups(backup_base)
+            return
+
+        if not os.path.exists(backup_base):
+            print(red("No backups found."))
+            print("Backups are created automatically when running 'update scripts'.")
+            return
+
+        backups = sorted([
+            d for d in os.listdir(backup_base)
+            if os.path.isdir(os.path.join(backup_base, d))
+        ], reverse=True)
+
+        if not backups:
+            print(red("No backups found."))
+            return
+
+        target_backup = None
+        remaining_args = [a for a in args if a not in ("--list", "list")]
+
+        if remaining_args:
+            target = remaining_args[0]
+            if target in backups:
+                target_backup = target
+            else:
+                matches = [b for b in backups if b.startswith(target)]
+                if len(matches) == 1:
+                    target_backup = matches[0]
+                elif len(matches) > 1:
+                    print(f"{yellow('Multiple matches:')} {', '.join(matches)}")
+                    print("Please be more specific.")
+                    return
+                else:
+                    print(f"{red('Backup not found:')} {target}")
+                    self._list_backups(backup_base)
+                    return
+        else:
+            target_backup = backups[0]
+
+        backup_path = os.path.join(backup_base, target_backup)
+        manifest_path = os.path.join(backup_path, "manifest.json")
+
+        if not os.path.exists(manifest_path):
+            print(red(f"Invalid backup (no manifest): {target_backup}"))
+            return
+
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+
+        print(f"\n{bold('Rollback to:')} {target_backup}")
+        print("=" * 50)
+        print(f"  Reason: {manifest.get('reason', 'unknown')}")
+        print(f"  Files: {len(manifest.get('files', []))}")
+
+        if not manifest.get("files"):
+            print(yellow("\nNo files to restore."))
+            return
+
+        print(f"\n{yellow('Files to restore:')}")
+        for file_info in manifest["files"]:
+            print(f"  {file_info['path']}")
+
+        print(f"\n{yellow('This will overwrite current files.')}")
+        confirm = input("Continue? [y/N]: ").strip().lower()
+        if confirm != "y":
+            print("Cancelled.")
+            return
+
+        print(f"\n{blue('==>')} Restoring files...")
+        restored = 0
+        for file_info in manifest["files"]:
+            src_path = os.path.join(backup_path, file_info["path"])
+            dst_path = os.path.join(project_dir, file_info["path"])
+
+            if not os.path.exists(src_path):
+                print(yellow(f"  ! Missing: {file_info['path']}"))
+                continue
+
+            try:
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                print(f"  {green('✓')} {file_info['path']}")
+                restored += 1
+            except Exception as e:
+                print(f"  {red('✗')} {file_info['path']}: {e}")
+
+        print(f"\n{bold('Rollback complete!')} Restored {restored} file(s).")
+
+    def _list_backups(self, backup_base):
+        """List available backups"""
+        print(f"\n{bold('Available Backups')}")
+        print("=" * 50)
+
+        if not os.path.exists(backup_base):
+            print("  No backups found.")
+            return
+
+        backups = sorted([
+            d for d in os.listdir(backup_base)
+            if os.path.isdir(os.path.join(backup_base, d))
+        ], reverse=True)
+
+        if not backups:
+            print("  No backups found.")
+            return
+
+        for i, backup in enumerate(backups):
+            manifest_path = os.path.join(backup_base, backup, "manifest.json")
+            label = " (latest)" if i == 0 else ""
+
+            if os.path.exists(manifest_path):
+                with open(manifest_path, "r") as f:
+                    manifest = json.load(f)
+                file_count = len(manifest.get("files", []))
+                reason = manifest.get("reason", "")
+                print(f"  {backup}{label} - {file_count} file(s) - {reason}")
+            else:
+                print(f"  {backup}{label} - (no manifest)")
+
+        print(f"\nUsage: rollback [timestamp]")
+        print("  rollback             Restore from latest backup")
+        print("  rollback 2026-01-27  Restore from specific backup")
 
     def cmd_exit(self, args):
         """Exit CLI"""
@@ -3198,6 +3567,20 @@ class Completer:
                 "tm.stats", "sl.stats", "core.version",
             ]
             return [c for c in kam_cmds if c.startswith(text)]
+
+        if cmd == "update":
+            subcmds = ["scripts", "all", "--check"]
+            if len(parts) >= 2 and parts[1] in ("scripts", "all"):
+                return ["--check "] if "--check".startswith(text) else []
+            return [s + " " for s in subcmds if s.startswith(text)]
+
+        if cmd == "rollback":
+            subcmds = ["--list"]
+            return [s + " " for s in subcmds if s.startswith(text)]
+
+        if cmd == "clean":
+            subcmds = ["--containers", "--volumes", "--images", "--network", "--dns", "--purge", "--all"]
+            return [s + " " for s in subcmds if s.startswith(text)]
 
         return []
 
