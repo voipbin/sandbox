@@ -982,9 +982,9 @@ services:
       - api-manager
     environment:
       # Base hostname for API and WebSocket connections
-      # For local development: voipbin.test (default)
-      # For remote access: set BASE_HOSTNAME in .env to the server's IP/hostname
-      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
+      # For local development: voipbin.test:8443 (default, includes API port)
+      # For remote access: set BASE_HOSTNAME in .env to the server's IP/hostname:port
+      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test:8443}
 
   square-meet:
     image: voipbin/square-meet:latest
@@ -999,7 +999,7 @@ services:
     depends_on:
       - api-manager
     environment:
-      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
+      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test:8443}
 
   square-talk:
     image: voipbin/square-talk:latest
@@ -1014,7 +1014,7 @@ services:
     depends_on:
       - api-manager
     environment:
-      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
+      - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test:8443}
 
 volumes:
   db_data:

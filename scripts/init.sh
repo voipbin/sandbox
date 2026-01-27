@@ -292,10 +292,10 @@ RTPENGINE_EXTERNAL_IP=$RTPENGINE_EXTERNAL_IP
 # ==============================================================================
 # Admin Console Configuration
 # ==============================================================================
-# Base hostname for Admin Console API connections
-# Default: voipbin.test (for local browser access)
-# For remote access: set to server's IP or hostname (e.g., 192.168.1.100)
-BASE_HOSTNAME=voipbin.test
+# Base hostname for Admin Console API connections (includes port)
+# Default: voipbin.test:8443 (for local browser access)
+# For remote access: set to server's IP or hostname:port (e.g., 192.168.1.100:8443)
+BASE_HOSTNAME=voipbin.test:8443
 
 # Domain names for extension and trunk registration
 DOMAIN_NAME_EXTENSION=registrar.voipbin.test
