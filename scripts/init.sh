@@ -295,11 +295,15 @@ RTPENGINE_EXTERNAL_IP=$RTPENGINE_EXTERNAL_IP
 # Base hostname (used as fallback if per-service URLs not set)
 BASE_HOSTNAME=voipbin.test
 
-# Per-service URL overrides for local development
-# For remote access: set to server's IP/hostname with appropriate ports
-API_URL=https://api.voipbin.test:8443
+# Admin Console (square-admin) and Talk (square-talk) URLs
+API_URL=https://api.voipbin.test:8443/
 WEBSOCKET_URL=wss://api.voipbin.test:8443/v1.0/ws
+REGISTRAR_URL=wss://sip.voipbin.test:5066
 REGISTRAR_DOMAIN=registrar.voipbin.test
+
+# Meet (square-meet) URLs
+CONFERENCE_URL=wss://conference.voipbin.test
+CONFERENCE_DOMAIN=conference.voipbin.test
 
 # Domain names for extension and trunk registration
 DOMAIN_NAME_EXTENSION=registrar.voipbin.test

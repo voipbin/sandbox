@@ -984,7 +984,7 @@ services:
       # Base hostname (used as fallback if per-service URLs not set)
       - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
       # Per-service URL overrides for local development
-      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443}
+      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443/}
       - REACT_APP_WEBSOCKET_URL=${WEBSOCKET_URL:-wss://api.voipbin.test:8443/v1.0/ws}
       - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
 
@@ -1001,10 +1001,11 @@ services:
     depends_on:
       - api-manager
     environment:
+      # Base hostname (used as fallback if per-service URLs not set)
       - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
-      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443}
-      - REACT_APP_WEBSOCKET_URL=${WEBSOCKET_URL:-wss://api.voipbin.test:8443/v1.0/ws}
-      - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
+      # Per-service URL overrides for conference
+      - REACT_APP_CONFERENCE_URL=${CONFERENCE_URL:-wss://conference.voipbin.test}
+      - REACT_APP_CONFERENCE_DOMAIN=${CONFERENCE_DOMAIN:-conference.voipbin.test}
 
   square-talk:
     image: voipbin/square-talk:latest
@@ -1019,9 +1020,12 @@ services:
     depends_on:
       - api-manager
     environment:
+      # Base hostname (used as fallback if per-service URLs not set)
       - REACT_APP_BASE_HOSTNAME=${BASE_HOSTNAME:-voipbin.test}
-      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443}
+      # Per-service URL overrides for talk
+      - REACT_APP_API_URL=${API_URL:-https://api.voipbin.test:8443/}
       - REACT_APP_WEBSOCKET_URL=${WEBSOCKET_URL:-wss://api.voipbin.test:8443/v1.0/ws}
+      - REACT_APP_REGISTRAR_URL=${REGISTRAR_URL:-wss://sip.voipbin.test:5066}
       - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
 
 volumes:
