@@ -154,6 +154,21 @@ cat /etc/resolver/voipbin.test
 sudo ./scripts/setup-dns.sh
 ```
 
+### Configuring SIP Devices on Your Network
+
+SIP phones and softphones on your LAN can use the sandbox's DNS server to resolve `*.voipbin.test` domains:
+
+1. **Find your host IP** (shown in `.env` as `HOST_EXTERNAL_IP`, e.g., `192.168.45.152`)
+
+2. **Configure your SIP device's DNS** to point to that IP:
+   - DNS Server: `192.168.45.152` (your host IP)
+
+3. **Configure SIP registration:**
+   - SIP Server: `sip.voipbin.test` or `{customer_id}.registrar.voipbin.test`
+   - The device will resolve this to Kamailio's IP automatically
+
+This works because CoreDNS listens on the host's LAN IP, not just localhost.
+
 ### Removing DNS Configuration
 
 To completely remove the DNS configuration:
