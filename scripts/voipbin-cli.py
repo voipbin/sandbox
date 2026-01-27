@@ -1071,10 +1071,10 @@ Type 'help <command>' for detailed usage.
                 services[name] = status
 
         # Key services with endpoints (service_name: (label, endpoint, credentials))
-        # Web services resolve to Docker container IPs for direct access on standard ports
+        # Web services use Docker port mapping on HOST_IP
         endpoint_services = {
-            "admin": ("Admin Console", "http://admin.voipbin.test", "admin@localhost / admin@localhost"),
-            "api-mgr": ("API Manager", "https://api.voipbin.test", None),
+            "admin": ("Admin Console", "http://admin.voipbin.test:3003", None),
+            "api-mgr": ("API Manager", "https://api.voipbin.test:8443", None),
             "mq": ("RabbitMQ", "http://localhost:15672", "guest / guest"),
             "db": ("MySQL", "localhost:3306", "root / root_password"),
         }
@@ -1273,11 +1273,11 @@ Type 'help <command>' for detailed usage.
         else:
             print(f"  {red('○')} DNS Status: {red('CoreDNS not running')}")
 
-        print(f"\n  {bold('Web Services')} (resolve to Docker container IPs)")
-        print(f"    https://api.voipbin.test          API Manager")
-        print(f"    http://admin.voipbin.test         Admin Console")
-        print(f"    http://meet.voipbin.test          Meet")
-        print(f"    http://talk.voipbin.test          Talk")
+        print(f"\n  {bold('Web Services')} (Docker port mapping on {host_ip})")
+        print(f"    https://api.voipbin.test:8443     API Manager")
+        print(f"    http://admin.voipbin.test:3003    Admin Console")
+        print(f"    http://meet.voipbin.test:3004     Meet")
+        print(f"    http://talk.voipbin.test:3005     Talk")
 
         print(f"\n  {bold('SIP Services')} (Kamailio: {host_ip})")
         print(f"    sip.voipbin.test                  SIP proxy")
