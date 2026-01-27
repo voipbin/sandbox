@@ -91,6 +91,55 @@ Three SIP extensions are created automatically:
 
 Connect any SIP phone app to make test calls.
 
+## Connecting from Other Machines
+
+You can access VoIPBin from other computers, phones, or SIP devices on your network.
+
+### Step 1: Find the Host IP
+
+On the machine running VoIPBin:
+```
+voipbin> network status
+```
+
+Look for `Host IP` (e.g., `192.168.45.152`).
+
+### Step 2: Configure DNS
+
+On the other machine, set DNS to point to the VoIPBin host:
+
+**Option A: System-wide (recommended for dedicated devices)**
+- Set DNS Server to: `192.168.45.152` (the host IP)
+
+**Option B: Add to hosts file (for computers)**
+
+Linux/macOS (`/etc/hosts`) or Windows (`C:\Windows\System32\drivers\etc\hosts`):
+```
+192.168.45.152  api.voipbin.test
+192.168.45.152  admin.voipbin.test
+192.168.45.152  meet.voipbin.test
+192.168.45.152  talk.voipbin.test
+192.168.45.160  sip.voipbin.test
+```
+
+(Replace IPs with your actual `HOST_EXTERNAL_IP` and `KAMAILIO_EXTERNAL_IP` from `.env`)
+
+### Step 3: Access Services
+
+**Web Browser:**
+- Admin: http://admin.voipbin.test:3003
+- Meet: http://meet.voipbin.test:3004
+- Talk: http://talk.voipbin.test:3005
+
+**SIP Phones/Softphones:**
+- DNS Server: `192.168.45.152` (host IP)
+- SIP Server: `sip.voipbin.test`
+- Domain: `{customer_id}.registrar.voipbin.test`
+- Extensions: 1000, 2000, 3000
+- Passwords: pass1000, pass2000, pass3000
+
+The SIP phone will resolve `sip.voipbin.test` to Kamailio automatically.
+
 ## Common Commands
 
 Run `sudo ./voipbin` to enter interactive mode, then:
