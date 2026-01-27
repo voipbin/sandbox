@@ -1,7 +1,7 @@
 # VoIPBin Sandbox
 
 ```
-          ████████
+          ████████          
    ██████████████████████    __     __   ___ ____  ____  _
   ██                    ██   \ \   / /__|_ _|  _ \| __ )(_)_ __
  ██████████████████████████   \ \ / / _ \| || |_) |  _ \| | '_ \
@@ -9,281 +9,823 @@
   ██    ██   ██   ██    ██      \_/ \___/___|_|   |____/|_|_| |_|
   ██    ██   ██   ██    ██          Connect & Collaborate for all
   ██    ██   ██   ██    ██                S A N D B O X
-  ██    ██   ██   ██    ██
-   ██   ██   ██   ██   ██
-   ██████████████████████
+  ██    ██   ██   ██    ██  
+   ██   ██   ██   ██   ██   
+   ██████████████████████   
 ```
 
-Your all-in-one communication platform. Voice calls, video conferencing, messaging, and APIs - running on your own machine.
+**Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy 25+ microservices with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
 
-## What's Included
+### Why VoIPBin Sandbox?
 
-- **Admin Console** - Manage everything from your browser
-- **Meet** - Video conferencing and collaboration
-- **Talk** - Voice and messaging client
-- **SIP Integration** - Connect phones and softphones
-- **REST API** - Build your own communication apps
+- **AI Voice Agents** — Build conversational AI agents with OpenAI, Deepgram, ElevenLabs, and Cartesia
+- **Real-time Transcription** — Live speech-to-text during calls with AWS Transcribe or Google Speech
+- **Text-to-Speech** — Natural voice synthesis with multiple provider support
+- **Programmable Voice** — Visual flow builder for IVR, call routing, and automation
+- **Full VoIP Stack** — Production-grade SIP proxy, media servers, and conferencing
 
-## Getting Started
+---
 
-### Step 1: Install Requirements
+## Table of Contents
 
-**Ubuntu/Debian:**
+- [Technical Architecture](#technical-architecture)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Networking & DNS](#networking--dns)
+- [SSL Certificate Trust](#ssl-certificate-trust)
+- [The Interactive CLI](#the-interactive-cli)
+- [AI Voice Agents](#ai-voice-agents)
+- [Developer's Playground](#developers-playground)
+- [Service Reference](#service-reference)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Technical Architecture
+
+VoIPBin Sandbox orchestrates a microservices architecture with four core layers:
+
+| Layer | Components | Purpose |
+|-------|------------|---------|
+| **AI Engine** | Pipecat, AI Manager, Transcribe, TTS | Voice AI agents, real-time STT/TTS, LLM integration |
+| **SIP Edge** | Kamailio, RTPEngine | SIP signaling proxy, RTP media relay, NAT traversal |
+| **Media Servers** | Asterisk (Call, Registrar, Conference) | Call handling, SIP registration, conferencing |
+| **API & Managers** | 20+ backend services | REST API, call routing, billing, workflows |
+
+### Technology Stack
+
+| Category | Technology |
+|----------|------------|
+| **AI/LLM** | OpenAI GPT, Pipecat Framework |
+| **Speech-to-Text** | Deepgram, AWS Transcribe, Google Speech |
+| **Text-to-Speech** | ElevenLabs, Cartesia, AWS Polly |
+| SIP Proxy | Kamailio 5.x |
+| Media Server | Asterisk 20.x |
+| RTP Proxy | RTPEngine |
+| Database | MySQL 8.0 |
+| Message Queue | RabbitMQ 3.x |
+| Cache | Redis |
+| Frontend | React (Admin, Talk, Meet) |
+
+### Network Topology
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │           External Network              │
+                    │  HOST_IP:8443 (API)  KAMAILIO_IP:5060   │
+                    └────────────┬───────────────┬────────────┘
+                                 │               │
+                    ┌────────────▼───────────────▼────────────┐
+                    │         Docker Host (Linux/macOS)       │
+                    │  ┌─────────────────────────────────────┐│
+                    │  │   CoreDNS (*.voipbin.test → IPs)    ││
+                    │  └─────────────────────────────────────┘│
+                    │                                         │
+                    │  ┌──────────┐  ┌──────────┐  ┌────────┐ │
+                    │  │ Kamailio │  │RTPEngine │  │  API   │ │
+                    │  │ (host)   │  │  (host)  │  │Manager │ │
+                    │  └────┬─────┘  └────┬─────┘  └────────┘ │
+                    │       │             │                   │
+                    │  ┌────▼─────────────▼────────────────┐  │
+                    │  │     Docker Network (10.100.0.0/16)│  │
+                    │  │  ┌─────────┐ ┌─────────┐ ┌──────┐ │  │
+                    │  │  │Asterisk │ │Asterisk │ │ 20+  │ │  │
+                    │  │  │  Call   │ │Registrar│ │Mgrs  │ │  │
+                    │  │  └─────────┘ └─────────┘ └──────┘ │  │
+                    │  └───────────────────────────────────┘  │
+                    └─────────────────────────────────────────┘
+```
+
+---
+
+## Prerequisites
+
+### Ubuntu/Debian
+
 ```bash
-sudo apt install docker.io docker-compose python3-pip mkcert
+# Docker & Docker Compose
+sudo apt update && sudo apt install -y docker.io docker-compose-v2
+sudo usermod -aG docker $USER && newgrp docker
+
+# Python dependencies (for database migrations)
 pip3 install alembic mysqlclient PyMySQL
+
+# mkcert (for browser-trusted SSL certificates)
+sudo apt install -y mkcert
 mkcert -install
 ```
 
-**macOS:**
+### macOS
+
 ```bash
-brew install docker docker-compose python3 mkcert
+# Docker Desktop
+brew install --cask docker
+
+# Python dependencies
 pip3 install alembic mysqlclient PyMySQL
+
+# mkcert
+brew install mkcert
 mkcert -install
 ```
 
-### Step 2: Run VoIPBin
+> **Note:** The `mkcert -install` command adds a local Certificate Authority to your system trust store. This allows locally-generated certificates to be trusted by your browser without security warnings.
+
+---
+
+> **⚠️ SECURITY WARNING: Local Development Only**
+>
+> This sandbox uses **default credentials** for ease of development:
+>
+> | Service | Credentials |
+> |---------|-------------|
+> | MySQL | `root` / `root_password` |
+> | RabbitMQ | `guest` / `guest` |
+> | Admin Account | `admin@localhost` / `admin@localhost` |
+> | Extensions | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
+> | JWT Secret | Auto-generated in `.env` |
+>
+> **DO NOT expose this sandbox to the public internet.** All ports, credentials, and secrets are meant for local development only. For production deployments, use the official VoIPBin cloud service or contact us for on-premise licensing.
+
+---
+
+## Quick Start
+
+### Getting Started
 
 ```bash
 sudo ./voipbin
 ```
 
-This opens the interactive CLI. Follow the guided setup:
+This launches the **interactive CLI**. From there:
 
 ```
-voipbin> init      # First time: initialize configuration
-voipbin> start     # Start all services
-voipbin> status    # Check everything is running
+voipbin> init      # First time only: generate .env and certificates
+voipbin> start     # Start all 25+ services
 ```
 
-That's it! The CLI guides you through the entire process.
-
-## Using VoIPBin
-
-Everything is managed through the `voipbin` CLI:
+Or run commands directly:
 
 ```bash
+sudo ./voipbin init    # Initialize environment
+sudo ./voipbin start   # Start all services
+```
+
+The `start` command handles **everything** after initialization:
+
+1. Generates `.env` with auto-detected network settings
+2. Creates SSL certificates (browser-trusted if mkcert installed)
+3. Starts infrastructure (MySQL, Redis, RabbitMQ, CoreDNS)
+4. Runs database migrations
+5. Configures DNS resolution for `*.voipbin.test`
+6. Sets up VoIP network interfaces
+7. Starts all 25+ microservices
+8. Creates test account and extensions
+
+### What Gets Created
+
+| Resource | Value |
+|----------|-------|
+| **Admin Account** | `admin@localhost` / `admin@localhost` |
+| **Extension 1000** | Password: `pass1000` |
+| **Extension 2000** | Password: `pass2000` |
+| **Extension 3000** | Password: `pass3000` |
+| **Initial Balance** | $100,000.00 |
+
+### Interactive Shell Features
+
+The CLI provides a powerful interactive environment:
+
+- **Tab Completion** — Auto-complete commands and service names
+- **Command History** — Use arrow keys to navigate previous commands
+- **Context Modes** — Enter `ast`, `kam`, `db`, or `api` for specialized shells
+
+```
+voipbin> ast                        # Enter Asterisk context
+voipbin(asterisk)> pjsip show endpoints
+voipbin(asterisk)> exit             # Return to main shell
+
+voipbin> api                        # Enter API context
+voipbin(api)> login admin@localhost
+voipbin(api)> get /v1.0/extensions
+```
+
+---
+
+## Networking & DNS
+
+### Why `.voipbin.test`?
+
+VoIPBin uses the `.voipbin.test` domain (based on IANA reserved `.test` TLD per RFC 2606) instead of `localhost` for several critical reasons:
+
+- **SIP Routing**: Kamailio routes calls based on domain names
+- **Multi-tenant Support**: Customer domains like `{customer_id}.registrar.voipbin.test`
+- **TLS Certificates**: Valid certificates require proper domain names
+- **Browser Security**: WebRTC and secure contexts require proper hostnames
+
+### Domain Resolution Map
+
+| Domain | Resolves To | Purpose |
+|--------|-------------|---------|
+| `api.voipbin.test` | HOST_EXTERNAL_IP | REST API (port 8443) |
+| `admin.voipbin.test` | HOST_EXTERNAL_IP | Admin Console (port 3003) |
+| `meet.voipbin.test` | HOST_EXTERNAL_IP | Video Conferencing (port 3004) |
+| `talk.voipbin.test` | HOST_EXTERNAL_IP | Voice Client (port 3005) |
+| `sip.voipbin.test` | KAMAILIO_EXTERNAL_IP | SIP Proxy (port 5060) |
+| `*.registrar.voipbin.test` | KAMAILIO_EXTERNAL_IP | SIP Registration |
+| `trunk.voipbin.test` | KAMAILIO_EXTERNAL_IP | SIP Trunking |
+| `pstn.voipbin.test` | KAMAILIO_EXTERNAL_IP | PSTN Gateway |
+
+### Automatic DNS Setup
+
+The CLI automatically configures DNS forwarding to CoreDNS:
+
+```bash
+# Check DNS status
+sudo ./voipbin dns status
+
+# Test domain resolution
+sudo ./voipbin dns test
+
+# Regenerate DNS configuration
+sudo ./voipbin dns regenerate
+```
+
+**Linux**: Modifies `/etc/resolv.conf` to use `127.0.0.1` (CoreDNS)
+**macOS**: Creates `/etc/resolver/voipbin.test` for selective forwarding
+
+### Manual Host Mapping (Alternative)
+
+If you prefer not to modify system DNS, add these entries to your hosts file:
+
+**Linux/macOS**: `/etc/hosts`
+**Windows**: `C:\Windows\System32\drivers\etc\hosts`
+
+```
+# VoIPBin Sandbox - Web Services (replace with your HOST_EXTERNAL_IP)
+192.168.1.100  api.voipbin.test
+192.168.1.100  admin.voipbin.test
+192.168.1.100  meet.voipbin.test
+192.168.1.100  talk.voipbin.test
+
+# VoIPBin Sandbox - SIP Services (replace with your KAMAILIO_EXTERNAL_IP)
+192.168.1.108  sip.voipbin.test
+192.168.1.108  pstn.voipbin.test
+192.168.1.108  trunk.voipbin.test
+```
+
+> **Tip:** Find your actual IPs with `sudo ./voipbin network status`
+
+### Connecting SIP Devices on Your LAN
+
+SIP phones and softphones on your network can use the sandbox's DNS:
+
+1. Find your host IP: `sudo ./voipbin network status` (look for `Host IP`)
+2. Configure your SIP device's DNS server to point to the host IP
+3. Register to: `sip.voipbin.test` or `{customer_id}.registrar.voipbin.test`
+
+---
+
+## SSL Certificate Trust
+
+### Browser-Trusted Certificates (Recommended)
+
+If `mkcert` is installed before initialization, all certificates are automatically trusted by your browser:
+
+```bash
+# Install mkcert and its CA
+sudo apt install mkcert   # Ubuntu/Debian
+brew install mkcert       # macOS
+
+mkcert -install
+
+# Verify CA is installed
+sudo ./voipbin certs status
+```
+
+### Self-Signed Certificate Workaround
+
+If using self-signed certificates, browsers block API requests silently. **You must manually accept the API certificate first**:
+
+1. Open a new browser tab: `https://api.voipbin.test:8443`
+2. Click **Advanced** → **Proceed to api.voipbin.test (unsafe)**
+3. Now access `http://admin.voipbin.test:3003` — login will work
+
+> **Why?** Browser fetch/XHR requests don't show certificate prompts — they fail silently with `ERR_CERT_AUTHORITY_INVALID`.
+
+### Regenerate Certificates
+
+```bash
+# Check current certificate status
+sudo ./voipbin certs status
+
+# Trust mkcert CA (if not already trusted)
+sudo ./voipbin certs trust
+
+# Regenerate certificates (delete certs/ and reinitialize)
+rm -rf certs/
+sudo ./voipbin init
+```
+
+---
+
+## The Interactive CLI
+
+The `voipbin` CLI is your command center for the entire sandbox. It provides an interactive shell with context-aware commands, tab completion, and history.
+
+```bash
+# Launch interactive mode
 sudo ./voipbin
+
+# Or run single commands
+sudo ./voipbin status
+sudo ./voipbin logs -f api-manager
 ```
 
-### Web Access
+### Command Categories
 
-After starting, open these in your browser:
+#### Service Control
 
-| Service | Address |
-|---------|---------|
-| Admin Console | http://admin.voipbin.test:3003 |
-| Meet | http://meet.voipbin.test:3004 |
-| Talk | http://talk.voipbin.test:3005 |
+| Command | Description |
+|---------|-------------|
+| `start [service]` | Start all services or a specific service |
+| `stop [service] [--all]` | Stop services (keeps infrastructure by default) |
+| `restart [service]` | Restart all or specific service |
+| `status` / `ps` | Display service status with endpoints |
+| `logs [-f] <service>` | View service logs (`-f` for follow mode) |
 
-**First time login:**
-- Username: `admin@localhost`
-- Password: `admin@localhost`
+#### Debug Shells
 
-**Certificate warning?** Visit https://api.voipbin.test:8443 first and accept the certificate.
+| Command | Context | Description |
+|---------|---------|-------------|
+| `ast` | Asterisk CLI | Enter Asterisk console for call debugging |
+| `kam` | Kamailio kamcmd | Enter Kamailio command interface |
+| `db` / `mysql` | MySQL | Execute SQL queries directly |
+| `api` | REST Client | Make authenticated API requests |
 
-### Test Extensions
+**Example: Asterisk Debugging**
 
-Three SIP extensions are created automatically:
-- 1000 (password: pass1000)
-- 2000 (password: pass2000)
-- 3000 (password: pass3000)
-
-Connect any SIP phone app to make test calls.
-
-## Connecting from Other Machines
-
-You can access VoIPBin from other computers, phones, or SIP devices on your network.
-
-### Step 1: Find the Host IP
-
-On the machine running VoIPBin:
-```
-voipbin> network status
+```bash
+voipbin> ast
+voipbin(asterisk)> pjsip show endpoints
+voipbin(asterisk)> core show channels
+voipbin(asterisk)> exit
+voipbin>
 ```
 
-Look for `Host IP` (e.g., `192.168.45.152`).
+**Example: API Requests**
 
-### Step 2: Configure DNS
-
-On the other machine, set DNS to point to the VoIPBin host:
-
-**Option A: System-wide (recommended for dedicated devices)**
-- Set DNS Server to: `192.168.45.152` (the host IP)
-
-**Option B: Add to hosts file (for computers)**
-
-Linux/macOS (`/etc/hosts`) or Windows (`C:\Windows\System32\drivers\etc\hosts`):
-```
-192.168.45.152  api.voipbin.test
-192.168.45.152  admin.voipbin.test
-192.168.45.152  meet.voipbin.test
-192.168.45.152  talk.voipbin.test
-192.168.45.160  sip.voipbin.test
+```bash
+voipbin> api
+voipbin(api)> login admin@localhost
+voipbin(api)> get /v1.0/extensions
+voipbin(api)> post /v1.0/extensions {"extension": "5000", "password": "secret"}
+voipbin(api)> exit
 ```
 
-(Replace IPs with your actual `HOST_EXTERNAL_IP` and `KAMAILIO_EXTERNAL_IP` from `.env`)
+#### Extension Management
 
-### Step 3: Access Services
+| Command | Description |
+|---------|-------------|
+| `ext list` | List all extensions |
+| `ext create <ext> <pass> [name]` | Create new extension |
+| `ext delete <id>` | Delete extension by ID |
 
-**Web Browser:**
-- Admin: http://admin.voipbin.test:3003
-- Meet: http://meet.voipbin.test:3004
-- Talk: http://talk.voipbin.test:3005
+#### Infrastructure Management
 
-**SIP Phones/Softphones:**
-- DNS Server: `192.168.45.152` (host IP)
-- SIP Server: `sip.voipbin.test`
-- Domain: `{customer_id}.registrar.voipbin.test`
-- Extensions: 1000, 2000, 3000
-- Passwords: pass1000, pass2000, pass3000
+| Command | Description |
+|---------|-------------|
+| `dns status` | Check DNS configuration |
+| `dns test` | Test domain resolution |
+| `dns setup` | Configure DNS forwarding |
+| `network status` | Show network configuration |
+| `network setup` | Create VoIP network interfaces |
+| `certs status` | Check SSL certificate status |
+| `certs trust` | Install mkcert CA |
 
-The SIP phone will resolve `sip.voipbin.test` to Kamailio automatically.
+#### Sidecar Management Commands
 
-## Common Commands
+These commands use manager container CLIs for direct resource management:
 
-Run `sudo ./voipbin` to enter interactive mode, then:
+| Command | Description |
+|---------|-------------|
+| `customer list/create/get/delete` | Customer management |
+| `agent list/create/get/delete` | Agent management |
+| `billing account list/create/add-balance` | Billing accounts |
+| `number list/create/register` | Phone number management |
+| `registrar extension/trunk` | SIP registration management |
 
-### Setup and Control
+#### Maintenance
 
-```
-voipbin> init                  # Initialize (first time setup)
-voipbin> start                 # Start all services
-voipbin> stop                  # Stop all services
-voipbin> restart               # Restart all services
-voipbin> status                # Check what's running
-```
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize sandbox (generate .env, certs) |
+| `update [images/scripts/all]` | Update Docker images or scripts |
+| `update --check` | Dry-run to preview updates |
+| `rollback [timestamp]` | Rollback to previous backup |
+| `clean [options]` | Cleanup sandbox resources |
+| `config [key] [value]` | View/set CLI configuration |
 
-### View Logs
+### Configuration
 
-```
-voipbin> logs api-manager      # View service logs
-voipbin> logs -f kamailio      # Follow logs in real-time
-```
+The CLI stores settings in `~/.voipbin-cli.conf`:
 
-### Manage Data
-
-```
-voipbin> customer list                    # List customers
-voipbin> registrar extension list         # List extensions
-voipbin> billing account list             # View billing
-```
-
-### Update and Maintenance
-
-```
-voipbin> update                # Update to latest version
-voipbin> update --check        # Check for updates
-voipbin> rollback              # Rollback to previous version
-voipbin> rollback --list       # List available backups
+```bash
+voipbin> config                    # Show all settings
+voipbin> config log_lines 100      # Set log lines to 100
+voipbin> config reset              # Reset to defaults
 ```
 
-### Network and DNS
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `api_host` | localhost | API hostname |
+| `api_port` | 8443 | API port |
+| `log_lines` | 50 | Number of log lines to display |
+| `colors` | True | Enable colored output |
+| `asterisk_container` | voipbin-ast-call | Default Asterisk container |
+
+---
+
+## AI Voice Agents
+
+VoIPBin Sandbox includes a complete AI voice agent framework powered by **Pipecat** — enabling you to build conversational AI experiences over phone calls.
+
+### Architecture
 
 ```
-voipbin> network status        # Check network
-voipbin> dns status            # Check DNS
-voipbin> dns test              # Test domain resolution
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Incoming   │     │   Pipecat   │     │    LLM      │
+│    Call     │────▶│   Manager   │────▶│  (OpenAI)   │
+└─────────────┘     └──────┬──────┘     └─────────────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+        ┌──────────┐ ┌──────────┐ ┌───────────┐
+        │   STT    │ │   TTS    │ │ Transcribe│
+        │(Deepgram)│ │(Eleven-  │ │  Manager  │
+        │          │ │  Labs)   │ │           │
+        └──────────┘ └──────────┘ └───────────┘
 ```
 
-### Cleanup
+### Supported AI Providers
 
+| Capability | Providers |
+|------------|-----------|
+| **LLM / Conversation** | OpenAI GPT-4, GPT-3.5 |
+| **Speech-to-Text** | Deepgram, AWS Transcribe, Google Speech-to-Text |
+| **Text-to-Speech** | ElevenLabs, Cartesia, AWS Polly |
+| **Voice Cloning** | ElevenLabs |
+
+### Configuration
+
+Add your API keys to `.env` to enable AI features:
+
+```bash
+# LLM (Required for AI agents)
+OPENAI_API_KEY=sk-...
+
+# Speech-to-Text (choose one or more)
+DEEPGRAM_API_KEY=...
+AWS_ACCESS_KEY=...
+AWS_SECRET_KEY=...
+
+# Text-to-Speech (choose one or more)
+ELEVENLABS_API_KEY=...
+CARTESIA_API_KEY=...
 ```
-voipbin> clean --containers    # Remove containers (keep data)
-voipbin> clean --volumes       # Reset database
-voipbin> clean --all           # Complete reset
+
+Restart the AI services after configuration:
+
+```bash
+sudo ./voipbin restart ai-manager
+sudo ./voipbin restart pipecat-manager
+sudo ./voipbin restart transcribe-manager
+sudo ./voipbin restart tts-manager
 ```
 
-## Uninstall
+### AI Manager Services
 
-To completely remove VoIPBin Sandbox:
+| Service | Container | Purpose |
+|---------|-----------|---------|
+| `ai-manager` | voipbin-ai-mgr | LLM integration, chatbot logic |
+| `pipecat-manager` | voipbin-pipecat-mgr | Real-time voice AI pipeline orchestration |
+| `transcribe-manager` | voipbin-transcribe-mgr | Speech-to-text processing |
+| `tts-manager` | voipbin-tts-mgr | Text-to-speech synthesis |
 
+### Use Cases
+
+- **AI Receptionist** — Answer calls, understand intent, route to the right department
+- **Voice Assistants** — Natural conversations with customers using LLM
+- **Call Transcription** — Real-time or post-call transcription for analytics
+- **IVR Replacement** — Replace touch-tone menus with natural language
+- **Outbound Campaigns** — AI-powered calling for surveys, reminders, notifications
+
+---
+
+## Developer's Playground
+
+### REST API Access
+
+The API Manager exposes a full REST API at `https://api.voipbin.test:8443`.
+
+**Authentication:**
+
+```bash
+# Login and get JWT token
+curl -sk -X POST https://api.voipbin.test:8443/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin@localhost", "password": "admin@localhost"}'
+
+# Response: {"token": "eyJhbGciOiJIUzI1NiIs..."}
 ```
-voipbin> stop
-voipbin> clean --all
+
+**API Examples:**
+
+```bash
+TOKEN="your-jwt-token"
+
+# List extensions
+curl -sk https://api.voipbin.test:8443/v1.0/extensions \
+  -H "Authorization: Bearer $TOKEN"
+
+# Create extension
+curl -sk -X POST https://api.voipbin.test:8443/v1.0/extensions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"extension": "4000", "password": "pass4000", "name": "Extension 4000"}'
+
+# Get customer info
+curl -sk https://api.voipbin.test:8443/v1.0/customer \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-This stops all services, removes data, and cleans up network settings.
+### SIP Testing Workflow
+
+#### 1. Verify Extensions Are Registered
+
+```bash
+voipbin> ast pjsip show endpoints
+```
+
+#### 2. Register a Softphone
+
+Configure your SIP client with:
+
+| Setting | Value |
+|---------|-------|
+| **Username** | `1000` (or 2000, 3000) |
+| **Password** | `pass1000` (or pass2000, pass3000) |
+| **Domain** | `{customer_id}.registrar.voipbin.test` |
+| **Proxy** | `sip.voipbin.test:5060` |
+
+> **Tip:** Get your customer_id with `voipbin> api get /v1.0/customer`
+
+#### 3. Verify Registration
+
+```bash
+# Check Asterisk registrations
+voipbin> ast pjsip show contacts
+
+# Check Kamailio location table
+voipbin> kam ul.dump
+```
+
+#### 4. Make a Test Call
+
+From extension 1000, dial `2000`. Monitor the call:
+
+```bash
+# Watch Kamailio logs
+voipbin> logs -f kamailio
+
+# Watch Asterisk call events
+voipbin> ast core show channels
+```
+
+### Enabling External Integrations
+
+Add API keys to your `.env` file to enable telephony and messaging features:
+
+```bash
+# Telephony Providers (for PSTN connectivity)
+TWILIO_SID=AC...
+TWILIO_API_KEY=SK...
+TELNYX_API_KEY=KEY...
+
+# Email Providers
+SENDGRID_API_KEY=SG...
+MAILGUN_API_KEY=...
+```
+
+> **Tip:** For AI configuration (OpenAI, Deepgram, ElevenLabs), see the [AI Voice Agents](#ai-voice-agents) section.
+
+### Web Interfaces
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Admin Console** | http://admin.voipbin.test:3003 | admin@localhost / admin@localhost |
+| **Talk (Voice Client)** | http://talk.voipbin.test:3005 | admin@localhost / admin@localhost |
+| **Meet (Conferencing)** | http://meet.voipbin.test:3004 | admin@localhost / admin@localhost |
+| **RabbitMQ Management** | http://localhost:15672 | guest / guest |
+
+---
+
+## Service Reference
+
+### Infrastructure Services
+
+| Service | Container | Ports | Purpose |
+|---------|-----------|-------|---------|
+| `db` | voipbin-db | 3306 | MySQL database |
+| `redis` | voipbin-redis | 6379 | Cache and sessions |
+| `rabbitmq` | voipbin-mq | 5672, 15672 | Message broker |
+| `coredns` | voipbin-dns | 53 | DNS server for *.voipbin.test |
+
+### SIP/VoIP Stack
+
+| Service | Container | Network | Purpose |
+|---------|-----------|---------|---------|
+| `kamailio` | voipbin-kamailio | host (5060) | SIP proxy and routing |
+| `rtpengine` | voipbin-rtpengine | host (20000-30000) | RTP media proxy |
+| `asterisk-call` | voipbin-ast-call | 10.100.0.210 | Call handling |
+| `asterisk-registrar` | voipbin-ast-registrar | 10.100.0.211 | SIP registration |
+| `asterisk-conference` | voipbin-ast-conf | 10.100.0.212 | Conferencing |
+
+### Backend Managers
+
+All managers connect to MySQL, Redis, and RabbitMQ. Key services:
+
+| Service | Container | Purpose |
+|---------|-----------|---------|
+| `api-manager` | voipbin-api-mgr | REST API gateway (port 8443) |
+| `call-manager` | voipbin-call-mgr | Call routing and control |
+| `customer-manager` | voipbin-customer-mgr | Customer and extension management |
+| `flow-manager` | voipbin-flow-mgr | Workflow execution engine |
+| `billing-manager` | voipbin-billing-mgr | Usage tracking and billing |
+| `registrar-manager` | voipbin-registrar-mgr | SIP registration management |
+| `ai-manager` | voipbin-ai-mgr | AI/chatbot features |
+| `transcribe-manager` | voipbin-transcribe-mgr | Speech-to-text |
+| `talk-manager` | voipbin-talk-mgr | Talk app backend |
+
+### Frontend Services
+
+| Service | Container | Port | Purpose |
+|---------|-----------|------|---------|
+| `square-admin` | voipbin-admin | 3003 | Admin dashboard |
+| `square-meet` | voipbin-meet | 3004 | Video conferencing |
+| `square-talk` | voipbin-talk | 3005 | Voice client |
+
+---
 
 ## Troubleshooting
 
-### Can't access the web interface?
+### Quick Diagnostics
 
-```
-voipbin> dns status            # Check if DNS is working
-voipbin> dns setup             # Fix DNS if needed
-```
-
-### Services not starting?
-
-```
-voipbin> status                # Check which services are running
-voipbin> logs <service>        # Check logs for errors
-voipbin> restart               # Try restarting
-```
-
-### Need a fresh start?
-
-```
-voipbin> stop
-voipbin> clean --all
-voipbin> init
-voipbin> start
-```
-
-### Get Help
-
-```
-voipbin> help                  # See all commands
-voipbin> help <command>        # Help for specific command
-```
-
-## Optional Features
-
-Edit `.env` to enable additional capabilities:
-
-| Feature | What to Add |
-|---------|-------------|
-| AI Assistant | `OPENAI_API_KEY=your-key` |
-| Phone Numbers | `TWILIO_SID` and `TWILIO_API_KEY` |
-| Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS=path/to/file.json` |
-| Email | `SENDGRID_API_KEY=your-key` |
-
-Core features work without any API keys.
-
-## For Developers
-
-### API Access
-
-```
-voipbin> api                   # Enter API mode
-api> get /v1.0/extensions      # Make API calls
-```
-
-Or use curl:
 ```bash
-curl -sk https://api.voipbin.test:8443/v1.0/extensions \
-  -H "Authorization: Bearer YOUR_TOKEN"
+# Check overall status
+sudo ./voipbin status
+
+# Check DNS resolution
+sudo ./voipbin dns test
+
+# Check network configuration
+sudo ./voipbin network status
+
+# Check certificate status
+sudo ./voipbin certs status
 ```
 
-### Database Access
+### Common Issues
 
+#### Services Won't Start
+
+```bash
+# Check Docker is running
+docker info
+
+# Check for port conflicts
+sudo lsof -i :5060    # SIP
+sudo lsof -i :8443    # API
+sudo lsof -i :3306    # MySQL
+
+# View service logs
+sudo ./voipbin logs api-manager
 ```
-voipbin> db                    # Enter database mode
-db> SELECT * FROM extensions LIMIT 5
+
+#### DNS Not Resolving
+
+```bash
+# Test DNS directly via CoreDNS
+dig @127.0.0.1 api.voipbin.test
+
+# Check resolv.conf (Linux)
+cat /etc/resolv.conf    # Should show nameserver 127.0.0.1
+
+# Check resolver (macOS)
+cat /etc/resolver/voipbin.test
+
+# Regenerate DNS configuration
+sudo ./voipbin dns setup
 ```
 
-### VoIP CLI
+#### SIP Registration Fails
 
+```bash
+# Check Kamailio is receiving requests
+sudo ./voipbin logs -f kamailio
+
+# Verify Asterisk endpoints
+voipbin> ast pjsip show endpoints
+
+# Check the registrar domain format
+# Should be: {customer_id}.registrar.voipbin.test
+voipbin> api get /v1.0/customer
 ```
-voipbin> ast                   # Asterisk CLI
-voipbin> kam                   # Kamailio CLI
+
+#### API Returns 401 Unauthorized
+
+```bash
+# Login to get fresh token
+voipbin> api
+voipbin(api)> login admin@localhost
 ```
 
-## More Information
+#### Browser Shows Certificate Error
 
-For detailed technical documentation, see [CLAUDE.md](CLAUDE.md).
+```bash
+# Check if mkcert CA is installed
+mkcert -check
+
+# If not installed:
+mkcert -install
+
+# Regenerate certificates
+rm -rf certs/
+sudo ./voipbin init
+sudo ./voipbin restart api-manager
+```
+
+### Reset Everything
+
+```bash
+# Stop all services and remove volumes
+sudo ./voipbin stop --all
+sudo ./voipbin clean --all
+
+# Reinitialize from scratch
+sudo ./voipbin init
+sudo ./voipbin start
+```
+
+### Getting Help
+
+```bash
+# CLI help
+sudo ./voipbin help
+sudo ./voipbin help <command>
+
+# View all available commands
+sudo ./voipbin ?
+```
+
+---
+
+## Environment Variables Reference
+
+### Core Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST_EXTERNAL_IP` | Auto-detected | Host's LAN IP address |
+| `KAMAILIO_EXTERNAL_IP` | Auto-generated | Kamailio's dedicated IP (must differ from host) |
+| `RTPENGINE_EXTERNAL_IP` | Auto-generated | RTPEngine's dedicated IP |
+| `BASE_DOMAIN` | `voipbin.test` | Base domain for SIP routing |
+
+### SSL Certificates
+
+| Variable | Description |
+|----------|-------------|
+| `API_SSL_CERT_BASE64` | Base64-encoded API SSL certificate |
+| `API_SSL_PRIVKEY_BASE64` | Base64-encoded API SSL private key |
+| `CERTS_PATH` | Path to SIP TLS certificates (default: `./certs`) |
+
+### External Services (Optional)
+
+| Variable | Service |
+|----------|---------|
+| `OPENAI_API_KEY` | OpenAI (AI features) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
+| `TWILIO_SID`, `TWILIO_API_KEY` | Twilio (phone numbers) |
+| `TELNYX_API_KEY` | Telnyx (telephony) |
+| `SENDGRID_API_KEY` | SendGrid (email) |
+| `AWS_ACCESS_KEY`, `AWS_SECRET_KEY` | AWS (transcription) |
+
+---
 
 ## License
 
-See LICENSE file for details.
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+*Built for developers who want to understand VoIP from the inside out.*

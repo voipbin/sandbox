@@ -950,7 +950,17 @@ class VoIPBinCLI:
         }
 
     def get_prompt(self):
-        """Get the current prompt string"""
+        """Get the current prompt string
+
+        Note: Uses \001 and \002 (RL_PROMPT_START_IGNORE/END_IGNORE) to wrap
+        ANSI escape codes so readline correctly calculates prompt length.
+        Without these markers, cursor movement breaks after history lookup.
+        """
+        # Readline-safe escape sequences
+        rl_bold = f"\001{Colors.BOLD}\002"
+        rl_blue = f"\001{Colors.BLUE}\002"
+        rl_reset = f"\001{Colors.RESET}\002"
+
         if self.context:
             ctx_name = {
                 "asterisk": "asterisk",
@@ -958,8 +968,8 @@ class VoIPBinCLI:
                 "db": "db",
                 "api": "api"
             }.get(self.context, self.context)
-            return f"{bold('voipbin')}({blue(ctx_name)})> "
-        return f"{bold('voipbin')}> "
+            return f"{rl_bold}voipbin{rl_reset}({rl_blue}{ctx_name}{rl_reset})> "
+        return f"{rl_bold}voipbin{rl_reset}> "
 
     def parse_input(self, line):
         """Parse input line into command and arguments"""
