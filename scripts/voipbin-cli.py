@@ -1017,8 +1017,9 @@ class VoIPBinCLI:
 
 {blue('Setup & Cleanup:')}
   init              Initialize sandbox (.env, certs)
-  update            Pull latest images and run DB migrations
-  clean [options]   Cleanup (--volumes, --images, --network, --dns, --purge, --all)
+  update [options]  Update (scripts, all, --check)
+  rollback          Rollback to previous backup (--list)
+  clean [options]   Cleanup (--containers, --volumes, --images, --network, --dns, --purge, --all)
 
 {blue('Contexts:')}
   ast [cmd]         Asterisk CLI
@@ -1027,6 +1028,7 @@ class VoIPBinCLI:
   api               REST API client
 
 {blue('Data Management:')}
+  ext               Quick extension management (shortcut)
   billing           Billing and account management
   customer          Customer management
   number            Phone number management
