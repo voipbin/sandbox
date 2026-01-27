@@ -186,6 +186,13 @@ Key variables:
 | `ADMIN_EXTERNAL_IP` | Admin Console's external IP (iptables forwards to 10.100.0.101:80) |
 | `MEET_EXTERNAL_IP` | Meet's external IP (iptables forwards to 10.100.0.102:80) |
 | `TALK_EXTERNAL_IP` | Talk's external IP (iptables forwards to 10.100.0.103:80) |
+| `BASE_HOSTNAME` | Base hostname for frontend apps (default: `voipbin.test`) |
+| `API_URL` | API endpoint URL for admin/talk (default: `https://api.voipbin.test:8443/`) |
+| `WEBSOCKET_URL` | WebSocket URL for admin/talk (default: `wss://api.voipbin.test:8443/v1.0/ws`) |
+| `REGISTRAR_URL` | SIP registrar WebSocket URL for talk (default: `wss://sip.voipbin.test:5066`) |
+| `REGISTRAR_DOMAIN` | SIP registrar domain for admin/talk (default: `registrar.voipbin.test`) |
+| `CONFERENCE_URL` | Conference WebSocket URL for meet (default: `wss://conference.voipbin.test`) |
+| `CONFERENCE_DOMAIN` | Conference domain for meet (default: `conference.voipbin.test`) |
 
 ## VoIP Network Configuration
 
