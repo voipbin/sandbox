@@ -2236,13 +2236,12 @@ Type 'registrar <subcommand> help' for more details.
         if args is None:
             return
 
-        # Add --format json for JSON output
-        args["format"] = "json"
+        # Note: registrar-control outputs JSON by default, no --format flag needed
 
         # Confirm delete
         if command_key in SIDECAR_DELETE_COMMANDS:
             # First get the resource to show details
-            get_args = {"id": args.get("id"), "format": "json"}
+            get_args = {"id": args.get("id")}
             success, data = run_sidecar_command(container, f"{binary} {subcmd} get", get_args, verbose=False)
             if success and data:
                 resource_type = "extension" if subcmd == "extension" else "trunk"
