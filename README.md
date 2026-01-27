@@ -1,184 +1,205 @@
 # VoIPBin Sandbox
 
-Your local playground for exploring VoIPBin - a complete Communications Platform as a Service (CPaaS). Perfect for testing, development, and small-scale deployments.
+Your personal phone system in a box. Make calls, video conferences, and build communication apps - all running on your own computer.
 
-## What You Get
+## What's Included
 
-- **Admin Console** - Web dashboard to manage your account
-- **SIP/VoIP Services** - Make and receive calls
-- **REST API** - Build your own integrations
-- **Video Conferencing** - Meet with others
-- **Voice Client** - Browser-based calling
+- **Admin Console** - Manage your account from a web browser
+- **Meet** - Video conferencing
+- **Talk** - Make calls from your browser
+- **Phone Extensions** - Connect SIP phones and softphones
+- **API** - Build your own apps (for developers)
 
-## Quick Start
+## Installation
 
-### 1. Install Prerequisites
+### Step 1: Install Requirements
 
+**Ubuntu/Debian:**
 ```bash
-# Ubuntu/Debian
 sudo apt install docker.io docker-compose python3-pip mkcert
 pip3 install alembic mysqlclient PyMySQL
 mkcert -install
+```
 
-# macOS
+**macOS:**
+```bash
 brew install docker docker-compose python3 mkcert
 pip3 install alembic mysqlclient PyMySQL
 mkcert -install
 ```
 
-### 2. Start Everything
+### Step 2: Start VoIPBin
 
 ```bash
-sudo ./scripts/start.sh
+sudo ./voipbin start
 ```
 
-That's it! The script handles all the setup automatically.
+Done! Everything is set up automatically.
 
-### 3. Access Your Services
+## Using VoIPBin
 
-| Service | URL | Login |
-|---------|-----|-------|
-| Admin Console | http://admin.voipbin.test:3003 | admin@localhost / admin@localhost |
-| Meet | http://meet.voipbin.test:3004 | - |
-| Talk | http://talk.voipbin.test:3005 | - |
-| API | https://api.voipbin.test:8443 | JWT token |
+All commands use the `voipbin` script. Run `sudo ./voipbin` to enter interactive mode:
 
-A test account with 3 phone extensions (1000, 2000, 3000) is created automatically.
-
-## Common Tasks
-
-### Stop Services
-```bash
-./scripts/stop.sh
+```
+voipbin> help
 ```
 
-### Start Fresh (Reset Everything)
-```bash
-./scripts/stop.sh --clean
-sudo ./scripts/start.sh
-```
+### Web Access
 
-### View Logs
+After starting, open these in your browser:
+
+| Service | Address |
+|---------|---------|
+| Admin Console | http://admin.voipbin.test:3003 |
+| Meet | http://meet.voipbin.test:3004 |
+| Talk | http://talk.voipbin.test:3005 |
+
+**First time login:**
+- Username: `admin@localhost`
+- Password: `admin@localhost`
+
+**Certificate warning?** Visit https://api.voipbin.test:8443 first and accept the certificate.
+
+### Test Phone Extensions
+
+Three extensions are created automatically:
+- 1000 (password: pass1000)
+- 2000 (password: pass2000)
+- 3000 (password: pass3000)
+
+Use any SIP phone app to register and make test calls between them.
+
+## Common Commands
+
+### Start and Stop
+
 ```bash
-docker compose logs -f api-manager
+sudo ./voipbin start          # Start all services
+sudo ./voipbin stop           # Stop all services
+sudo ./voipbin restart        # Restart all services
 ```
 
 ### Check Status
+
 ```bash
-docker compose ps
+voipbin> status               # See what's running
+voipbin> logs api-manager     # View logs for a service
+voipbin> logs -f kamailio     # Follow logs in real-time
 ```
+
+### Manage Data
+
+```bash
+voipbin> customer list                    # List customers
+voipbin> registrar extension list         # List phone extensions
+voipbin> billing account list             # View billing accounts
+```
+
+### Update and Maintenance
+
+```bash
+voipbin> update                # Update to latest version
+voipbin> update --check        # Check for updates without applying
+voipbin> clean --volumes       # Reset database (start fresh)
+voipbin> clean --all           # Complete reset
+```
+
+### Network and DNS
+
+```bash
+voipbin> network status        # Check network configuration
+voipbin> dns status            # Check DNS configuration
+voipbin> dns test              # Test domain resolution
+```
+
+## Uninstall
+
+To completely remove VoIPBin Sandbox:
+
+```bash
+sudo ./voipbin stop
+sudo ./voipbin clean --all
+```
+
+This stops all services, removes data, and cleans up network settings.
 
 ## Troubleshooting
 
-### Can't access admin.voipbin.test?
-
-**DNS not working:**
-```bash
-sudo ./scripts/setup-dns.sh
-```
-
-**Certificate error in browser:**
-```bash
-# Regenerate trusted certificates
-sudo rm -rf certs/
-sudo ./scripts/init.sh
-docker compose restart api-manager
-# Then restart your browser
-```
-
-### Services won't start?
+### Can't access the web interface?
 
 ```bash
-# Restart everything
-docker compose down
-sudo ./scripts/start.sh
+voipbin> dns status            # Check if DNS is working
+voipbin> dns setup             # Fix DNS if needed
 ```
 
-### Need more help?
+### Services not starting?
 
-Check the detailed logs:
 ```bash
-docker compose logs -f
+voipbin> status                # Check which services are running
+voipbin> logs <service>        # Check logs for errors
+voipbin> restart               # Try restarting
 ```
 
-## Optional: Add API Keys
+### Need a fresh start?
 
-Edit `.env` to enable additional features:
-
-| Feature | Environment Variable |
-|---------|---------------------|
-| AI/Chatbot | `OPENAI_API_KEY` |
-| Phone Numbers | `TWILIO_SID`, `TWILIO_API_KEY` |
-| Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS` |
-| Email | `SENDGRID_API_KEY` |
-
-Core calling features work without any API keys.
-
-## Network Configuration
-
-The sandbox uses two types of IP addresses:
-
-**Web Services** - Use your host IP with Docker port mapping:
-```
-http://admin.voipbin.test:3003  → HOST_IP:3003 → container
-http://meet.voipbin.test:3004   → HOST_IP:3004 → container
-http://talk.voipbin.test:3005   → HOST_IP:3005 → container
-https://api.voipbin.test:8443   → HOST_IP:8443 → container
+```bash
+sudo ./voipbin stop
+sudo ./voipbin clean --all
+sudo ./voipbin start
 ```
 
-**VoIP Services** - Use a dedicated IP for SIP (to avoid loop detection):
-```
-Your Host IP:  192.168.45.152
-Kamailio:      192.168.45.160  (SIP signaling, ports 5060/5061/80/443)
-RTPEngine:     192.168.45.161  (RTP media, ports 20000-30000)
+### Still having issues?
+
+```bash
+voipbin> help                  # See all available commands
+voipbin> help <command>        # Get help for specific command
 ```
 
-These IPs are generated when you run `init.sh` and stored in `.env`.
+## Optional Features
+
+Edit `.env` to enable additional capabilities:
+
+| Feature | What to Add |
+|---------|-------------|
+| AI Assistant | `OPENAI_API_KEY=your-key` |
+| Real Phone Numbers | `TWILIO_SID` and `TWILIO_API_KEY` |
+| Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS=path/to/file.json` |
+| Email Sending | `SENDGRID_API_KEY=your-key` |
+
+The core features work without any API keys.
 
 ## For Developers
 
 ### API Access
 
-Base URL: `https://api.voipbin.test`
+```bash
+voipbin> api                   # Enter API mode for testing
+api> get /v1.0/extensions      # Make API calls
+```
+
+Or use curl:
+```bash
+curl -sk https://api.voipbin.test:8443/v1.0/extensions \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+### Database Access
 
 ```bash
-# Get auth token
-curl -sk -X POST https://api.voipbin.test/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin@localhost", "password": "admin@localhost"}'
+voipbin> db                    # Enter database mode
+db> SELECT * FROM extensions LIMIT 5
 ```
 
-### SIP Registration
-
-Extensions can register using SIP:
-- **Server:** Use your machine's IP (check with `hostname -I`)
-- **Domain:** `{customer_id}.registrar.voipbin.test`
-- **Extensions:** 1000, 2000, 3000
-- **Passwords:** pass1000, pass2000, pass3000
-
-### CLI Tool
+### Asterisk and Kamailio
 
 ```bash
-sudo ./voipbin help
-sudo ./voipbin network status
-sudo ./voipbin dns status
+voipbin> ast                   # Enter Asterisk CLI
+voipbin> kam                   # Enter Kamailio CLI
 ```
 
-## Architecture Overview
+## More Information
 
-```
-Browser/SIP Phone
-       ↓
-   VoIPBin Sandbox
-       ↓
-┌─────────────────────────────────┐
-│  Kamailio (SIP Proxy)           │
-│  RTPEngine (Media)              │
-│  Asterisk (Call Processing)     │
-│  Manager Services (Business)    │
-│  MySQL / Redis / RabbitMQ       │
-└─────────────────────────────────┘
-```
+For detailed technical documentation, see [CLAUDE.md](CLAUDE.md).
 
 ## License
 
