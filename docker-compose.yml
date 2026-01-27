@@ -967,6 +967,12 @@ services:
   #   - http://meet.voipbin.test:3004   -> HOST_IP:3004
   #   - http://talk.voipbin.test:3005   -> HOST_IP:3005
   # SIP domains (sip.voipbin.test, etc.) resolve to KAMAILIO_EXTERNAL_IP.
+  #
+  # NOTE: If using self-signed certificates, you must accept the API certificate first:
+  #   1. Visit https://api.voipbin.test:8443 in your browser
+  #   2. Accept the certificate warning ("Proceed to api.voipbin.test")
+  #   3. Then access admin/meet/talk - otherwise you'll get ERR_CERT_AUTHORITY_INVALID
+  # To avoid this, install mkcert: mkcert -install && rm -rf certs/ && ./scripts/init.sh
 
   square-admin:
     image: voipbin/square-admin:latest
