@@ -1,16 +1,30 @@
 # VoIPBin Sandbox
 
-Your personal phone system in a box. Make calls, video conferences, and build communication apps - all running on your own computer.
+```
+          ████████
+   ██████████████████████    __     __   ___ ____  ____  _
+  ██                    ██   \ \   / /__|_ _|  _ \| __ )(_)_ __
+ ██████████████████████████   \ \ / / _ \| || |_) |  _ \| | '_ \
+ ██                      ██    \ V / (_) | ||  __/| |_) | | | | |
+  ██    ██   ██   ██    ██      \_/ \___/___|_|   |____/|_|_| |_|
+  ██    ██   ██   ██    ██          Connect & Collaborate for all
+  ██    ██   ██   ██    ██                S A N D B O X
+  ██    ██   ██   ██    ██
+   ██   ██   ██   ██   ██
+   ██████████████████████
+```
+
+Your all-in-one communication platform. Voice calls, video conferencing, messaging, and APIs - running on your own machine.
 
 ## What's Included
 
-- **Admin Console** - Manage your account from a web browser
-- **Meet** - Video conferencing
-- **Talk** - Make calls from your browser
-- **Phone Extensions** - Connect SIP phones and softphones
-- **API** - Build your own apps (for developers)
+- **Admin Console** - Manage everything from your browser
+- **Meet** - Video conferencing and collaboration
+- **Talk** - Voice and messaging client
+- **SIP Integration** - Connect phones and softphones
+- **REST API** - Build your own communication apps
 
-## Installation
+## Getting Started
 
 ### Step 1: Install Requirements
 
@@ -28,20 +42,28 @@ pip3 install alembic mysqlclient PyMySQL
 mkcert -install
 ```
 
-### Step 2: Start VoIPBin
+### Step 2: Run VoIPBin
 
 ```bash
-sudo ./voipbin start
+sudo ./voipbin
 ```
 
-Done! Everything is set up automatically.
+This opens the interactive CLI. Follow the guided setup:
+
+```
+voipbin> init      # First time: initialize configuration
+voipbin> start     # Start all services
+voipbin> status    # Check everything is running
+```
+
+That's it! The CLI guides you through the entire process.
 
 ## Using VoIPBin
 
-All commands use the `voipbin` script. Run `sudo ./voipbin` to enter interactive mode:
+Everything is managed through the `voipbin` CLI:
 
-```
-voipbin> help
+```bash
+sudo ./voipbin
 ```
 
 ### Web Access
@@ -60,65 +82,76 @@ After starting, open these in your browser:
 
 **Certificate warning?** Visit https://api.voipbin.test:8443 first and accept the certificate.
 
-### Test Phone Extensions
+### Test Extensions
 
-Three extensions are created automatically:
+Three SIP extensions are created automatically:
 - 1000 (password: pass1000)
 - 2000 (password: pass2000)
 - 3000 (password: pass3000)
 
-Use any SIP phone app to register and make test calls between them.
+Connect any SIP phone app to make test calls.
 
 ## Common Commands
 
-### Start and Stop
+Run `sudo ./voipbin` to enter interactive mode, then:
 
-```bash
-sudo ./voipbin start          # Start all services
-sudo ./voipbin stop           # Stop all services
-sudo ./voipbin restart        # Restart all services
+### Setup and Control
+
+```
+voipbin> init                  # Initialize (first time setup)
+voipbin> start                 # Start all services
+voipbin> stop                  # Stop all services
+voipbin> restart               # Restart all services
+voipbin> status                # Check what's running
 ```
 
-### Check Status
+### View Logs
 
-```bash
-voipbin> status               # See what's running
-voipbin> logs api-manager     # View logs for a service
-voipbin> logs -f kamailio     # Follow logs in real-time
+```
+voipbin> logs api-manager      # View service logs
+voipbin> logs -f kamailio      # Follow logs in real-time
 ```
 
 ### Manage Data
 
-```bash
+```
 voipbin> customer list                    # List customers
-voipbin> registrar extension list         # List phone extensions
-voipbin> billing account list             # View billing accounts
+voipbin> registrar extension list         # List extensions
+voipbin> billing account list             # View billing
 ```
 
 ### Update and Maintenance
 
-```bash
+```
 voipbin> update                # Update to latest version
-voipbin> update --check        # Check for updates without applying
-voipbin> clean --volumes       # Reset database (start fresh)
-voipbin> clean --all           # Complete reset
+voipbin> update --check        # Check for updates
+voipbin> rollback              # Rollback to previous version
+voipbin> rollback --list       # List available backups
 ```
 
 ### Network and DNS
 
-```bash
-voipbin> network status        # Check network configuration
-voipbin> dns status            # Check DNS configuration
+```
+voipbin> network status        # Check network
+voipbin> dns status            # Check DNS
 voipbin> dns test              # Test domain resolution
+```
+
+### Cleanup
+
+```
+voipbin> clean --containers    # Remove containers (keep data)
+voipbin> clean --volumes       # Reset database
+voipbin> clean --all           # Complete reset
 ```
 
 ## Uninstall
 
 To completely remove VoIPBin Sandbox:
 
-```bash
-sudo ./voipbin stop
-sudo ./voipbin clean --all
+```
+voipbin> stop
+voipbin> clean --all
 ```
 
 This stops all services, removes data, and cleans up network settings.
@@ -127,14 +160,14 @@ This stops all services, removes data, and cleans up network settings.
 
 ### Can't access the web interface?
 
-```bash
+```
 voipbin> dns status            # Check if DNS is working
 voipbin> dns setup             # Fix DNS if needed
 ```
 
 ### Services not starting?
 
-```bash
+```
 voipbin> status                # Check which services are running
 voipbin> logs <service>        # Check logs for errors
 voipbin> restart               # Try restarting
@@ -142,17 +175,18 @@ voipbin> restart               # Try restarting
 
 ### Need a fresh start?
 
-```bash
-sudo ./voipbin stop
-sudo ./voipbin clean --all
-sudo ./voipbin start
+```
+voipbin> stop
+voipbin> clean --all
+voipbin> init
+voipbin> start
 ```
 
-### Still having issues?
+### Get Help
 
-```bash
-voipbin> help                  # See all available commands
-voipbin> help <command>        # Get help for specific command
+```
+voipbin> help                  # See all commands
+voipbin> help <command>        # Help for specific command
 ```
 
 ## Optional Features
@@ -162,18 +196,18 @@ Edit `.env` to enable additional capabilities:
 | Feature | What to Add |
 |---------|-------------|
 | AI Assistant | `OPENAI_API_KEY=your-key` |
-| Real Phone Numbers | `TWILIO_SID` and `TWILIO_API_KEY` |
+| Phone Numbers | `TWILIO_SID` and `TWILIO_API_KEY` |
 | Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS=path/to/file.json` |
-| Email Sending | `SENDGRID_API_KEY=your-key` |
+| Email | `SENDGRID_API_KEY=your-key` |
 
-The core features work without any API keys.
+Core features work without any API keys.
 
 ## For Developers
 
 ### API Access
 
-```bash
-voipbin> api                   # Enter API mode for testing
+```
+voipbin> api                   # Enter API mode
 api> get /v1.0/extensions      # Make API calls
 ```
 
@@ -185,16 +219,16 @@ curl -sk https://api.voipbin.test:8443/v1.0/extensions \
 
 ### Database Access
 
-```bash
+```
 voipbin> db                    # Enter database mode
 db> SELECT * FROM extensions LIMIT 5
 ```
 
-### Asterisk and Kamailio
+### VoIP CLI
 
-```bash
-voipbin> ast                   # Enter Asterisk CLI
-voipbin> kam                   # Enter Kamailio CLI
+```
+voipbin> ast                   # Asterisk CLI
+voipbin> kam                   # Kamailio CLI
 ```
 
 ## More Information
