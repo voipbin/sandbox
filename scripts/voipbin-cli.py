@@ -4992,10 +4992,14 @@ Type 'registrar <subcommand> help' for more details.
 
         def render():
             """Render the selection menu"""
+            # Calculate total lines: header(1) + items + hint(1) + blank lines(2)
+            total_lines = len(version_list) + 4
+
             # Clear previous output (move up and clear)
             if hasattr(render, 'rendered'):
-                sys.stdout.write(f"\033[{len(version_list) + 3}A")  # Move up
+                sys.stdout.write(f"\033[{total_lines}A")  # Move up
                 sys.stdout.write("\033[J")  # Clear to end
+                sys.stdout.flush()
 
             print(f"\n{bold('Select version to restore:')}")
             for i, v in enumerate(version_list):
@@ -5006,6 +5010,7 @@ Type 'registrar <subcommand> help' for more details.
                 else:
                     print(f"    {ts_str}  {label}")
             print(f"\n  [{dim('↑/↓ move, Enter select, q cancel')}]")
+            sys.stdout.flush()
             render.rendered = True
 
         print(f"\033[?25l", end="")  # Hide cursor
