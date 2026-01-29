@@ -4469,17 +4469,17 @@ Type 'registrar <subcommand> help' for more details.
 
         # Display table
         print(f"\n{bold('Image Versions')} (from docker-compose.override.yml)")
-        print("=" * 60)
-        print(f"  {'SERVICE':<25} {'TAG':<20} {'UPDATED':<15}")
-        print("  " + "-" * 55)
+        print("=" * 55)
+        print(f"  {'SERVICE':<30} {'TAG':<20}")
+        print("  " + "-" * 50)
 
         for img in sorted(images, key=lambda x: x["service"]):
-            service = img["service"][:24]
+            service = img["service"][:29]
             tag = img["tag"][:19]
-            print(f"  {service:<25} {tag:<20} {updated:<15}")
+            print(f"  {service:<30} {tag:<20}")
 
-        print(f"\n  Override file: {override_file}")
-        print(f"  Last updated:  {updated}")
+        print(f"\n  Total: {len(images)} services pinned")
+        print(f"  Last updated: {updated}")
         print(f"\n  Tip: Run '{bold('voipbin update')}' to pull latest versions")
         print(f"       Run '{bold('voipbin rollback --list')}' to see history")
 
