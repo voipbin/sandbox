@@ -447,10 +447,13 @@ voipbin(api)> exit
 | Command | Description |
 |---------|-------------|
 | `dns status` | Check DNS configuration |
+| `dns list` | List all DNS domains and their purposes |
 | `dns test` | Test domain resolution |
 | `dns setup` | Configure DNS forwarding |
+| `dns regenerate` | Regenerate Corefile and restart CoreDNS |
 | `network status` | Show network configuration |
 | `network setup` | Create VoIP network interfaces |
+| `network teardown` | Remove VoIP network interfaces |
 | `certs status` | Check SSL certificate status |
 | `certs trust` | Install mkcert CA |
 
@@ -458,13 +461,47 @@ voipbin(api)> exit
 
 These commands use manager container CLIs for direct resource management:
 
+**Core Resources:**
+
 | Command | Description |
 |---------|-------------|
-| `customer list/create/get/delete` | Customer management |
-| `agent list/create/get/delete` | Agent management |
-| `billing account list/create/add-balance` | Billing accounts |
-| `number list/create/register` | Phone number management |
-| `registrar extension/trunk` | SIP registration management |
+| `customer` | Customer management (list/create/get/delete/update) |
+| `agent` | Agent management (list/create/get/delete/login/update-*) |
+| `billing` | Billing accounts and records |
+| `number` | Phone number management |
+| `registrar` | SIP extensions and trunks |
+
+**Communication:**
+
+| Command | Description |
+|---------|-------------|
+| `call` | Call management (list/get/hangup) |
+| `conference` | Conference management |
+| `conversation` | Conversation accounts and messages |
+| `talk` | Talk chat and messages |
+
+**Automation:**
+
+| Command | Description |
+|---------|-------------|
+| `flow` | Flow/IVR management |
+| `campaign` | Campaign management |
+| `outdial` | Outdial management |
+| `queue` | Queue management |
+| `route` | Route management |
+
+**Utilities:**
+
+| Command | Description |
+|---------|-------------|
+| `tag` | Tag management |
+| `storage` | Storage accounts and files |
+| `transfer` | Transfer operations |
+| `tts` | Text-to-speech |
+| `webhook` | Webhook operations |
+| `hook` | Test webhook operations |
+
+> **Tip:** Run `voipbin> <command>` without arguments to see available subcommands.
 
 #### Maintenance
 
