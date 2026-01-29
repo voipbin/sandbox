@@ -1736,7 +1736,7 @@ class VoIPBinCLI:
             "kam": ("Kamailio kamcmd", "kam [command]\n  kam              Enter Kamailio context\n  kam ul.dump      Run single command"),
             "db": ("MySQL queries", "db [query]\n  db                                    Enter database context\n  db SELECT * FROM extensions LIMIT 5   Run single query"),
             "api": ("REST API client", "api [method] [path] [data]\n  api                        Enter API context\n  api get /v1.0/extensions   Run single API call"),
-            "ext": ("Manage extensions", "ext <command>\n  ext list                 List all extensions\n  ext create 4000 pass     Create extension\n  ext delete <id>          Delete extension"),
+            "extension": ("Manage extensions", "extension <command>\n  extension list           List all extensions\n  extension create 4000    Create extension\n  extension delete <id>    Delete extension"),
             "billing": ("Billing management", "billing <subcommand> <action> [options]\n  Type 'billing help' for more details"),
             "customer": ("Customer management", "customer <action> [options]\n  Type 'customer help' for more details"),
             "number": ("Phone number management", "number <action> [options]\n  Type 'number help' for more details"),
@@ -1860,7 +1860,7 @@ class VoIPBinCLI:
   api               REST API client
 
 {blue('Data Management:')}
-  ext               Extension management
+  extension         Extension management
   agent             Agent management
   billing           Billing and account management
   call              Call management
@@ -5284,7 +5284,7 @@ class Completer:
                 return ["-f "]
             return [s + " " for s in services if s.startswith(text)]
 
-        if cmd == "ext":
+        if cmd in ("ext", "extension"):
             subcmds = ["list", "create", "delete"]
             return [s + " " for s in subcmds if s.startswith(text)]
 
