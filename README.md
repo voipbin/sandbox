@@ -23,14 +23,16 @@
 - **Text-to-Speech** — Natural voice synthesis with multiple provider support
 - **Programmable Voice** — Visual flow builder for IVR, call routing, and automation
 - **Full VoIP Stack** — Production-grade SIP proxy, media servers, and conferencing
+- **Web Applications** — Admin console, agent team messenger (Talk), and voice conferencing (Meet)
 
 ---
 
 ## Table of Contents
 
+- [Quick Start](#quick-start)
+- [Web Applications](#web-applications)
 - [Technical Architecture](#technical-architecture)
 - [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
 - [Networking & DNS](#networking--dns)
 - [SSL Certificate Trust](#ssl-certificate-trust)
 - [The Interactive CLI](#the-interactive-cli)
@@ -38,6 +40,118 @@
 - [Developer's Playground](#developers-playground)
 - [Service Reference](#service-reference)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/voipbin/sandbox.git
+cd sandbox
+```
+
+### Getting Started
+
+```bash
+sudo ./voipbin
+```
+
+This launches the **interactive CLI**. From there:
+
+```
+voipbin> init      # First time only: generate .env and certificates
+voipbin> start     # Start all 25+ services
+```
+
+Or run commands directly:
+
+```bash
+sudo ./voipbin init    # Initialize environment
+sudo ./voipbin start   # Start all services
+```
+
+The `start` command handles **everything** after initialization:
+
+1. Generates `.env` with auto-detected network settings
+2. Creates SSL certificates (browser-trusted if mkcert installed)
+3. Starts infrastructure (MySQL, Redis, RabbitMQ, CoreDNS)
+4. Runs database migrations
+5. Configures DNS resolution for `*.voipbin.test`
+6. Sets up VoIP network interfaces
+7. Starts all 25+ microservices
+8. Creates test account and extensions
+
+### What Gets Created
+
+| Resource | Value |
+|----------|-------|
+| **Admin Account** | `admin@localhost` / `admin@localhost` |
+| **Extension 1000** | Password: `pass1000` |
+| **Extension 2000** | Password: `pass2000` |
+| **Extension 3000** | Password: `pass3000` |
+| **Initial Balance** | $100,000.00 |
+
+### Interactive Shell Features
+
+The CLI provides a powerful interactive environment:
+
+- **Tab Completion** — Auto-complete commands and service names
+- **Command History** — Use arrow keys to navigate previous commands
+- **Context Modes** — Enter `ast`, `kam`, `db`, or `api` for specialized shells
+
+```
+voipbin> ast                        # Enter Asterisk context
+voipbin(asterisk)> pjsip show endpoints
+voipbin(asterisk)> exit             # Return to main shell
+
+voipbin> api                        # Enter API context
+voipbin(api)> login admin@localhost
+voipbin(api)> get /v1.0/extensions
+```
+
+---
+
+## Web Applications
+
+VoIPBin Sandbox includes three web applications for managing and using the platform.
+
+### Admin Console
+
+**URL:** http://admin.voipbin.test:3003
+
+![Admin Console](docs/images/admin-console.png)
+
+The Admin Console is your central management hub:
+- Manage customers, extensions, and agents
+- Visual flow builder for IVR and call routing
+- Real-time call monitoring and analytics
+- Billing and usage tracking
+
+### Talk (Agent Team Messenger)
+
+**URL:** http://talk.voipbin.test:3005
+
+![Talk](docs/images/talk.png)
+
+Talk is a team collaboration platform for agents:
+- Real-time messaging and team chat
+- Integrated voice calling with WebRTC
+- Agent presence and availability status
+- Call history and conversation tracking
+
+### Meet (Voice Conferencing)
+
+**URL:** http://meet.voipbin.test:3004
+
+![Meet](docs/images/meet.png)
+
+Meet provides simple voice conferencing:
+- Join audio conference rooms via browser
+- WebRTC-powered for easy access
+- Dial-in via SIP supported
+
+**Default Credentials:** `admin@localhost` / `admin@localhost`
 
 ---
 
@@ -146,69 +260,6 @@ mkcert -install
 > | JWT Secret | Auto-generated in `.env` |
 >
 > **DO NOT expose this sandbox to the public internet.** All ports, credentials, and secrets are meant for local development only. For production deployments, use the official VoIPBin cloud service or contact us for on-premise licensing.
-
----
-
-## Quick Start
-
-### Getting Started
-
-```bash
-sudo ./voipbin
-```
-
-This launches the **interactive CLI**. From there:
-
-```
-voipbin> init      # First time only: generate .env and certificates
-voipbin> start     # Start all 25+ services
-```
-
-Or run commands directly:
-
-```bash
-sudo ./voipbin init    # Initialize environment
-sudo ./voipbin start   # Start all services
-```
-
-The `start` command handles **everything** after initialization:
-
-1. Generates `.env` with auto-detected network settings
-2. Creates SSL certificates (browser-trusted if mkcert installed)
-3. Starts infrastructure (MySQL, Redis, RabbitMQ, CoreDNS)
-4. Runs database migrations
-5. Configures DNS resolution for `*.voipbin.test`
-6. Sets up VoIP network interfaces
-7. Starts all 25+ microservices
-8. Creates test account and extensions
-
-### What Gets Created
-
-| Resource | Value |
-|----------|-------|
-| **Admin Account** | `admin@localhost` / `admin@localhost` |
-| **Extension 1000** | Password: `pass1000` |
-| **Extension 2000** | Password: `pass2000` |
-| **Extension 3000** | Password: `pass3000` |
-| **Initial Balance** | $100,000.00 |
-
-### Interactive Shell Features
-
-The CLI provides a powerful interactive environment:
-
-- **Tab Completion** — Auto-complete commands and service names
-- **Command History** — Use arrow keys to navigate previous commands
-- **Context Modes** — Enter `ast`, `kam`, `db`, or `api` for specialized shells
-
-```
-voipbin> ast                        # Enter Asterisk context
-voipbin(asterisk)> pjsip show endpoints
-voipbin(asterisk)> exit             # Return to main shell
-
-voipbin> api                        # Enter API context
-voipbin(api)> login admin@localhost
-voipbin(api)> get /v1.0/extensions
-```
 
 ---
 
@@ -396,10 +447,13 @@ voipbin(api)> exit
 | Command | Description |
 |---------|-------------|
 | `dns status` | Check DNS configuration |
+| `dns list` | List all DNS domains and their purposes |
 | `dns test` | Test domain resolution |
 | `dns setup` | Configure DNS forwarding |
+| `dns regenerate` | Regenerate Corefile and restart CoreDNS |
 | `network status` | Show network configuration |
 | `network setup` | Create VoIP network interfaces |
+| `network teardown` | Remove VoIP network interfaces |
 | `certs status` | Check SSL certificate status |
 | `certs trust` | Install mkcert CA |
 
@@ -407,13 +461,47 @@ voipbin(api)> exit
 
 These commands use manager container CLIs for direct resource management:
 
+**Core Resources:**
+
 | Command | Description |
 |---------|-------------|
-| `customer list/create/get/delete` | Customer management |
-| `agent list/create/get/delete` | Agent management |
-| `billing account list/create/add-balance` | Billing accounts |
-| `number list/create/register` | Phone number management |
-| `registrar extension/trunk` | SIP registration management |
+| `customer` | Customer management (list/create/get/delete/update) |
+| `agent` | Agent management (list/create/get/delete/login/update-*) |
+| `billing` | Billing accounts and records |
+| `number` | Phone number management |
+| `registrar` | SIP extensions and trunks |
+
+**Communication:**
+
+| Command | Description |
+|---------|-------------|
+| `call` | Call management (list/get/hangup) |
+| `conference` | Conference management |
+| `conversation` | Conversation accounts and messages |
+| `talk` | Talk chat and messages |
+
+**Automation:**
+
+| Command | Description |
+|---------|-------------|
+| `flow` | Flow/IVR management |
+| `campaign` | Campaign management |
+| `outdial` | Outdial management |
+| `queue` | Queue management |
+| `route` | Route management |
+
+**Utilities:**
+
+| Command | Description |
+|---------|-------------|
+| `tag` | Tag management |
+| `storage` | Storage accounts and files |
+| `transfer` | Transfer operations |
+| `tts` | Text-to-speech |
+| `webhook` | Webhook operations |
+| `hook` | Test webhook operations |
+
+> **Tip:** Run `voipbin> <command>` without arguments to see available subcommands.
 
 #### Maintenance
 
