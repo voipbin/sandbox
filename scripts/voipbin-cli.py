@@ -2132,6 +2132,61 @@ Type 'help <command>' for detailed usage.
         print(f"\n  Run 'dns list' for full domain reference.")
         print()
 
+    def _create_initial_version_pins(self, project_dir):
+        """Create initial version pins on first start"""
+        override_file = os.path.join(project_dir, "docker-compose.override.yml")
+        versions_dir = os.path.join(project_dir, ".voipbin-versions")
+
+        # Get list of voipbin images and their service mappings
+        images, image_to_services = get_voipbin_images_from_compose(project_dir)
+        if not images:
+            print(yellow("  No voipbin images found. Skipping version pinning."))
+            return
+
+        print(f"  Found {len(images)} voipbin images")
+        print(f"  Resolving tags from Docker Hub...")
+
+        # Progress callback
+        def progress(current, total, image):
+            short_name = image.split("/")[-1] if "/" in image else image
+            print(f"\r  Resolving... [{current}/{total}] {short_name:<30}", end="", flush=True)
+
+        # Resolve tags in parallel
+        results = resolve_image_tags_parallel(images, progress_callback=progress)
+        print()  # New line after progress
+
+        # Separate successful and failed resolutions
+        resolved = []
+        warnings = []
+        for r in results:
+            if r["tag"]:
+                resolved.append(r)
+            else:
+                warnings.append(r)
+
+        if warnings:
+            print(yellow(f"  {len(warnings)} images could not be resolved (will use :latest)"))
+
+        if not resolved:
+            print(yellow("  No images resolved. Will use :latest tags."))
+            return
+
+        print(f"  {green('✓')} Resolved {len(resolved)}/{len(images)} images")
+
+        # Generate override file
+        override_content = self._generate_override_content(resolved, warnings, image_to_services)
+        with open(override_file, "w") as f:
+            f.write(override_content)
+
+        # Save to history as first version
+        os.makedirs(versions_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        history_file = os.path.join(versions_dir, f"{timestamp}.yml")
+        shutil.copy2(override_file, history_file)
+
+        print(f"  {green('✓')} Version pins created")
+        print(f"  {green('✓')} Saved to rollback history")
+
     def cmd_start(self, args):
         """Start services"""
         service = args[0] if args else ""
@@ -2144,8 +2199,16 @@ Type 'help <command>' for detailed usage.
                 print(result)
             print(green("✓ Done"))
         else:
-            # Full startup - use start.sh for all setup (network, DNS, etc.)
+            # Full startup
             script_dir = self.config.get("project_dir", ".")
+
+            # Ensure version pinning on first start
+            override_file = os.path.join(script_dir, "docker-compose.override.yml")
+            if not os.path.exists(override_file):
+                print(f"\n{blue('==>')} First start detected - pinning image versions...")
+                self._create_initial_version_pins(script_dir)
+
+            # Use start.sh for all setup (network, DNS, etc.)
             script_path = os.path.join(script_dir, "scripts", "start.sh")
 
             if os.path.exists(script_path):
@@ -4489,20 +4552,14 @@ Type 'registrar <subcommand> help' for more details.
                     print(f"  {line}")
             return
 
-        # Backup existing override file
+        # Backup existing override file (if exists)
+        os.makedirs(versions_dir, exist_ok=True)
         if os.path.exists(override_file):
             print(f"\n{blue('==>')} Backing up current version...")
-            os.makedirs(versions_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
             backup_file = os.path.join(versions_dir, f"{timestamp}.yml")
             shutil.copy2(override_file, backup_file)
             print(f"  Saved to .voipbin-versions/{timestamp}.yml")
-
-            # Cleanup old backups (keep last 100)
-            backups = sorted(Path(versions_dir).glob("*.yml"))
-            if len(backups) > 100:
-                for old_backup in backups[:-100]:
-                    old_backup.unlink()
 
         # Generate new override file
         print(f"\n{blue('==>')} Generating docker-compose.override.yml...")
@@ -4510,6 +4567,18 @@ Type 'registrar <subcommand> help' for more details.
         with open(override_file, "w") as f:
             f.write(override_content)
         print(f"  {green('✓')} Override file generated")
+
+        # Save new version to history
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        history_file = os.path.join(versions_dir, f"{timestamp}.yml")
+        shutil.copy2(override_file, history_file)
+        print(f"  {green('✓')} Saved to rollback history")
+
+        # Cleanup old backups (keep last 100)
+        backups = sorted(Path(versions_dir).glob("*.yml"))
+        if len(backups) > 100:
+            for old_backup in backups[:-100]:
+                old_backup.unlink()
 
         # Pull pinned images
         print(f"\n{blue('==>')} Pulling pinned images...")
