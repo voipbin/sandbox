@@ -1723,7 +1723,7 @@ class VoIPBinCLI:
         self.help_text = {
             "status": ("Show service status", "status"),
             "ps": ("Alias for status", "ps"),
-            "start": ("Start services", "start [service]\n  start           Start all services\n  start api-manager  Start specific service"),
+            "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (pins versions on first run)\n  start --no-pin     Start without version pinning\n  start api-manager  Start specific service"),
             "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
             "restart": ("Restart services", "restart [service]"),
             "logs": ("View service logs", "logs [-f] <service>\n  logs api-manager     Last 50 lines\n  logs -f api-manager  Follow logs (Ctrl+C to stop)"),
@@ -2189,6 +2189,10 @@ Type 'help <command>' for detailed usage.
 
     def cmd_start(self, args):
         """Start services"""
+        # Check for --no-pin flag
+        no_pin = "--no-pin" in args
+        args = [a for a in args if a != "--no-pin"]
+
         service = args[0] if args else ""
 
         if service:
@@ -2204,9 +2208,15 @@ Type 'help <command>' for detailed usage.
 
             # Ensure version pinning on first start
             override_file = os.path.join(script_dir, "docker-compose.override.yml")
-            if not os.path.exists(override_file):
+            if not os.path.exists(override_file) and not no_pin:
                 print(f"\n{blue('==>')} First start detected - pinning image versions...")
-                self._create_initial_version_pins(script_dir)
+                try:
+                    self._create_initial_version_pins(script_dir)
+                except Exception as e:
+                    print(f"{red('Error creating version pins:')} {e}")
+                    print(yellow("Continuing without version pinning..."))
+            elif no_pin:
+                print(f"\n{yellow('Skipping version pinning (--no-pin flag)')}")
 
             # Use start.sh for all setup (network, DNS, etc.)
             script_path = os.path.join(script_dir, "scripts", "start.sh")
