@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
