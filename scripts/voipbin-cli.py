@@ -4863,19 +4863,10 @@ Type 'registrar <subcommand> help' for more details.
         versions_dir = os.path.join(project_dir, ".voipbin-versions")
         override_file = os.path.join(project_dir, "docker-compose.override.yml")
 
-        # Get available versions
-        if not os.path.exists(versions_dir):
-            print(f"\n{yellow('No version history found.')}")
-            print("Version history is created when running 'voipbin update'.")
-            return
-
-        versions = sorted(Path(versions_dir).glob("*.yml"), reverse=True)
-        if not versions:
-            print(f"\n{yellow('No version history found.')}")
-            return
-
-        # Include current override as "current"
+        # Build version list - include current override and history
         version_list = []
+
+        # Add current override file if it exists
         if os.path.exists(override_file):
             mtime = os.path.getmtime(override_file)
             version_list.append({
@@ -4884,6 +4875,17 @@ Type 'registrar <subcommand> help' for more details.
                 "label": "(current)",
                 "is_current": True
             })
+
+        # Add history files if they exist
+        versions = []
+        if os.path.exists(versions_dir):
+            versions = sorted(Path(versions_dir).glob("*.yml"), reverse=True)
+
+        # Check if we have anything to show
+        if not version_list and not versions:
+            print(f"\n{yellow('No version history found.')}")
+            print("Version history is created when running 'voipbin start' or 'voipbin update'.")
+            return
 
         for v in versions:
             # Parse timestamp from filename (YYYY-MM-DDTHH-MM-SS.yml)
