@@ -241,7 +241,7 @@ EOF
 
 # Run alembic migrations
 run_migrations() {
-    log_step "Running alembic migrations..."
+    log_step "Running alembic migrations (parallel)..."
 
     # Check if alembic is installed
     if ! command -v alembic &> /dev/null; then
@@ -253,15 +253,48 @@ run_migrations() {
         }
     fi
 
-    # Run bin-manager migrations
-    log_info "  Running bin-manager migrations..."
-    cd "$DBSCHEME_DIR/bin-manager"
-    alembic -c alembic.ini upgrade head
+    # Create temp files for capturing output
+    local bin_manager_log=$(mktemp)
+    local asterisk_log=$(mktemp)
+    local bin_manager_status=0
+    local asterisk_status=0
 
-    # Run asterisk_config migrations
-    log_info "  Running asterisk_config migrations..."
-    cd "$DBSCHEME_DIR/asterisk_config"
-    alembic -c alembic.ini upgrade head
+    # Run both migrations in parallel
+    log_info "  Starting bin-manager migrations..."
+    (cd "$DBSCHEME_DIR/bin-manager" && alembic -c alembic.ini upgrade head > "$bin_manager_log" 2>&1) &
+    local bin_manager_pid=$!
+
+    log_info "  Starting asterisk_config migrations..."
+    (cd "$DBSCHEME_DIR/asterisk_config" && alembic -c alembic.ini upgrade head > "$asterisk_log" 2>&1) &
+    local asterisk_pid=$!
+
+    # Wait for both to complete
+    log_info "  Waiting for migrations to complete..."
+    wait $bin_manager_pid || bin_manager_status=$?
+    wait $asterisk_pid || asterisk_status=$?
+
+    # Show results
+    if [ $bin_manager_status -eq 0 ]; then
+        log_info "  ✓ bin-manager migrations completed"
+    else
+        log_error "  ✗ bin-manager migrations failed:"
+        cat "$bin_manager_log"
+    fi
+
+    if [ $asterisk_status -eq 0 ]; then
+        log_info "  ✓ asterisk_config migrations completed"
+    else
+        log_error "  ✗ asterisk_config migrations failed:"
+        cat "$asterisk_log"
+    fi
+
+    # Cleanup temp files
+    rm -f "$bin_manager_log" "$asterisk_log"
+
+    # Return error if either failed
+    if [ $bin_manager_status -ne 0 ] || [ $asterisk_status -ne 0 ]; then
+        return 1
+    fi
 
     log_info "  Migrations completed successfully!"
 }
