@@ -4905,17 +4905,24 @@ Type 'registrar <subcommand> help' for more details.
             print("Version history is created when running 'voipbin start' or 'voipbin update'.")
             return
 
+        # Get current override timestamp for deduplication
+        current_mtime = None
+        if version_list:
+            current_mtime = version_list[0]["timestamp"]
+
         for v in versions:
             # Parse timestamp from filename (YYYY-MM-DDTHH-MM-SS.yml)
             try:
-                ts_str = v.stem.replace("T", " ").replace("-", ":", 2).replace("-", " ", 1).replace("-", ":")
-                # 2026-01-30T22-30-00 -> 2026:01:30 22:30:00 -> parse
                 parts = v.stem.split("T")
                 date_part = parts[0]
                 time_part = parts[1].replace("-", ":")
                 ts = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
             except Exception:
                 ts = datetime.fromtimestamp(v.stat().st_mtime)
+
+            # Skip if this is essentially the same as current (within 2 seconds)
+            if current_mtime and abs((ts - current_mtime).total_seconds()) < 2:
+                continue
 
             version_list.append({
                 "path": str(v),
