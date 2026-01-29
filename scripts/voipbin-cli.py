@@ -1396,6 +1396,10 @@ def get_voipbin_images_from_compose(project_dir="."):
     images = []
     image_to_services = {}  # image -> list of service names
 
+    if not os.path.exists(compose_file):
+        print(f"{yellow(f'Warning: docker-compose.yml not found at {compose_file}')}")
+        return images, image_to_services
+
     try:
         with open(compose_file, "r") as f:
             compose = yaml.safe_load(f)
@@ -1411,8 +1415,8 @@ def get_voipbin_images_from_compose(project_dir="."):
                 if image_base not in image_to_services:
                     image_to_services[image_base] = []
                 image_to_services[image_base].append(service_name)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"{yellow(f'Warning: Error reading docker-compose.yml: {e}')}")
 
     return images, image_to_services
 
@@ -2140,7 +2144,8 @@ Type 'help <command>' for detailed usage.
         # Get list of voipbin images and their service mappings
         images, image_to_services = get_voipbin_images_from_compose(project_dir)
         if not images:
-            print(yellow("  No voipbin images found. Skipping version pinning."))
+            print(yellow(f"  No voipbin images found. Skipping version pinning."))
+            print(gray(f"  (project_dir: {project_dir})"))
             return
 
         print(f"  Found {len(images)} voipbin images")
