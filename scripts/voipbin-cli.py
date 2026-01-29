@@ -1736,7 +1736,7 @@ class VoIPBinCLI:
             "kam": ("Kamailio kamcmd", "kam [command]\n  kam              Enter Kamailio context\n  kam ul.dump      Run single command"),
             "db": ("MySQL queries", "db [query]\n  db                                    Enter database context\n  db SELECT * FROM extensions LIMIT 5   Run single query"),
             "api": ("REST API client", "api [method] [path] [data]\n  api                        Enter API context\n  api get /v1.0/extensions   Run single API call"),
-            "extension": ("Manage extensions", "extension <command>\n  extension list           List all extensions\n  extension create 4000    Create extension\n  extension delete <id>    Delete extension"),
+            "extension": ("Manage extensions", "extension <command>\n  extension list                       List all extensions\n  extension create <ext> <pass> [name] Create extension\n  extension delete <id>                Delete extension"),
             "billing": ("Billing management", "billing <subcommand> <action> [options]\n  Type 'billing help' for more details"),
             "customer": ("Customer management", "customer <action> [options]\n  Type 'customer help' for more details"),
             "number": ("Phone number management", "number <action> [options]\n  Type 'number help' for more details"),
@@ -2467,7 +2467,7 @@ Type 'help <command>' for detailed usage.
     def cmd_ext(self, args):
         """Manage extensions"""
         if not args:
-            print("Usage: ext list|create|delete")
+            print("Usage: extension list|create|delete")
             return
 
         subcmd = args[0].lower()
@@ -2476,7 +2476,7 @@ Type 'help <command>' for detailed usage.
             self.ext_list()
         elif subcmd == "create":
             if len(args) < 3:
-                print("Usage: ext create <extension> <password> [name]")
+                print("Usage: extension create <extension> <password> [name]")
                 return
             ext = args[1]
             password = args[2]
@@ -2484,7 +2484,7 @@ Type 'help <command>' for detailed usage.
             self.ext_create(ext, password, name)
         elif subcmd == "delete":
             if len(args) < 2:
-                print("Usage: ext delete <id>")
+                print("Usage: extension delete <id>")
                 return
             self.ext_delete(args[1])
         else:
