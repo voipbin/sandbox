@@ -4459,27 +4459,51 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"{red('Error reading override file:')} {e}")
             return
 
+        # Get image creation times from docker inspect
+        for img in images:
+            full_image = f"{img['image']}:{img['tag']}"
+            try:
+                result = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.Created}}", full_image],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    # Parse ISO format: 2026-01-28T15:30:00.123456789Z
+                    created_str = result.stdout.strip()
+                    if created_str:
+                        # Handle both formats with and without nanoseconds
+                        created_str = created_str.split(".")[0]  # Remove nanoseconds
+                        created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        img["created"] = created_dt.strftime("%Y-%m-%d %H:%M")
+                    else:
+                        img["created"] = "-"
+                else:
+                    img["created"] = "-"
+            except Exception:
+                img["created"] = "-"
+
         if json_output:
             print(json.dumps({
                 "file": override_file,
-                "updated": updated,
+                "last_pulled": updated,
                 "images": images
             }, indent=2))
             return
 
         # Display table
         print(f"\n{bold('Image Versions')} (from docker-compose.override.yml)")
-        print("=" * 55)
-        print(f"  {'SERVICE':<30} {'TAG':<20}")
-        print("  " + "-" * 50)
+        print("=" * 70)
+        print(f"  {'SERVICE':<25} {'TAG':<12} {'IMAGE CREATED':<18}")
+        print("  " + "-" * 65)
 
         for img in sorted(images, key=lambda x: x["service"]):
-            service = img["service"][:29]
-            tag = img["tag"][:19]
-            print(f"  {service:<30} {tag:<20}")
+            service = img["service"][:24]
+            tag = img["tag"][:11]
+            created = img.get("created", "-")[:17]
+            print(f"  {service:<25} {tag:<12} {created:<18}")
 
         print(f"\n  Total: {len(images)} services pinned")
-        print(f"  Last updated: {updated}")
+        print(f"  Last pulled: {updated}")
         print(f"\n  Tip: Run '{bold('voipbin update')}' to pull latest versions")
         print(f"       Run '{bold('voipbin rollback --list')}' to see history")
 
