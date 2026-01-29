@@ -4267,6 +4267,70 @@ Type 'registrar <subcommand> help' for more details.
         print(f"\n{bold('Cleanup complete!')}")
         print("Run 'init' to initialize, then 'start' to begin.")
 
+    def _show_running_images(self, project_dir, json_output=False):
+        """Show currently running container images when no override file exists"""
+        # Get running voipbin containers and their images
+        result = run_cmd("docker compose ps --format json 2>/dev/null")
+
+        running_images = []
+        if result:
+            import json as json_module
+            for line in result.strip().split('\n'):
+                if not line:
+                    continue
+                try:
+                    container = json_module.loads(line)
+                    service = container.get('Service', '')
+                    image = container.get('Image', '')
+                    state = container.get('State', '')
+
+                    if image.startswith('voipbin/') and state == 'running':
+                        # Get image ID (short form)
+                        image_id_result = run_cmd(f"docker images {image} --format '{{{{.ID}}}}' 2>/dev/null")
+                        image_id = image_id_result.strip()[:12] if image_id_result else 'unknown'
+
+                        # Get image created time
+                        created_result = run_cmd(f"docker images {image} --format '{{{{.CreatedSince}}}}' 2>/dev/null")
+                        created = created_result.strip() if created_result else 'unknown'
+
+                        running_images.append({
+                            'service': service,
+                            'image': image,
+                            'image_id': image_id,
+                            'created': created
+                        })
+                except Exception:
+                    continue
+
+        if json_output:
+            print(json.dumps({
+                "pinned": False,
+                "message": "No version pins found. Showing running images.",
+                "images": running_images
+            }, indent=2))
+            return
+
+        print(f"\n{yellow('No version pins found.')} Using :latest tags from docker-compose.yml.")
+
+        if running_images:
+            print(f"\n{bold('Currently Running Images')}")
+            print("=" * 70)
+            print(f"  {'SERVICE':<25} {'IMAGE ID':<15} {'CREATED':<20}")
+            print("  " + "-" * 65)
+
+            for img in sorted(running_images, key=lambda x: x['service']):
+                service = img['service'][:24]
+                image_id = img['image_id'][:14]
+                created = img['created'][:19]
+                print(f"  {service:<25} {image_id:<15} {created:<20}")
+
+            print(f"\n  Total: {len(running_images)} voipbin containers running")
+        else:
+            print(f"\n{yellow('No voipbin containers currently running.')}")
+            print("Run 'voipbin start' to start services.")
+
+        print(f"\n  Tip: Run '{bold('voipbin update')}' to pin to specific commit-SHA versions")
+
     def cmd_version(self, args):
         """Show pinned image versions from docker-compose.override.yml"""
         project_dir = self.config.get("project_dir", ".")
@@ -4274,11 +4338,8 @@ Type 'registrar <subcommand> help' for more details.
         json_output = "--json" in args
 
         if not os.path.exists(override_file):
-            if json_output:
-                print(json.dumps({"error": "No version pins found", "images": []}))
-            else:
-                print(f"\n{yellow('No version pins found.')} Using :latest tags from docker-compose.yml.")
-                print(f"\nRun '{bold('voipbin update')}' to pin to specific commit-SHA versions.")
+            # No override file - show currently running images instead
+            self._show_running_images(project_dir, json_output)
             return
 
         # Parse override file
