@@ -4580,30 +4580,51 @@ Type 'registrar <subcommand> help' for more details.
             for old_backup in backups[:-100]:
                 old_backup.unlink()
 
-        # Pull pinned images
-        print(f"\n{blue('==>')} Pulling pinned images...")
-        result = run_cmd("docker compose pull 2>&1")
-        if result:
-            lines = result.strip().split('\n')
-            for line in lines[-10:]:
-                print(f"  {line}")
-        print(green("✓ Images pulled"))
+        # Pull images and run migrations in parallel
+        print(f"\n{blue('==>')} Pulling images and checking migrations (parallel)...")
 
-        # Check database migrations
-        print(f"\n{blue('==>')} Checking database migrations...")
-        alembic_check = run_cmd("which alembic 2>/dev/null")
-        if not alembic_check:
-            print(yellow("  ! Alembic not found. Skipping migrations."))
-        else:
+        def pull_images():
+            """Pull pinned images"""
+            result = run_cmd("docker compose pull 2>&1")
+            return result
+
+        def run_migrations():
+            """Run database migrations if possible"""
+            alembic_check = run_cmd("which alembic 2>/dev/null")
+            if not alembic_check:
+                return "skip", "Alembic not found"
+
             db_check = run_cmd("docker exec voipbin-db mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
             if not db_check:
-                print(yellow("  ! Database not running. Skipping migrations."))
-            else:
-                script_path = os.path.join(project_dir, "scripts", "init_database.sh")
-                if os.path.exists(script_path):
-                    print("  Running alembic migrations...")
-                    os.system(f"{script_path}")
-                    print(green("  ✓ Database migrations complete"))
+                return "skip", "Database not running"
+
+            script_path = os.path.join(project_dir, "scripts", "init_database.sh")
+            if os.path.exists(script_path):
+                os.system(f"{script_path} > /dev/null 2>&1")
+                return "done", None
+
+            return "skip", "Migration script not found"
+
+        # Run both tasks in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pull_future = executor.submit(pull_images)
+            migration_future = executor.submit(run_migrations)
+
+            # Wait for both to complete
+            pull_result = pull_future.result()
+            migration_status, migration_msg = migration_future.result()
+
+        # Show results
+        if pull_result:
+            lines = pull_result.strip().split('\n')
+            for line in lines[-5:]:
+                print(f"  {line}")
+        print(f"  {green('✓')} Images pulled")
+
+        if migration_status == "done":
+            print(f"  {green('✓')} Database migrations complete")
+        elif migration_status == "skip":
+            print(f"  {yellow('!')} Migrations skipped: {migration_msg}")
 
         # Restart services
         running_services = run_cmd("docker compose ps -q 2>/dev/null")
