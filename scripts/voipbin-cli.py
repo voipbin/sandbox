@@ -153,7 +153,7 @@ SIDECAR_COMMANDS = {
         "binary": "/app/bin/billing-control",
         "subcommands": {
             "account": {
-                "commands": ["list", "create", "get", "delete", "add-balance", "subtract-balance"],
+                "commands": ["list", "create", "get", "delete", "add-balance", "subtract-balance", "update", "update-payment-info"],
                 "description": "Manage billing accounts",
             },
             "billing": {
@@ -167,7 +167,7 @@ SIDECAR_COMMANDS = {
         "binary": "/app/bin/customer-control",
         "subcommands": {
             "customer": {
-                "commands": ["list", "create", "get", "delete"],
+                "commands": ["list", "create", "get", "delete", "update", "update-billing-account"],
                 "description": "Manage customers",
             },
         },
@@ -177,7 +177,7 @@ SIDECAR_COMMANDS = {
         "binary": "/app/bin/number-control",
         "subcommands": {
             "number": {
-                "commands": ["list", "create", "get", "delete", "register"],
+                "commands": ["list", "create", "get", "delete", "register", "update", "get-available"],
                 "description": "Manage phone numbers",
             },
         },
@@ -201,8 +201,200 @@ SIDECAR_COMMANDS = {
         "binary": "/app/bin/agent-control",
         "subcommands": {
             "agent": {
-                "commands": ["list", "create", "get", "delete", "update-password", "update-permission"],
+                "commands": ["list", "create", "get", "delete", "login", "update-addresses", "update-basic-info", "update-password", "update-permission", "update-status", "update-tag-ids"],
                 "description": "Manage agents",
+            },
+        },
+    },
+    "call": {
+        "container": "voipbin-call-mgr",
+        "binary": "/app/bin/call-control",
+        "subcommands": {
+            "call": {
+                "commands": ["list", "get", "delete", "hangup", "update-status"],
+                "description": "Manage calls",
+            },
+        },
+    },
+    "campaign": {
+        "container": "voipbin-campaign-mgr",
+        "binary": "/app/bin/campaign-control",
+        "subcommands": {
+            "campaign": {
+                "commands": ["list", "create", "get", "delete", "update-basic-info", "update-status"],
+                "description": "Manage campaigns",
+            },
+        },
+    },
+    "chat": {
+        "container": "voipbin-chat-mgr",
+        "binary": "/app/bin/chat-control",
+        "subcommands": {
+            "chat": {
+                "commands": ["list", "create", "get", "delete", "add-participant", "remove-participant", "update-basic-info", "update-room-owner"],
+                "description": "Manage chat rooms",
+            },
+        },
+    },
+    "conference": {
+        "container": "voipbin-conference-mgr",
+        "binary": "/app/bin/conference-control",
+        "subcommands": {
+            "conference": {
+                "commands": ["list", "create", "get", "delete", "get-by-confbridge", "recording-start", "recording-stop", "terminating", "transcribe-start", "transcribe-stop", "update", "update-recording-id"],
+                "description": "Manage conferences",
+            },
+        },
+    },
+    "conversation": {
+        "container": "voipbin-conversation-mgr",
+        "binary": "/app/bin/conversation-control",
+        "subcommands": {
+            "account": {
+                "commands": ["list", "create", "get", "delete", "update"],
+                "description": "Manage conversation accounts",
+            },
+            "conversation": {
+                "commands": ["list", "get"],
+                "description": "View conversations",
+            },
+            "message": {
+                "commands": ["list", "get", "delete"],
+                "description": "Manage conversation messages",
+            },
+        },
+    },
+    "flow": {
+        "container": "voipbin-flow-mgr",
+        "binary": "/app/bin/flow-control",
+        "subcommands": {
+            "flow": {
+                "commands": ["list", "create", "get", "delete", "update", "update-actions", "action-get"],
+                "description": "Manage flows",
+            },
+        },
+    },
+    "outdial": {
+        "container": "voipbin-outdial-mgr",
+        "binary": "/app/bin/outdial-control",
+        "subcommands": {
+            "outdial": {
+                "commands": ["list", "create", "get", "delete", "update-basic-info", "update-campaign-id", "update-data"],
+                "description": "Manage outdials",
+            },
+        },
+    },
+    "queue": {
+        "container": "voipbin-queue-mgr",
+        "binary": "/app/bin/queue-control",
+        "subcommands": {
+            "queue": {
+                "commands": ["list", "create", "get", "delete", "update", "update-execute", "update-routing-method", "update-tag-ids"],
+                "description": "Manage queues",
+            },
+            "queuecall": {
+                "commands": ["list", "get", "delete", "get-by-reference"],
+                "description": "Manage queue calls",
+            },
+        },
+    },
+    "route": {
+        "container": "voipbin-route-mgr",
+        "binary": "/app/bin/route-control",
+        "subcommands": {
+            "route": {
+                "commands": ["list", "create", "get", "delete", "update", "dialroute-list", "list-by-target"],
+                "description": "Manage routes",
+            },
+        },
+    },
+    "storage": {
+        "container": "voipbin-storage-mgr",
+        "binary": "/app/bin/storage-control",
+        "subcommands": {
+            "account": {
+                "commands": ["list", "create", "get", "delete"],
+                "description": "Manage storage accounts",
+            },
+            "file": {
+                "commands": ["list", "create", "get", "delete"],
+                "description": "Manage files",
+            },
+            "recording": {
+                "commands": ["get", "delete"],
+                "description": "Manage recordings",
+            },
+        },
+    },
+    "tag": {
+        "container": "voipbin-tag-mgr",
+        "binary": "/app/bin/tag-control",
+        "subcommands": {
+            "tag": {
+                "commands": ["list", "create", "get", "delete", "update"],
+                "description": "Manage tags",
+            },
+        },
+    },
+    "talk": {
+        "container": "voipbin-talk-mgr",
+        "binary": "/app/bin/talk-control",
+        "subcommands": {
+            "chat": {
+                "commands": ["list", "create", "get", "delete", "update"],
+                "description": "Manage talk chats",
+            },
+            "message": {
+                "commands": ["list", "create", "get", "delete"],
+                "description": "Manage talk messages",
+            },
+            "participant": {
+                "commands": ["list", "add", "remove"],
+                "description": "Manage chat participants",
+            },
+            "reaction": {
+                "commands": ["add", "remove"],
+                "description": "Manage message reactions",
+            },
+        },
+    },
+    "transfer": {
+        "container": "voipbin-transfer-mgr",
+        "binary": "/app/bin/transfer-control",
+        "subcommands": {
+            "transfer": {
+                "commands": ["get-by-call", "get-by-groupcall", "service-start"],
+                "description": "Manage transfers",
+            },
+        },
+    },
+    "tts": {
+        "container": "voipbin-tts-mgr",
+        "binary": "/app/bin/tts-control",
+        "subcommands": {
+            "tts": {
+                "commands": ["create"],
+                "description": "Text-to-speech operations",
+            },
+        },
+    },
+    "webhook": {
+        "container": "voipbin-webhook-mgr",
+        "binary": "/app/bin/webhook-control",
+        "subcommands": {
+            "webhook": {
+                "commands": ["send-to-customer", "send-to-uri"],
+                "description": "Webhook operations",
+            },
+        },
+    },
+    "hook": {
+        "container": "voipbin-hook-mgr",
+        "binary": "/app/bin/hook-control",
+        "subcommands": {
+            "hook": {
+                "commands": ["send-conversation", "send-email", "send-message"],
+                "description": "Test webhook operations",
             },
         },
     },
@@ -216,36 +408,181 @@ SIDECAR_REQUIRED_ARGS = {
     ("billing", "account", "delete"): ["id"],
     ("billing", "account", "add-balance"): ["id", "amount"],
     ("billing", "account", "subtract-balance"): ["id", "amount"],
+    ("billing", "account", "update"): ["id", "name"],
+    ("billing", "account", "update-payment-info"): ["id", "payment-method", "payment-type"],
     ("billing", "billing", "get"): ["id"],
     # customer commands
     ("customer", "customer", "create"): ["email"],
     ("customer", "customer", "get"): ["id"],
     ("customer", "customer", "delete"): ["id"],
+    ("customer", "customer", "update"): ["id"],
+    ("customer", "customer", "update-billing-account"): ["id", "billing-account-id"],
     # number commands
-    ("number", "number", "list"): ["customer_id"],
-    ("number", "number", "create"): ["customer_id", "number"],
+    ("number", "number", "list"): ["customer-id"],
+    ("number", "number", "create"): ["customer-id", "number"],
     ("number", "number", "get"): ["id"],
     ("number", "number", "delete"): ["id"],
-    ("number", "number", "register"): ["customer_id", "number"],
+    ("number", "number", "register"): ["customer-id", "number"],
+    ("number", "number", "update"): ["id"],
     # registrar extension commands
-    ("registrar", "extension", "list"): ["customer_id"],
-    ("registrar", "extension", "create"): ["customer_id", "username", "password"],
+    ("registrar", "extension", "list"): ["customer-id"],
+    ("registrar", "extension", "create"): ["customer-id", "username", "password"],
     ("registrar", "extension", "get"): ["id"],
     ("registrar", "extension", "delete"): ["id"],
     ("registrar", "extension", "update"): ["id"],
     # registrar trunk commands
-    ("registrar", "trunk", "list"): ["customer_id"],
-    ("registrar", "trunk", "create"): ["customer_id", "domain"],
+    ("registrar", "trunk", "list"): ["customer-id"],
+    ("registrar", "trunk", "create"): ["customer-id", "domain"],
     ("registrar", "trunk", "get"): ["id"],
     ("registrar", "trunk", "delete"): ["id"],
     ("registrar", "trunk", "update"): ["id"],
     # agent commands
-    ("agent", "agent", "list"): ["customer_id"],
-    ("agent", "agent", "create"): ["customer_id", "username", "password"],
+    ("agent", "agent", "list"): ["customer-id"],
+    ("agent", "agent", "create"): ["customer-id", "username", "password"],
     ("agent", "agent", "get"): ["id"],
     ("agent", "agent", "delete"): ["id"],
+    ("agent", "agent", "login"): ["username", "password"],
+    ("agent", "agent", "update-addresses"): ["id"],
+    ("agent", "agent", "update-basic-info"): ["id"],
     ("agent", "agent", "update-password"): ["id", "password"],
     ("agent", "agent", "update-permission"): ["id"],
+    ("agent", "agent", "update-status"): ["id", "status"],
+    ("agent", "agent", "update-tag-ids"): ["id"],
+    # call commands
+    ("call", "call", "list"): ["customer-id"],
+    ("call", "call", "get"): ["id"],
+    ("call", "call", "delete"): ["id"],
+    ("call", "call", "hangup"): ["id"],
+    ("call", "call", "update-status"): ["id", "status"],
+    # campaign commands
+    ("campaign", "campaign", "list"): ["customer-id"],
+    ("campaign", "campaign", "create"): ["customer-id", "name"],
+    ("campaign", "campaign", "get"): ["id"],
+    ("campaign", "campaign", "delete"): ["id"],
+    ("campaign", "campaign", "update-basic-info"): ["id"],
+    ("campaign", "campaign", "update-status"): ["id", "status"],
+    # chat commands
+    ("chat", "chat", "list"): ["customer-id"],
+    ("chat", "chat", "create"): ["customer-id", "name"],
+    ("chat", "chat", "get"): ["id"],
+    ("chat", "chat", "delete"): ["id"],
+    ("chat", "chat", "add-participant"): ["id", "agent-id"],
+    ("chat", "chat", "remove-participant"): ["id", "agent-id"],
+    ("chat", "chat", "update-basic-info"): ["id"],
+    ("chat", "chat", "update-room-owner"): ["id", "owner-id"],
+    # conference commands
+    ("conference", "conference", "list"): ["customer-id"],
+    ("conference", "conference", "create"): ["customer-id"],
+    ("conference", "conference", "get"): ["id"],
+    ("conference", "conference", "delete"): ["id"],
+    ("conference", "conference", "get-by-confbridge"): ["confbridge-id"],
+    ("conference", "conference", "recording-start"): ["id"],
+    ("conference", "conference", "recording-stop"): ["id"],
+    ("conference", "conference", "terminating"): ["id"],
+    ("conference", "conference", "transcribe-start"): ["id"],
+    ("conference", "conference", "transcribe-stop"): ["id"],
+    ("conference", "conference", "update"): ["id"],
+    ("conference", "conference", "update-recording-id"): ["id", "recording-id"],
+    # conversation account commands
+    ("conversation", "account", "list"): ["customer-id"],
+    ("conversation", "account", "create"): ["customer-id"],
+    ("conversation", "account", "get"): ["id"],
+    ("conversation", "account", "delete"): ["id"],
+    ("conversation", "account", "update"): ["id"],
+    # conversation conversation commands
+    ("conversation", "conversation", "list"): ["customer-id"],
+    ("conversation", "conversation", "get"): ["id"],
+    # conversation message commands
+    ("conversation", "message", "list"): ["customer-id"],
+    ("conversation", "message", "get"): ["id"],
+    ("conversation", "message", "delete"): ["id"],
+    # flow commands
+    ("flow", "flow", "list"): ["customer-id"],
+    ("flow", "flow", "create"): ["customer-id", "name"],
+    ("flow", "flow", "get"): ["id"],
+    ("flow", "flow", "delete"): ["id"],
+    ("flow", "flow", "update"): ["id"],
+    ("flow", "flow", "update-actions"): ["id"],
+    ("flow", "flow", "action-get"): ["id", "action-id"],
+    # outdial commands
+    ("outdial", "outdial", "list"): ["customer-id"],
+    ("outdial", "outdial", "create"): ["customer-id"],
+    ("outdial", "outdial", "get"): ["id"],
+    ("outdial", "outdial", "delete"): ["id"],
+    ("outdial", "outdial", "update-basic-info"): ["id"],
+    ("outdial", "outdial", "update-campaign-id"): ["id", "campaign-id"],
+    ("outdial", "outdial", "update-data"): ["id"],
+    # queue commands
+    ("queue", "queue", "list"): ["customer-id"],
+    ("queue", "queue", "create"): ["customer-id", "name"],
+    ("queue", "queue", "get"): ["id"],
+    ("queue", "queue", "delete"): ["id"],
+    ("queue", "queue", "update"): ["id"],
+    ("queue", "queue", "update-execute"): ["id"],
+    ("queue", "queue", "update-routing-method"): ["id", "routing-method"],
+    ("queue", "queue", "update-tag-ids"): ["id"],
+    # queuecall commands
+    ("queue", "queuecall", "list"): ["customer-id"],
+    ("queue", "queuecall", "get"): ["id"],
+    ("queue", "queuecall", "delete"): ["id"],
+    ("queue", "queuecall", "get-by-reference"): ["reference-id"],
+    # route commands
+    ("route", "route", "list"): ["customer-id"],
+    ("route", "route", "create"): ["customer-id"],
+    ("route", "route", "get"): ["id"],
+    ("route", "route", "delete"): ["id"],
+    ("route", "route", "update"): ["id"],
+    ("route", "route", "dialroute-list"): ["customer-id"],
+    ("route", "route", "list-by-target"): ["target"],
+    # storage account commands
+    ("storage", "account", "list"): ["customer-id"],
+    ("storage", "account", "create"): ["customer-id"],
+    ("storage", "account", "get"): ["id"],
+    ("storage", "account", "delete"): ["id"],
+    # storage file commands
+    ("storage", "file", "list"): ["customer-id"],
+    ("storage", "file", "create"): ["customer-id"],
+    ("storage", "file", "get"): ["id"],
+    ("storage", "file", "delete"): ["id"],
+    # storage recording commands
+    ("storage", "recording", "get"): ["reference-id"],
+    ("storage", "recording", "delete"): ["reference-id"],
+    # tag commands
+    ("tag", "tag", "list"): ["customer-id"],
+    ("tag", "tag", "create"): ["customer-id", "name"],
+    ("tag", "tag", "get"): ["id"],
+    ("tag", "tag", "delete"): ["id"],
+    ("tag", "tag", "update"): ["id"],
+    # talk chat commands
+    ("talk", "chat", "list"): ["customer-id"],
+    ("talk", "chat", "create"): ["customer-id"],
+    ("talk", "chat", "get"): ["id"],
+    ("talk", "chat", "delete"): ["id"],
+    ("talk", "chat", "update"): ["id"],
+    # talk message commands
+    ("talk", "message", "list"): ["chat-id"],
+    ("talk", "message", "create"): ["chat-id"],
+    ("talk", "message", "get"): ["id"],
+    ("talk", "message", "delete"): ["id"],
+    # talk participant commands
+    ("talk", "participant", "list"): ["chat-id"],
+    ("talk", "participant", "add"): ["chat-id", "agent-id"],
+    ("talk", "participant", "remove"): ["chat-id", "agent-id"],
+    # talk reaction commands
+    ("talk", "reaction", "add"): ["message-id", "agent-id", "reaction"],
+    ("talk", "reaction", "remove"): ["message-id", "agent-id", "reaction"],
+    # transfer commands
+    ("transfer", "transfer", "get-by-call"): ["call-id"],
+    ("transfer", "transfer", "get-by-groupcall"): ["groupcall-id"],
+    # tts commands
+    ("tts", "tts", "create"): ["text"],
+    # webhook commands
+    ("webhook", "webhook", "send-to-customer"): ["customer-id"],
+    ("webhook", "webhook", "send-to-uri"): ["uri"],
+    # hook commands (test webhooks)
+    ("hook", "hook", "send-conversation"): ["uri"],
+    ("hook", "hook", "send-email"): ["uri"],
+    ("hook", "hook", "send-message"): ["uri"],
 }
 
 # Commands that require delete confirmation
@@ -256,6 +593,23 @@ SIDECAR_DELETE_COMMANDS = [
     ("registrar", "extension", "delete"),
     ("registrar", "trunk", "delete"),
     ("agent", "agent", "delete"),
+    ("call", "call", "delete"),
+    ("campaign", "campaign", "delete"),
+    ("chat", "chat", "delete"),
+    ("conference", "conference", "delete"),
+    ("conversation", "account", "delete"),
+    ("conversation", "message", "delete"),
+    ("flow", "flow", "delete"),
+    ("outdial", "outdial", "delete"),
+    ("queue", "queue", "delete"),
+    ("queue", "queuecall", "delete"),
+    ("route", "route", "delete"),
+    ("storage", "account", "delete"),
+    ("storage", "file", "delete"),
+    ("storage", "recording", "delete"),
+    ("tag", "tag", "delete"),
+    ("talk", "chat", "delete"),
+    ("talk", "message", "delete"),
 ]
 
 # Table columns for list commands (command_key -> [(display_name, json_key, width)])
@@ -298,6 +652,105 @@ SIDECAR_TABLE_COLUMNS = {
         ("ID", "id", 36),
         ("Username", "username", 25),
         ("Name", "name", 25),
+    ],
+    ("call", "call", "list"): [
+        ("ID", "id", 36),
+        ("Direction", "direction", 10),
+        ("Status", "status", 12),
+        ("Source", "source", 20),
+        ("Destination", "destination", 20),
+    ],
+    ("campaign", "campaign", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Status", "status", 12),
+        ("Type", "type", 12),
+    ],
+    ("chat", "chat", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Type", "type", 12),
+        ("Owner ID", "owner_id", 36),
+    ],
+    ("conference", "conference", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Status", "status", 12),
+        ("Participants", "participant_count", 12),
+    ],
+    ("conversation", "account", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Type", "type", 12),
+    ],
+    ("conversation", "conversation", "list"): [
+        ("ID", "id", 36),
+        ("Account ID", "account_id", 36),
+        ("Status", "status", 12),
+    ],
+    ("conversation", "message", "list"): [
+        ("ID", "id", 36),
+        ("Direction", "direction", 10),
+        ("Status", "status", 12),
+    ],
+    ("flow", "flow", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Type", "type", 12),
+    ],
+    ("outdial", "outdial", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Status", "status", 12),
+        ("Campaign ID", "campaign_id", 36),
+    ],
+    ("queue", "queue", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Routing", "routing_method", 15),
+        ("Waiting", "waiting_count", 10),
+    ],
+    ("queue", "queuecall", "list"): [
+        ("ID", "id", 36),
+        ("Queue ID", "queue_id", 36),
+        ("Status", "status", 12),
+    ],
+    ("route", "route", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Target", "target", 25),
+        ("Priority", "priority", 10),
+    ],
+    ("storage", "account", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Type", "type", 12),
+    ],
+    ("storage", "file", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Type", "type", 12),
+        ("Size", "size", 10),
+    ],
+    ("tag", "tag", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Color", "color", 10),
+    ],
+    ("talk", "chat", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 25),
+        ("Type", "type", 12),
+    ],
+    ("talk", "message", "list"): [
+        ("ID", "id", 36),
+        ("Sender ID", "sender_id", 36),
+        ("Type", "type", 12),
+    ],
+    ("talk", "participant", "list"): [
+        ("Agent ID", "agent_id", 36),
+        ("Role", "role", 12),
+        ("Joined", "tm_join", 20),
     ],
 }
 
@@ -365,6 +818,163 @@ SIDECAR_DETAIL_FIELDS = {
         ("Detail", "detail"),
         ("Customer ID", "customer_id"),
         ("Permission", "permission"),
+        ("Status", "status"),
+        ("Created", "tm_create"),
+    ],
+    ("call", "call", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Direction", "direction"),
+        ("Status", "status"),
+        ("Source", "source"),
+        ("Destination", "destination"),
+        ("Created", "tm_create"),
+    ],
+    ("campaign", "campaign", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Status", "status"),
+        ("Type", "type"),
+        ("Created", "tm_create"),
+    ],
+    ("chat", "chat", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Type", "type"),
+        ("Owner ID", "owner_id"),
+        ("Created", "tm_create"),
+    ],
+    ("conference", "conference", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Status", "status"),
+        ("Confbridge ID", "confbridge_id"),
+        ("Recording ID", "recording_id"),
+        ("Created", "tm_create"),
+    ],
+    ("conversation", "account", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Type", "type"),
+        ("Created", "tm_create"),
+    ],
+    ("conversation", "conversation", "get"): [
+        ("ID", "id"),
+        ("Account ID", "account_id"),
+        ("Customer ID", "customer_id"),
+        ("Status", "status"),
+        ("Created", "tm_create"),
+    ],
+    ("conversation", "message", "get"): [
+        ("ID", "id"),
+        ("Conversation ID", "conversation_id"),
+        ("Direction", "direction"),
+        ("Status", "status"),
+        ("Content", "content"),
+        ("Created", "tm_create"),
+    ],
+    ("flow", "flow", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Type", "type"),
+        ("Created", "tm_create"),
+    ],
+    ("outdial", "outdial", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Status", "status"),
+        ("Campaign ID", "campaign_id"),
+        ("Created", "tm_create"),
+    ],
+    ("queue", "queue", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Routing Method", "routing_method"),
+        ("Waiting Count", "waiting_count"),
+        ("Created", "tm_create"),
+    ],
+    ("queue", "queuecall", "get"): [
+        ("ID", "id"),
+        ("Queue ID", "queue_id"),
+        ("Customer ID", "customer_id"),
+        ("Status", "status"),
+        ("Reference ID", "reference_id"),
+        ("Created", "tm_create"),
+    ],
+    ("route", "route", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Target", "target"),
+        ("Priority", "priority"),
+        ("Created", "tm_create"),
+    ],
+    ("storage", "account", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Type", "type"),
+        ("Created", "tm_create"),
+    ],
+    ("storage", "file", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Type", "type"),
+        ("Size", "size"),
+        ("URI", "uri"),
+        ("Created", "tm_create"),
+    ],
+    ("tag", "tag", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Color", "color"),
+        ("Created", "tm_create"),
+    ],
+    ("talk", "chat", "get"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Name", "name"),
+        ("Type", "type"),
+        ("Created", "tm_create"),
+    ],
+    ("talk", "message", "get"): [
+        ("ID", "id"),
+        ("Chat ID", "chat_id"),
+        ("Sender ID", "sender_id"),
+        ("Type", "type"),
+        ("Content", "content"),
+        ("Created", "tm_create"),
+    ],
+    ("transfer", "transfer", "get-by-call"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Transferer Call ID", "transferer_call_id"),
+        ("Groupcall ID", "groupcall_id"),
+        ("Status", "status"),
+        ("Created", "tm_create"),
+    ],
+    ("transfer", "transfer", "get-by-groupcall"): [
+        ("ID", "id"),
+        ("Customer ID", "customer_id"),
+        ("Transferer Call ID", "transferer_call_id"),
+        ("Groupcall ID", "groupcall_id"),
+        ("Status", "status"),
         ("Created", "tm_create"),
     ],
 }
@@ -762,7 +1372,7 @@ def prompt_missing_args(command_key, provided_args):
                     print("Cancelled.")
                     return None
 
-                # Check if user entered flags (e.g., "--customer_id abc123" or full command)
+                # Check if user entered flags (e.g., "--customer-id abc123" or full command)
                 if "--" in value:
                     # Parse as flag arguments and merge into updated_args
                     parsed = parse_sidecar_args(value.split())
@@ -906,6 +1516,21 @@ class VoIPBinCLI:
             "number": self.cmd_number,
             "registrar": self.cmd_registrar,
             "agent": self.cmd_agent,
+            "call": self.cmd_call,
+            "campaign": self.cmd_campaign,
+            "chat": self.cmd_chat,
+            "conference": self.cmd_conference,
+            "conversation": self.cmd_conversation,
+            "flow": self.cmd_flow,
+            "outdial": self.cmd_outdial,
+            "queue": self.cmd_queue,
+            "route": self.cmd_route,
+            "storage": self.cmd_storage,
+            "tag": self.cmd_tag,
+            "talk": self.cmd_talk,
+            "transfer": self.cmd_transfer,
+            "tts": self.cmd_tts,
+            "webhook": self.cmd_webhook,
             "config": self.cmd_config,
             "dns": self.cmd_dns,
             "certs": self.cmd_certs,
@@ -932,11 +1557,27 @@ class VoIPBinCLI:
             "db": ("MySQL queries", "db [query]\n  db                                    Enter database context\n  db SELECT * FROM extensions LIMIT 5   Run single query"),
             "api": ("REST API client", "api [method] [path] [data]\n  api                        Enter API context\n  api get /v1.0/extensions   Run single API call"),
             "ext": ("Manage extensions", "ext <command>\n  ext list                 List all extensions\n  ext create 4000 pass     Create extension\n  ext delete <id>          Delete extension"),
-            "billing": ("Billing management", "billing <subcommand> <action> [options]\n  billing account list                             List billing accounts\n  billing account create --customer-id ID          Create account\n  billing account get --id ID                      Get account details\n  billing account delete --id ID                   Delete account\n  billing account add-balance --id ID --amount N   Add balance\n  billing billing list                             List billing records\n  Type 'billing help' for more details"),
-            "customer": ("Customer management", "customer <action> [options]\n  customer list                   List all customers\n  customer create --email EMAIL   Create customer\n  customer get --id ID            Get customer details\n  customer delete --id ID         Delete customer\n  Type 'customer help' for more details"),
-            "number": ("Phone number management", "number <action> [options]\n  number list --customer_id ID                    List all numbers\n  number create --customer_id ID --number +1555   Create number\n  number get --id ID                              Get number details\n  number delete --id ID                           Delete number\n  number register --customer_id ID --number +1555 Register number\n  Type 'number help' for more details"),
-            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  registrar extension list --customer_id ID     List extensions\n  registrar extension create --customer_id ID   Create extension\n  registrar trunk list --customer_id ID         List trunks\n  registrar trunk create --customer_id ID       Create trunk\n  Type 'registrar help' for more details"),
-            "agent": ("Agent management", "agent <action> [options]\n  agent list --customer_id ID              List all agents\n  agent create --customer_id ID            Create agent\n  agent get --id ID                        Get agent details\n  agent delete --id ID                     Delete agent\n  Type 'agent help' for more details"),
+            "billing": ("Billing management", "billing <subcommand> <action> [options]\n  Type 'billing help' for more details"),
+            "customer": ("Customer management", "customer <action> [options]\n  Type 'customer help' for more details"),
+            "number": ("Phone number management", "number <action> [options]\n  Type 'number help' for more details"),
+            "registrar": ("Registrar management", "registrar <subcommand> <action> [options]\n  Type 'registrar help' for more details"),
+            "agent": ("Agent management", "agent <action> [options]\n  Type 'agent help' for more details"),
+            "call": ("Call management", "call <action> [options]\n  Type 'call help' for more details"),
+            "campaign": ("Campaign management", "campaign <action> [options]\n  Type 'campaign help' for more details"),
+            "chat": ("Chat room management", "chat <action> [options]\n  Type 'chat help' for more details"),
+            "conference": ("Conference management", "conference <action> [options]\n  Type 'conference help' for more details"),
+            "conversation": ("Conversation management", "conversation <subcommand> <action> [options]\n  Type 'conversation help' for more details"),
+            "flow": ("Flow management", "flow <action> [options]\n  Type 'flow help' for more details"),
+            "outdial": ("Outdial management", "outdial <action> [options]\n  Type 'outdial help' for more details"),
+            "queue": ("Queue management", "queue <subcommand> <action> [options]\n  Type 'queue help' for more details"),
+            "route": ("Route management", "route <action> [options]\n  Type 'route help' for more details"),
+            "storage": ("Storage management", "storage <subcommand> <action> [options]\n  Type 'storage help' for more details"),
+            "tag": ("Tag management", "tag <action> [options]\n  Type 'tag help' for more details"),
+            "talk": ("Talk management", "talk <subcommand> <action> [options]\n  Type 'talk help' for more details"),
+            "transfer": ("Transfer management", "transfer <action> [options]\n  Type 'transfer help' for more details"),
+            "tts": ("Text-to-speech", "tts <action> [options]\n  Type 'tts help' for more details"),
+            "webhook": ("Webhook operations", "webhook <action> [options]\n  Type 'webhook help' for more details"),
+            "hook": ("Test webhook operations", "hook <action> [options]\n  Type 'hook help' for more details"),
             "config": ("View/set configuration", "config [key] [value]\n  config                Show all settings\n  config log_lines 100  Set value\n  config reset          Reset to defaults"),
             "dns": ("DNS setup for SIP domains", "dns [status|list|setup|regenerate|test]\n  dns status       Check DNS configuration\n  dns list         List all DNS domains and their purposes\n  dns setup        Setup DNS forwarding to CoreDNS (requires sudo)\n  dns regenerate   Regenerate Corefile and restart CoreDNS (requires sudo)\n  dns test         Test domain resolution"),
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
@@ -1038,12 +1679,28 @@ class VoIPBinCLI:
   api               REST API client
 
 {blue('Data Management:')}
-  ext               Quick extension management (shortcut)
-  billing           Billing and account management
-  customer          Customer management
-  number            Phone number management
-  registrar         Extension and trunk management
+  ext               Extension management
   agent             Agent management
+  billing           Billing and account management
+  call              Call management
+  campaign          Campaign management
+  chat              Chat room management
+  conference        Conference management
+  conversation      Conversation and messaging
+  customer          Customer management
+  flow              Flow management
+  number            Phone number management
+  outdial           Outdial management
+  queue             Queue management
+  registrar         Extension and trunk management
+  route             Route management
+  storage           Storage and file management
+  tag               Tag management
+  talk              Talk chat management
+  transfer          Transfer management
+  tts               Text-to-speech
+  webhook           Webhook operations
+  hook              Test webhook operations
 
 {blue('Infrastructure:')}
   dns               DNS setup for SIP domains
@@ -1707,12 +2364,14 @@ Type 'billing <subcommand> help' for more details.
 {bold('Billing Account Management')}
 
 {blue('Available Commands:')}
-  list              List billing accounts
-  create            Create a new billing account
-  get               Get account details by ID
-  delete            Delete an account
-  add-balance       Add balance to an account
-  subtract-balance  Subtract balance from an account
+  list                List billing accounts
+  create              Create a new billing account
+  get                 Get account details by ID
+  delete              Delete an account
+  add-balance         Add balance to an account
+  subtract-balance    Subtract balance from an account
+  update              Update account basic info
+  update-payment-info Update account payment info
 
 {blue('Usage:')} billing account <command> [options]
 
@@ -1722,6 +2381,8 @@ Type 'billing <subcommand> help' for more details.
   billing account create --customer-id abc123 --name "Main Account"
   billing account get --id xyz789
   billing account add-balance --id xyz789 --amount 100
+  billing account update --id xyz789 --name "Updated Name"
+  billing account update-payment-info --id xyz789 --payment-type prepaid --payment-method "credit card"
 """)
         elif subcmd == "billing":
             if args and args[0] not in ("help", "-h", "--help"):
@@ -1751,6 +2412,8 @@ Type 'billing <subcommand> help' for more details.
             ("account", "delete"): ("Delete an account", [("id", "Account ID")], []),
             ("account", "add-balance"): ("Add balance to an account", [("id", "Account ID"), ("amount", "Amount to add")], []),
             ("account", "subtract-balance"): ("Subtract balance from an account", [("id", "Account ID"), ("amount", "Amount to subtract")], []),
+            ("account", "update"): ("Update account basic info", [("id", "Account ID"), ("name", "Account name")], [("detail", "Description")]),
+            ("account", "update-payment-info"): ("Update account payment info", [("id", "Account ID"), ("payment-method", "Payment method"), ("payment-type", "Payment type")], []),
             ("billing", "list"): ("List billing records", [], [("customer-id", "Filter by customer ID"), ("account-id", "Filter by account ID"), ("limit", "Max results (default: 100)")]),
             ("billing", "get"): ("Get billing record details", [("id", "Billing record ID")], []),
         }
@@ -1868,7 +2531,7 @@ Type 'billing <subcommand> help' for more details.
         subcmd = args[0].lower()
 
         # Map commands to actions
-        valid_actions = ["list", "create", "get", "delete"]
+        valid_actions = ["list", "create", "get", "delete", "update", "update-billing-account"]
         if subcmd not in valid_actions:
             print(f"{red('✗')} Unknown subcommand: {subcmd}")
             print(f"  Available: {', '.join(valid_actions)}")
@@ -1889,10 +2552,12 @@ Type 'billing <subcommand> help' for more details.
 {bold('Customer Management')}
 
 {blue('Available Commands:')}
-  list             List all customers
-  create           Create a new customer
-  get              Get customer details by ID
-  delete           Delete a customer
+  list                    List all customers
+  create                  Create a new customer
+  get                     Get customer details by ID
+  delete                  Delete a customer
+  update                  Update customer basic info
+  update-billing-account  Update customer billing account ID
 
 {blue('Usage:')} customer <command> [options]
 
@@ -1901,6 +2566,7 @@ Type 'billing <subcommand> help' for more details.
   customer create --email user@example.com --name "John Doe"
   customer get --id abc123
   customer delete --id abc123
+  customer update --id abc123 --name "New Name"
 """)
 
     def _show_customer_action_help(self, action):
@@ -1910,6 +2576,8 @@ Type 'billing <subcommand> help' for more details.
             "create": ("Create a new customer", [("email", "Customer email")], [("name", "Customer name"), ("detail", "Description"), ("address", "Physical address"), ("phone_number", "Phone number")]),
             "get": ("Get customer details", [("id", "Customer ID")], []),
             "delete": ("Delete a customer", [("id", "Customer ID")], []),
+            "update": ("Update customer basic info", [("id", "Customer ID")], [("name", "Customer name"), ("detail", "Description"), ("address", "Physical address"), ("phone_number", "Phone number")]),
+            "update-billing-account": ("Update customer billing account ID", [("id", "Customer ID"), ("billing_account_id", "Billing account ID")], []),
         }
 
         if action not in help_info:
@@ -1993,6 +2661,9 @@ Type 'billing <subcommand> help' for more details.
         elif action == "delete":
             print(f"{green('✓')} Customer deleted.")
 
+        elif action.startswith("update"):
+            print(f"{green('✓')} Customer updated.")
+
     def cmd_number(self, args):
         """Phone number management"""
         if not args or args[0] in ("help", "-h", "--help"):
@@ -2001,7 +2672,7 @@ Type 'billing <subcommand> help' for more details.
 
         action = args[0].lower()
 
-        valid_actions = ["list", "create", "get", "delete", "register"]
+        valid_actions = ["list", "create", "get", "delete", "register", "update", "get-available"]
         if action not in valid_actions:
             print(f"{red('✗')} Unknown subcommand: {action}")
             print(f"  Available: {', '.join(valid_actions)}")
@@ -2027,25 +2698,30 @@ Type 'billing <subcommand> help' for more details.
   get              Get number details by ID
   delete           Delete a number
   register         Register a new number
+  update           Update a number
+  get-available    Get available numbers for purchase
 
 {blue('Usage:')} number <command> [options]
 
 {blue('Examples:')}
-  number list --customer_id abc123
-  number create --customer_id abc123 --number +15551234567 --name "Main Line"
+  number list --customer-id abc123
+  number create --customer-id abc123 --number +15551234567 --name "Main Line"
   number get --id xyz789
   number delete --id xyz789
-  number register --customer_id abc123 --number +15551234567
+  number register --customer-id abc123 --number +15551234567
+  number update --id xyz789 --name "New Name"
 """)
 
     def _show_number_action_help(self, action):
         """Show help for specific number action"""
         help_info = {
-            "list": ("List all phone numbers", [("customer_id", "Customer ID")], [("limit", "Max results (default: 100)")]),
-            "create": ("Create a new number entry", [("customer_id", "Customer ID"), ("number", "Phone number (e.g., +15551234567)")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
+            "list": ("List all phone numbers", [("customer-id", "Customer ID")], [("limit", "Max results (default: 100)")]),
+            "create": ("Create a new number entry", [("customer-id", "Customer ID"), ("number", "Phone number (e.g., +15551234567)")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
             "get": ("Get number details", [("id", "Number ID")], []),
             "delete": ("Delete a number", [("id", "Number ID")], []),
-            "register": ("Register a new number", [("customer_id", "Customer ID"), ("number", "Phone number (e.g., +15551234567)")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
+            "register": ("Register a new number", [("customer-id", "Customer ID"), ("number", "Phone number (e.g., +15551234567)")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
+            "update": ("Update a number", [("id", "Number ID")], [("name", "Number name"), ("detail", "Description"), ("call_flow_id", "Call flow ID"), ("message_flow_id", "Message flow ID")]),
+            "get-available": ("Get available numbers for purchase", [], [("country_code", "Country code"), ("type", "Number type")]),
         }
 
         if action not in help_info:
@@ -2129,6 +2805,18 @@ Type 'billing <subcommand> help' for more details.
         elif action == "delete":
             print(f"{green('✓')} Number deleted.")
 
+        elif action == "update":
+            print(f"{green('✓')} Number updated.")
+
+        elif action == "get-available":
+            if not data:
+                print("\nNo available numbers found.\n")
+                return
+            print(f"\n{bold('Available Numbers')} ({len(data)} found)\n")
+            for num in data:
+                print(f"  {num.get('number', 'N/A')}")
+            print()
+
     def cmd_registrar(self, args):
         """Registrar management (extensions and trunks)"""
         if not args or args[0] in ("help", "-h", "--help"):
@@ -2184,8 +2872,8 @@ Type 'registrar <subcommand> help' for more details.
 {blue('Usage:')} registrar extension <command> [options]
 
 {blue('Examples:')}
-  registrar extension list --customer_id abc123
-  registrar extension create --customer_id abc123 --username 1000 --password secret
+  registrar extension list --customer-id abc123
+  registrar extension create --customer-id abc123 --username 1000 --password secret
   registrar extension get --id xyz789
   registrar extension delete --id xyz789
 """)
@@ -2206,8 +2894,8 @@ Type 'registrar <subcommand> help' for more details.
 {blue('Usage:')} registrar trunk <command> [options]
 
 {blue('Examples:')}
-  registrar trunk list --customer_id abc123
-  registrar trunk create --customer_id abc123 --domain sip.example.com --name "Main Trunk"
+  registrar trunk list --customer-id abc123
+  registrar trunk create --customer-id abc123 --domain sip.example.com --name "Main Trunk"
   registrar trunk get --id xyz789
   registrar trunk delete --id xyz789
 """)
@@ -2215,13 +2903,13 @@ Type 'registrar <subcommand> help' for more details.
     def _show_registrar_action_help(self, subcmd, action):
         """Show help for specific registrar action"""
         help_info = {
-            ("extension", "list"): ("List extensions", [("customer_id", "Customer ID")], [("extension_number", "Filter by extension"), ("limit", "Max results (default: 100)")]),
-            ("extension", "create"): ("Create a new extension", [("customer_id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("extension_number", "Extension number"), ("domain", "Domain name")]),
+            ("extension", "list"): ("List extensions", [("customer-id", "Customer ID")], [("extension_number", "Filter by extension"), ("limit", "Max results (default: 100)")]),
+            ("extension", "create"): ("Create a new extension", [("customer-id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("extension_number", "Extension number"), ("domain", "Domain name")]),
             ("extension", "get"): ("Get extension details", [("id", "Extension ID")], []),
             ("extension", "delete"): ("Delete an extension", [("id", "Extension ID")], []),
             ("extension", "update"): ("Update an extension", [("id", "Extension ID")], [("password", "New password"), ("extension_number", "New extension number"), ("username", "New username")]),
-            ("trunk", "list"): ("List trunks", [("customer_id", "Customer ID")], [("name", "Filter by name"), ("limit", "Max results (default: 100)")]),
-            ("trunk", "create"): ("Create a new trunk", [("customer_id", "Customer ID"), ("domain", "Domain name")], [("name", "Trunk name"), ("username", "Username"), ("password", "Password"), ("allowed_ips", "Allowed IPs (comma-separated)")]),
+            ("trunk", "list"): ("List trunks", [("customer-id", "Customer ID")], [("name", "Filter by name"), ("limit", "Max results (default: 100)")]),
+            ("trunk", "create"): ("Create a new trunk", [("customer-id", "Customer ID"), ("domain", "Domain name")], [("name", "Trunk name"), ("username", "Username"), ("password", "Password"), ("allowed_ips", "Allowed IPs (comma-separated)")]),
             ("trunk", "get"): ("Get trunk details", [("id", "Trunk ID")], []),
             ("trunk", "delete"): ("Delete a trunk", [("id", "Trunk ID")], []),
             ("trunk", "update"): ("Update a trunk", [("id", "Trunk ID")], [("password", "New password"), ("allowed_ips", "Allowed IPs"), ("name", "New name"), ("username", "New username")]),
@@ -2337,7 +3025,7 @@ Type 'registrar <subcommand> help' for more details.
 
         action = args[0].lower()
 
-        valid_actions = ["list", "create", "get", "delete", "update-password", "update-permission"]
+        valid_actions = ["list", "create", "get", "delete", "login", "update-addresses", "update-basic-info", "update-password", "update-permission", "update-status", "update-tag-ids"]
         if action not in valid_actions:
             print(f"{red('✗')} Unknown subcommand: {action}")
             print(f"  Available: {', '.join(valid_actions)}")
@@ -2362,14 +3050,19 @@ Type 'registrar <subcommand> help' for more details.
   create             Create a new agent
   get                Get agent details by ID
   delete             Delete an agent
+  login              Authenticate an agent
+  update-addresses   Update agent addresses
+  update-basic-info  Update agent basic info
   update-password    Update agent password
   update-permission  Update agent permission
+  update-status      Update agent status
+  update-tag-ids     Update agent tag IDs
 
 {blue('Usage:')} agent <command> [options]
 
 {blue('Examples:')}
-  agent list --customer_id abc123
-  agent create --customer_id abc123 --username user1 --password secret
+  agent list --customer-id abc123
+  agent create --customer-id abc123 --username user1 --password secret
   agent get --id xyz789
   agent delete --id xyz789
   agent update-password --id xyz789 --password newpass
@@ -2378,12 +3071,17 @@ Type 'registrar <subcommand> help' for more details.
     def _show_agent_action_help(self, action):
         """Show help for specific agent action"""
         help_info = {
-            "list": ("List all agents", [("customer_id", "Customer ID")], [("limit", "Max results (default: 100)")]),
-            "create": ("Create a new agent", [("customer_id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("name", "Agent name"), ("detail", "Description"), ("permission", "Permission level")]),
+            "list": ("List all agents", [("customer-id", "Customer ID")], [("limit", "Max results (default: 100)")]),
+            "create": ("Create a new agent", [("customer-id", "Customer ID"), ("username", "Username"), ("password", "Password")], [("name", "Agent name"), ("detail", "Description"), ("permission", "Permission level")]),
             "get": ("Get agent details", [("id", "Agent ID")], []),
             "delete": ("Delete an agent", [("id", "Agent ID")], []),
+            "login": ("Authenticate an agent", [("username", "Username"), ("password", "Password")], []),
+            "update-addresses": ("Update agent addresses", [("id", "Agent ID")], [("addresses", "Addresses JSON")]),
+            "update-basic-info": ("Update agent basic info", [("id", "Agent ID")], [("name", "Name"), ("detail", "Detail")]),
             "update-password": ("Update agent password", [("id", "Agent ID"), ("password", "New password")], []),
             "update-permission": ("Update agent permission", [("id", "Agent ID")], [("permission", "New permission level")]),
+            "update-status": ("Update agent status", [("id", "Agent ID"), ("status", "Status")], []),
+            "update-tag-ids": ("Update agent tag IDs", [("id", "Agent ID")], [("tag_ids", "Tag IDs JSON")]),
         }
 
         if action not in help_info:
@@ -2467,8 +3165,272 @@ Type 'registrar <subcommand> help' for more details.
         elif action == "delete":
             print(f"{green('✓')} Agent deleted.")
 
-        elif action in ("update-password", "update-permission"):
+        elif action == "login":
+            if data:
+                print(f"{green('✓')} Login successful.")
+                if "token" in data:
+                    print(f"  Token: {data.get('token', '')[:50]}...")
+
+        elif action.startswith("update-"):
             print(f"{green('✓')} Agent updated.")
+
+    # -------------------------------------------------------------------------
+    # Generic Sidecar Command Handler
+    # -------------------------------------------------------------------------
+
+    def _run_generic_sidecar(self, service_name, args, entity_name=None):
+        """
+        Generic handler for sidecar commands.
+        service_name: key in SIDECAR_COMMANDS (e.g., "call", "campaign")
+        entity_name: display name for messages (defaults to service_name)
+        """
+        if entity_name is None:
+            entity_name = service_name.title()
+
+        config = SIDECAR_COMMANDS.get(service_name)
+        if not config:
+            print(f"{red('✗')} Unknown service: {service_name}")
+            return
+
+        subcommands = config.get("subcommands", {})
+        container = config["container"]
+        binary = config["binary"]
+
+        # Show help if no args
+        if not args or args[0] in ("help", "-h", "--help"):
+            self._show_generic_help(service_name, entity_name, subcommands)
+            return
+
+        # Determine if first arg is a subcommand or action
+        first_arg = args[0].lower()
+
+        # Single subcommand services (action is first arg)
+        if len(subcommands) == 1:
+            subcmd = list(subcommands.keys())[0]
+            action = first_arg
+            remaining_args = args[1:]
+        # Multi-subcommand services (subcommand is first arg)
+        elif first_arg in subcommands:
+            subcmd = first_arg
+            if len(args) < 2 or args[1] in ("help", "-h", "--help"):
+                self._show_generic_subcommand_help(service_name, subcmd, entity_name, subcommands[subcmd])
+                return
+            action = args[1].lower()
+            remaining_args = args[2:]
+        else:
+            # Assume single subcommand with same name as service
+            if service_name in subcommands:
+                subcmd = service_name
+                action = first_arg
+                remaining_args = args[1:]
+            else:
+                print(f"{red('✗')} Unknown subcommand: {first_arg}")
+                print(f"  Available: {', '.join(subcommands.keys())}")
+                return
+
+        # Check if action is valid
+        valid_actions = subcommands.get(subcmd, {}).get("commands", [])
+        if action not in valid_actions:
+            print(f"{red('✗')} Unknown action: {action}")
+            print(f"  Available: {', '.join(valid_actions)}")
+            return
+
+        # Parse arguments
+        cmd_args = parse_sidecar_args(remaining_args)
+        verbose = cmd_args.pop("verbose", False)
+        command_key = (service_name, subcmd, action)
+
+        # Prompt for missing required args
+        cmd_args = prompt_missing_args(command_key, cmd_args)
+        if cmd_args is None:
+            return
+
+        # Confirm delete
+        if command_key in SIDECAR_DELETE_COMMANDS and "id" in cmd_args:
+            get_args = {"id": cmd_args.get("id")}
+            success, data = run_sidecar_command(container, f"{binary} {subcmd} get", get_args, verbose=False)
+            if success and data:
+                if not confirm_delete(entity_name.lower(), data):
+                    return
+
+        # Run command
+        success, data = run_sidecar_command(container, f"{binary} {subcmd} {action}", cmd_args, verbose)
+
+        if not success:
+            print(f"{red('✗')} {data}")
+            return
+
+        # Format output
+        self._format_generic_output(service_name, subcmd, action, data, command_key, entity_name)
+
+    def _show_generic_help(self, service_name, entity_name, subcommands):
+        """Show help for a service"""
+        print(f"\n{bold(f'{entity_name} Management')}\n")
+
+        if len(subcommands) == 1:
+            # Single subcommand - show actions directly
+            subcmd = list(subcommands.keys())[0]
+            subcmd_info = subcommands[subcmd]
+            print(f"{blue('Available Commands:')}")
+            for cmd in subcmd_info.get("commands", []):
+                print(f"  {cmd:<25} {cmd.replace('-', ' ').title()}")
+            print(f"\n{blue('Usage:')} {service_name} <command> [options]")
+        else:
+            # Multiple subcommands
+            print(f"{blue('Available Subcommands:')}")
+            for subcmd, info in subcommands.items():
+                print(f"  {subcmd:<20} {info.get('description', '')}")
+            print(f"\n{blue('Usage:')} {service_name} <subcommand> <command> [options]")
+            print(f"\nType '{service_name} <subcommand> help' for more details.")
+        print()
+
+    def _show_generic_subcommand_help(self, service_name, subcmd, entity_name, subcmd_info):
+        """Show help for a specific subcommand"""
+        print(f"\n{bold(subcmd_info.get('description', subcmd.title()))}\n")
+        print(f"{blue('Available Commands:')}")
+        for cmd in subcmd_info.get("commands", []):
+            print(f"  {cmd:<25} {cmd.replace('-', ' ').title()}")
+        print(f"\n{blue('Usage:')} {service_name} {subcmd} <command> [options]\n")
+
+    def _format_generic_output(self, service_name, subcmd, action, data, command_key, entity_name):
+        """Format and display sidecar command output"""
+        if action == "list":
+            if not data:
+                print(f"\nNo {entity_name.lower()}s found.\n")
+                return
+            columns = SIDECAR_TABLE_COLUMNS.get(command_key)
+            if columns:
+                print(f"\n{bold(f'{entity_name}s')} ({len(data)} found)\n")
+                format_table(data, columns)
+                print()
+            else:
+                # Fallback: print JSON
+                print(json.dumps(data, indent=2))
+
+        elif action == "get" or action.startswith("get-"):
+            if not data:
+                print(f"{red('✗')} {entity_name} not found.")
+                return
+            fields = SIDECAR_DETAIL_FIELDS.get(command_key)
+            if fields:
+                print(f"\n{bold(entity_name)}")
+                format_details(data, fields)
+            else:
+                # Fallback: print JSON
+                print(json.dumps(data, indent=2))
+
+        elif action == "create":
+            if data:
+                item_id = data.get("id", "unknown")
+                name = data.get("name", data.get("username", ""))
+                if name:
+                    print(f"{green('✓')} {entity_name} created: {name}")
+                else:
+                    print(f"{green('✓')} {entity_name} created")
+                print(f"  ID: {item_id}")
+
+        elif action == "delete":
+            print(f"{green('✓')} {entity_name} deleted.")
+
+        elif action.startswith("update") or action.startswith("add") or action.startswith("remove"):
+            print(f"{green('✓')} {entity_name} updated.")
+
+        elif action == "hangup":
+            print(f"{green('✓')} Call hung up.")
+
+        elif action == "terminating":
+            print(f"{green('✓')} Conference terminated.")
+
+        elif action.startswith("recording-") or action.startswith("transcribe-"):
+            op = "started" if action.endswith("-start") else "stopped"
+            what = "Recording" if "recording" in action else "Transcription"
+            print(f"{green('✓')} {what} {op}.")
+
+        elif action.startswith("send-"):
+            print(f"{green('✓')} Webhook sent.")
+
+        elif action == "service-start":
+            print(f"{green('✓')} Transfer service started.")
+
+        else:
+            # Generic success
+            if data:
+                if isinstance(data, dict):
+                    print(json.dumps(data, indent=2))
+                elif isinstance(data, list) and data:
+                    print(json.dumps(data, indent=2))
+                else:
+                    print(f"{green('✓')} Operation completed.")
+            else:
+                print(f"{green('✓')} Operation completed.")
+
+    # -------------------------------------------------------------------------
+    # New Sidecar Command Handlers
+    # -------------------------------------------------------------------------
+
+    def cmd_call(self, args):
+        """Call management"""
+        self._run_generic_sidecar("call", args, "Call")
+
+    def cmd_campaign(self, args):
+        """Campaign management"""
+        self._run_generic_sidecar("campaign", args, "Campaign")
+
+    def cmd_chat(self, args):
+        """Chat room management"""
+        self._run_generic_sidecar("chat", args, "Chat")
+
+    def cmd_conference(self, args):
+        """Conference management"""
+        self._run_generic_sidecar("conference", args, "Conference")
+
+    def cmd_conversation(self, args):
+        """Conversation management"""
+        self._run_generic_sidecar("conversation", args, "Conversation")
+
+    def cmd_flow(self, args):
+        """Flow management"""
+        self._run_generic_sidecar("flow", args, "Flow")
+
+    def cmd_outdial(self, args):
+        """Outdial management"""
+        self._run_generic_sidecar("outdial", args, "Outdial")
+
+    def cmd_queue(self, args):
+        """Queue management"""
+        self._run_generic_sidecar("queue", args, "Queue")
+
+    def cmd_route(self, args):
+        """Route management"""
+        self._run_generic_sidecar("route", args, "Route")
+
+    def cmd_storage(self, args):
+        """Storage management"""
+        self._run_generic_sidecar("storage", args, "Storage")
+
+    def cmd_tag(self, args):
+        """Tag management"""
+        self._run_generic_sidecar("tag", args, "Tag")
+
+    def cmd_talk(self, args):
+        """Talk management"""
+        self._run_generic_sidecar("talk", args, "Talk")
+
+    def cmd_transfer(self, args):
+        """Transfer management"""
+        self._run_generic_sidecar("transfer", args, "Transfer")
+
+    def cmd_tts(self, args):
+        """Text-to-speech"""
+        self._run_generic_sidecar("tts", args, "TTS")
+
+    def cmd_webhook(self, args):
+        """Webhook operations"""
+        self._run_generic_sidecar("webhook", args, "Webhook")
+
+    def cmd_hook(self, args):
+        """Test webhook operations (send test webhooks)"""
+        self._run_generic_sidecar("hook", args, "Hook")
 
     def cmd_config(self, args):
         """View/set configuration"""
