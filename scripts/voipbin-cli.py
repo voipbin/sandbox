@@ -4329,6 +4329,8 @@ Type 'registrar <subcommand> help' for more details.
                 ("config/coredns", "CoreDNS config"),
                 ("config/dummy-gcp-credentials.json", "dummy GCP credentials"),
                 ("tmp", "tmp directory"),
+                ("docker-compose.override.yml", "version pins"),
+                (".voipbin-versions", "rollback history"),
             ]
 
             for path, desc in files_to_remove:
