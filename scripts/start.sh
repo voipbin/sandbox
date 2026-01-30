@@ -441,6 +441,16 @@ setup_test_customer() {
     local billing_account_id
     billing_account_id=$(echo "$customer_info" | jq -r '.billing_account_id' 2>/dev/null)
 
+    # Create accesskey for API access
+    if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
+        log_info "  Creating API access key..."
+        docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
+            --customer-id "$CUSTOMER_ID" \
+            --name "Sandbox API Key" \
+            --detail "Default API key for sandbox testing" \
+            --expire 87600h 2>&1 | grep -v severity || true
+    fi
+
     # Add initial balance to billing account
     if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ]; then
         log_info "  Adding initial balance to billing account..."

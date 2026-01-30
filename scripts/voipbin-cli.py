@@ -179,6 +179,10 @@ SIDECAR_COMMANDS = {
                 "commands": ["list", "create", "get", "delete", "update", "update-billing-account"],
                 "description": "Manage customers",
             },
+            "accesskey": {
+                "commands": ["list", "create", "get", "update", "delete"],
+                "description": "Manage API access keys",
+            },
         },
     },
     "number": {
@@ -426,6 +430,11 @@ SIDECAR_REQUIRED_ARGS = {
     ("customer", "customer", "delete"): ["id"],
     ("customer", "customer", "update"): ["id"],
     ("customer", "customer", "update-billing-account"): ["id", "billing-account-id"],
+    # accesskey commands
+    ("customer", "accesskey", "create"): ["customer-id", "name"],
+    ("customer", "accesskey", "get"): ["id"],
+    ("customer", "accesskey", "update"): ["id"],
+    ("customer", "accesskey", "delete"): ["id"],
     # number commands
     ("number", "number", "list"): ["customer-id"],
     ("number", "number", "create"): ["customer-id", "number"],
@@ -598,6 +607,7 @@ SIDECAR_REQUIRED_ARGS = {
 SIDECAR_DELETE_COMMANDS = [
     ("billing", "account", "delete"),
     ("customer", "customer", "delete"),
+    ("customer", "accesskey", "delete"),
     ("number", "number", "delete"),
     ("registrar", "extension", "delete"),
     ("registrar", "trunk", "delete"),
@@ -639,6 +649,12 @@ SIDECAR_TABLE_COLUMNS = {
         ("ID", "id", 36),
         ("Name", "name", 25),
         ("Email", "email", 30),
+    ],
+    ("customer", "accesskey", "list"): [
+        ("ID", "id", 36),
+        ("Name", "name", 20),
+        ("Customer ID", "customer_id", 36),
+        ("Expire", "tm_expire", 19),
     ],
     ("number", "number", "list"): [
         ("ID", "id", 36),
@@ -791,6 +807,16 @@ SIDECAR_DETAIL_FIELDS = {
         ("Phone", "phone_number"),
         ("Address", "address"),
         ("Created", "tm_create"),
+    ],
+    ("customer", "accesskey", "get"): [
+        ("ID", "id"),
+        ("Name", "name"),
+        ("Detail", "detail"),
+        ("Customer ID", "customer_id"),
+        ("Token", "token"),
+        ("Expire", "tm_expire"),
+        ("Created", "tm_create"),
+        ("Updated", "tm_update"),
     ],
     ("number", "number", "get"): [
         ("ID", "id"),
@@ -2778,32 +2804,69 @@ Type 'billing <subcommand> help' for more details.
                 print(f"  New balance: {new_balance}")
 
     def cmd_customer(self, args):
-        """Customer management using sidecar commands"""
+        """Customer management (customers and access keys)"""
         if not args or args[0] in ("help", "-h", "--help"):
             self._show_customer_help(args[1:] if len(args) > 1 else [])
             return
 
         subcmd = args[0].lower()
 
-        # Map commands to actions
-        valid_actions = ["list", "create", "get", "delete", "update", "update-billing-account"]
-        if subcmd not in valid_actions:
-            print(f"{red('✗')} Unknown subcommand: {subcmd}")
-            print(f"  Available: {', '.join(valid_actions)}")
-            print("  Type 'customer help' for usage.")
-            return
+        # Check if it's a subcommand (customer or accesskey) or a direct action
+        if subcmd in ("customer", "accesskey"):
+            if len(args) < 2 or args[1] in ("help", "-h", "--help"):
+                self._show_customer_subcommand_help(subcmd, args[2:] if len(args) > 2 else [])
+                return
 
-        cmd_args = parse_sidecar_args(args[1:])
-        verbose = cmd_args.pop("verbose", False)
+            action = args[1].lower()
 
-        self._run_customer_command(subcmd, cmd_args, verbose)
+            # Check for help on specific action
+            if len(args) > 2 and args[2] in ("help", "-h", "--help"):
+                self._show_customer_action_help(subcmd, action)
+                return
+
+            cmd_args = parse_sidecar_args(args[2:])
+            verbose = cmd_args.pop("verbose", False)
+
+            self._run_customer_command(subcmd, action, cmd_args, verbose)
+        else:
+            # Backward compatibility: treat as direct customer action
+            action = subcmd
+            valid_actions = ["list", "create", "get", "delete", "update", "update-billing-account"]
+            if action not in valid_actions:
+                print(f"{red('✗')} Unknown subcommand: {action}")
+                print("  Available: customer, accesskey")
+                print("  Type 'customer help' for usage.")
+                return
+
+            # Check for help on specific action
+            if len(args) > 1 and args[1] in ("help", "-h", "--help"):
+                self._show_customer_action_help("customer", action)
+                return
+
+            cmd_args = parse_sidecar_args(args[1:])
+            verbose = cmd_args.pop("verbose", False)
+
+            self._run_customer_command("customer", action, cmd_args, verbose)
 
     def _show_customer_help(self, args):
         """Show customer command help"""
-        if args and args[0] not in ("help", "-h", "--help"):
-            self._show_customer_action_help(args[0])
-            return
         print(f"""
+{bold('Customer Management')}
+
+{blue('Available Commands:')}
+  customer customer      Manage customers
+  customer accesskey     Manage API access keys
+
+Type 'customer <subcommand> help' for more details.
+""")
+
+    def _show_customer_subcommand_help(self, subcmd, args):
+        """Show help for customer subcommand"""
+        if subcmd == "customer":
+            if args and args[0] not in ("help", "-h", "--help"):
+                self._show_customer_action_help(subcmd, args[0])
+                return
+            print(f"""
 {bold('Customer Management')}
 
 {blue('Available Commands:')}
@@ -2814,53 +2877,91 @@ Type 'billing <subcommand> help' for more details.
   update                  Update customer basic info
   update-billing-account  Update customer billing account ID
 
-{blue('Usage:')} customer <command> [options]
+{blue('Usage:')} customer customer <command> [options]
 
 {blue('Examples:')}
-  customer list
-  customer create --email user@example.com --name "John Doe"
-  customer get --id abc123
-  customer delete --id abc123
-  customer update --id abc123 --name "New Name"
+  customer customer list
+  customer customer create --email user@example.com --name "John Doe"
+  customer customer get --id abc123
+  customer customer delete --id abc123
+  customer customer update --id abc123 --name "New Name"
+""")
+        elif subcmd == "accesskey":
+            if args and args[0] not in ("help", "-h", "--help"):
+                self._show_customer_action_help(subcmd, args[0])
+                return
+            print(f"""
+{bold('Accesskey Management')}
+
+{blue('Available Commands:')}
+  list     List access keys
+  create   Create a new access key
+  get      Get access key details by ID
+  update   Update access key info
+  delete   Delete an access key
+
+{blue('Usage:')} customer accesskey <command> [options]
+
+{blue('Examples:')}
+  customer accesskey list
+  customer accesskey list --customer-id abc123
+  customer accesskey create --customer-id abc123 --name "API Key"
+  customer accesskey create --customer-id abc123 --name "Production" --expire 720h
+  customer accesskey get --id key123
+  customer accesskey update --id key123 --name "New Name"
+  customer accesskey delete --id key123
 """)
 
-    def _show_customer_action_help(self, action):
+    def _show_customer_action_help(self, subcmd, action):
         """Show help for specific customer action"""
         help_info = {
-            "list": ("List all customers", [], [("limit", "Max results (default: 100)")]),
-            "create": ("Create a new customer", [("email", "Customer email")], [("name", "Customer name"), ("detail", "Description"), ("address", "Physical address"), ("phone_number", "Phone number")]),
-            "get": ("Get customer details", [("id", "Customer ID")], []),
-            "delete": ("Delete a customer", [("id", "Customer ID")], []),
-            "update": ("Update customer basic info", [("id", "Customer ID")], [("name", "Customer name"), ("detail", "Description"), ("address", "Physical address"), ("phone_number", "Phone number")]),
-            "update-billing-account": ("Update customer billing account ID", [("id", "Customer ID"), ("billing_account_id", "Billing account ID")], []),
+            ("customer", "list"): ("List all customers", [], [("limit", "Max results (default: 100)")]),
+            ("customer", "create"): ("Create a new customer", [("email", "Customer email")], [("name", "Customer name"), ("detail", "Description"), ("address", "Physical address"), ("phone_number", "Phone number")]),
+            ("customer", "get"): ("Get customer details", [("id", "Customer ID")], []),
+            ("customer", "delete"): ("Delete a customer", [("id", "Customer ID")], []),
+            ("customer", "update"): ("Update customer basic info", [("id", "Customer ID")], [("name", "Customer name"), ("detail", "Description"), ("address", "Physical address"), ("phone_number", "Phone number")]),
+            ("customer", "update-billing-account"): ("Update customer billing account ID", [("id", "Customer ID"), ("billing-account-id", "Billing account ID")], []),
+            ("accesskey", "list"): ("List access keys", [], [("customer-id", "Filter by customer ID"), ("size", "Number of results (default: 10)"), ("token", "Pagination token")]),
+            ("accesskey", "create"): ("Create a new access key", [("customer-id", "Customer ID"), ("name", "Access key name")], [("detail", "Description"), ("expire", "Expiration duration (e.g., 720h for 30 days)")]),
+            ("accesskey", "get"): ("Get access key details", [("id", "Access key ID")], []),
+            ("accesskey", "update"): ("Update access key info", [("id", "Access key ID")], [("name", "Access key name"), ("detail", "Description")]),
+            ("accesskey", "delete"): ("Delete an access key", [("id", "Access key ID")], []),
         }
 
-        if action not in help_info:
-            self._show_customer_help([])
+        key = (subcmd, action)
+        if key not in help_info:
+            print(f"{red('✗')} Unknown command: customer {subcmd} {action}")
             return
 
-        desc, required, optional = help_info[action]
+        desc, required, optional = help_info[key]
         print(f"\n{bold(desc)}\n")
-        print(f"{blue('Usage:')} customer {action} [options]\n")
+        print(f"{blue('Usage:')} customer {subcmd} {action} [options]\n")
 
         if required:
             print(f"{blue('Required:')}")
-            for arg, desc in required:
-                print(f"  --{arg:<20} {desc}")
+            for arg, arg_desc in required:
+                print(f"  --{arg:<20} {arg_desc}")
             print()
 
         if optional:
             print(f"{blue('Optional:')}")
-            for arg, desc in optional:
-                print(f"  --{arg:<20} {desc}")
+            for arg, arg_desc in optional:
+                print(f"  --{arg:<20} {arg_desc}")
             print()
 
-    def _run_customer_command(self, action, args, verbose):
+    def _run_customer_command(self, subcmd, action, args, verbose):
         """Execute a customer command"""
         config = SIDECAR_COMMANDS["customer"]
         container = config["container"]
         binary = config["binary"]
-        command_key = ("customer", "customer", action)
+        command_key = ("customer", subcmd, action)
+
+        # Check if action is valid
+        valid_actions = config["subcommands"].get(subcmd, {}).get("commands", [])
+        if action not in valid_actions:
+            print(f"{red('✗')} Unknown command: customer {subcmd} {action}")
+            print(f"  Available: {', '.join(valid_actions)}")
+            return
 
         # Prompt for missing required args
         args = prompt_missing_args(command_key, args)
@@ -2871,53 +2972,61 @@ Type 'billing <subcommand> help' for more details.
         if command_key in SIDECAR_DELETE_COMMANDS:
             # First get the resource to show details
             get_args = {"id": args.get("id")}
-            success, data = run_sidecar_command(container, f"{binary} customer get", get_args, verbose=False)
+            success, data = run_sidecar_command(container, f"{binary} {subcmd} get", get_args, verbose=False)
             if success and data:
-                if not confirm_delete("customer", data):
+                entity = "customer" if subcmd == "customer" else "accesskey"
+                if not confirm_delete(entity, data):
                     return
 
-        success, data = run_sidecar_command(container, f"{binary} customer {action}", args, verbose)
+        success, data = run_sidecar_command(container, f"{binary} {subcmd} {action}", args, verbose)
 
         if not success:
             print(f"{red('✗')} {data}")
             return
 
         # Format output
-        self._format_customer_output(action, data, command_key)
+        self._format_customer_output(subcmd, action, data, command_key)
 
-    def _format_customer_output(self, action, data, command_key):
+    def _format_customer_output(self, subcmd, action, data, command_key):
         """Format and display customer command output"""
+        entity = "Customers" if subcmd == "customer" else "Access Keys"
+        entity_singular = "Customer" if subcmd == "customer" else "Access Key"
+
         if action == "list":
             if not data:
-                print("\nNo customers found.\n")
+                print(f"\nNo {entity.lower()} found.\n")
                 return
             columns = SIDECAR_TABLE_COLUMNS.get(command_key)
             if columns:
-                print(f"\n{bold('Customers')} ({len(data)} found)\n")
+                print(f"\n{bold(entity)} ({len(data)} found)\n")
                 format_table(data, columns)
                 print()
 
         elif action == "get":
             if not data:
-                print(f"{red('✗')} Customer not found.")
+                print(f"{red('✗')} {entity_singular} not found.")
                 return
             fields = SIDECAR_DETAIL_FIELDS.get(command_key)
             if fields:
-                print(f"\n{bold('Customer')}")
+                print(f"\n{bold(entity_singular)}")
                 format_details(data, fields)
 
         elif action == "create":
             if data:
                 item_id = data.get("id", "unknown")
-                email = data.get("email", "")
-                print(f"{green('✓')} Customer created: {email}")
+                if subcmd == "customer":
+                    email = data.get("email", "")
+                    print(f"{green('✓')} {entity_singular} created: {email}")
+                else:
+                    name = data.get("name", "")
+                    print(f"{green('✓')} {entity_singular} created: {name}")
                 print(f"  ID: {item_id}")
 
         elif action == "delete":
-            print(f"{green('✓')} Customer deleted.")
+            print(f"{green('✓')} {entity_singular} deleted.")
 
         elif action.startswith("update"):
-            print(f"{green('✓')} Customer updated.")
+            print(f"{green('✓')} {entity_singular} updated.")
 
     def cmd_number(self, args):
         """Phone number management"""
