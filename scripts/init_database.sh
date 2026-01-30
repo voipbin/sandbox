@@ -241,7 +241,7 @@ EOF
 
 # Run alembic migrations
 run_migrations() {
-    log_step "Running alembic migrations..."
+    log_step "Running alembic migrations (parallel)..."
 
     # Check if alembic is installed
     if ! command -v alembic &> /dev/null; then
@@ -253,15 +253,96 @@ run_migrations() {
         }
     fi
 
-    # Run bin-manager migrations
-    log_info "  Running bin-manager migrations..."
-    cd "$DBSCHEME_DIR/bin-manager"
-    alembic -c alembic.ini upgrade head
+    # Create temp files for capturing output and status
+    local bin_manager_log=$(mktemp)
+    local asterisk_log=$(mktemp)
+    local bin_manager_status_file=$(mktemp)
+    local asterisk_status_file=$(mktemp)
 
-    # Run asterisk_config migrations
-    log_info "  Running asterisk_config migrations..."
-    cd "$DBSCHEME_DIR/asterisk_config"
-    alembic -c alembic.ini upgrade head
+    # Spinner characters
+    local spinner='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
+    # Run both migrations in parallel
+    (cd "$DBSCHEME_DIR/bin-manager" && alembic -c alembic.ini upgrade head > "$bin_manager_log" 2>&1; echo $? > "$bin_manager_status_file") &
+    local bin_manager_pid=$!
+
+    (cd "$DBSCHEME_DIR/asterisk_config" && alembic -c alembic.ini upgrade head > "$asterisk_log" 2>&1; echo $? > "$asterisk_status_file") &
+    local asterisk_pid=$!
+
+    # Show progress with spinner
+    local i=0
+    local bin_done=false
+    local ast_done=false
+
+    while true; do
+        # Check if processes are done
+        if ! kill -0 $bin_manager_pid 2>/dev/null; then
+            bin_done=true
+        fi
+        if ! kill -0 $asterisk_pid 2>/dev/null; then
+            ast_done=true
+        fi
+
+        # Build status line
+        local spin_char="${spinner:$((i % ${#spinner})):1}"
+        local bin_status="$spin_char running"
+        local ast_status="$spin_char running"
+
+        if $bin_done; then
+            if [ "$(cat "$bin_manager_status_file" 2>/dev/null)" = "0" ]; then
+                bin_status="${GREEN}✓ done${NC}"
+            else
+                bin_status="${RED}✗ failed${NC}"
+            fi
+        fi
+
+        if $ast_done; then
+            if [ "$(cat "$asterisk_status_file" 2>/dev/null)" = "0" ]; then
+                ast_status="${GREEN}✓ done${NC}"
+            else
+                ast_status="${RED}✗ failed${NC}"
+            fi
+        fi
+
+        # Print status line (overwrite previous)
+        printf "\r  bin-manager: %-12b | asterisk_config: %-12b" "$bin_status" "$ast_status"
+
+        # Exit if both done
+        if $bin_done && $ast_done; then
+            echo ""
+            break
+        fi
+
+        sleep 0.1
+        i=$((i + 1))
+    done
+
+    # Wait for processes (should already be done)
+    wait $bin_manager_pid 2>/dev/null
+    wait $asterisk_pid 2>/dev/null
+
+    # Get final status
+    local bin_manager_status=$(cat "$bin_manager_status_file" 2>/dev/null || echo "1")
+    local asterisk_status=$(cat "$asterisk_status_file" 2>/dev/null || echo "1")
+
+    # Show error details if failed
+    if [ "$bin_manager_status" != "0" ]; then
+        log_error "  bin-manager migration error:"
+        cat "$bin_manager_log"
+    fi
+
+    if [ "$asterisk_status" != "0" ]; then
+        log_error "  asterisk_config migration error:"
+        cat "$asterisk_log"
+    fi
+
+    # Cleanup temp files
+    rm -f "$bin_manager_log" "$asterisk_log" "$bin_manager_status_file" "$asterisk_status_file"
+
+    # Return error if either failed
+    if [ "$bin_manager_status" != "0" ] || [ "$asterisk_status" != "0" ]; then
+        return 1
+    fi
 
     log_info "  Migrations completed successfully!"
 }

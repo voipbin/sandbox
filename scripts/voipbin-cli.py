@@ -18,6 +18,11 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
+import yaml
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -93,12 +98,13 @@ class Colors:
     GRAY = "\033[90m"
     WHITE = "\033[97m"
     BOLD = "\033[1m"
+    DIM = "\033[2m"
     RESET = "\033[0m"
 
     @classmethod
     def disable(cls):
         cls.GREEN = cls.RED = cls.YELLOW = cls.BLUE = ""
-        cls.GRAY = cls.WHITE = cls.BOLD = cls.RESET = ""
+        cls.GRAY = cls.WHITE = cls.BOLD = cls.DIM = cls.RESET = ""
 
 
 def green(text):
@@ -121,6 +127,9 @@ def white(text):
 
 def bold(text):
     return f"{Colors.BOLD}{text}{Colors.RESET}"
+
+def dim(text):
+    return f"{Colors.DIM}{text}{Colors.RESET}"
 
 
 # =============================================================================
@@ -1244,6 +1253,176 @@ def get_all_services():
 
 
 # =============================================================================
+# Docker Hub API Helpers
+# =============================================================================
+
+DOCKERHUB_API_BASE = "https://hub.docker.com/v2/repositories"
+DOCKERHUB_MAX_WORKERS = 10
+DOCKERHUB_RETRY_COUNT = 3
+DOCKERHUB_RETRY_DELAY = 2
+
+
+def dockerhub_get(url, retries=DOCKERHUB_RETRY_COUNT):
+    """Make a GET request to Docker Hub API with retry logic"""
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 429:  # Rate limited
+                wait_time = DOCKERHUB_RETRY_DELAY * (attempt + 1)
+                time.sleep(wait_time)
+                continue
+            elif e.code == 404:
+                return None
+            raise
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < retries - 1:
+                time.sleep(DOCKERHUB_RETRY_DELAY)
+                continue
+            raise
+    return None
+
+
+def get_image_latest_digest(image_name):
+    """Get the digest of the 'latest' tag for an image"""
+    # image_name: voipbin/bin-api-manager
+    url = f"{DOCKERHUB_API_BASE}/{image_name}/tags/latest"
+    try:
+        data = dockerhub_get(url)
+        if data and "digest" in data:
+            return data["digest"]
+    except Exception:
+        pass
+    return None
+
+
+def get_image_tags(image_name):
+    """Get all tags for an image from Docker Hub"""
+    url = f"{DOCKERHUB_API_BASE}/{image_name}/tags?page_size=100"
+    try:
+        data = dockerhub_get(url)
+        if data and "results" in data:
+            return data["results"]
+    except Exception:
+        pass
+    return []
+
+
+def find_commit_sha_tag(image_name, target_digest):
+    """Find the commit-SHA tag that matches the given digest"""
+    tags = get_image_tags(image_name)
+    for tag in tags:
+        tag_name = tag.get("name", "")
+        tag_digest = tag.get("digest", "")
+        # Skip 'latest' and find commit-SHA tag with matching digest
+        if tag_name != "latest" and tag_digest == target_digest:
+            return tag_name
+    return None
+
+
+def resolve_image_tag(image_name):
+    """Resolve an image's latest tag to its commit-SHA tag
+
+    Returns: dict with image, tag, digest, error
+    """
+    result = {"image": image_name, "tag": None, "digest": None, "error": None}
+
+    try:
+        # Get latest digest
+        digest = get_image_latest_digest(image_name)
+        if not digest:
+            result["error"] = "Could not get latest digest"
+            return result
+
+        result["digest"] = digest
+
+        # Find matching commit-SHA tag
+        tag = find_commit_sha_tag(image_name, digest)
+        if tag:
+            result["tag"] = tag
+        else:
+            result["error"] = "No commit-SHA tag found"
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+def resolve_image_tags_parallel(images, progress_callback=None):
+    """Resolve multiple images' tags in parallel
+
+    Args:
+        images: list of image names (e.g., ['voipbin/bin-api-manager', ...])
+        progress_callback: optional function(current, total, image_name) for progress
+
+    Returns: list of results from resolve_image_tag
+    """
+    results = []
+    total = len(images)
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=DOCKERHUB_MAX_WORKERS) as executor:
+        futures = {executor.submit(resolve_image_tag, img): img for img in images}
+
+        for future in as_completed(futures):
+            image = futures[future]
+            completed += 1
+
+            if progress_callback:
+                progress_callback(completed, total, image)
+
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "image": image,
+                    "tag": None,
+                    "digest": None,
+                    "error": str(e)
+                })
+
+    return results
+
+
+def get_voipbin_images_from_compose(project_dir="."):
+    """Extract voipbin/* images and their service names from docker-compose.yml
+
+    Returns:
+        tuple: (list of unique image names, dict mapping image -> list of service names)
+    """
+    compose_file = os.path.join(project_dir, "docker-compose.yml")
+    images = []
+    image_to_services = {}  # image -> list of service names
+
+    if not os.path.exists(compose_file):
+        print(f"{yellow(f'Warning: docker-compose.yml not found at {compose_file}')}")
+        return images, image_to_services
+
+    try:
+        with open(compose_file, "r") as f:
+            compose = yaml.safe_load(f)
+
+        services = compose.get("services", {})
+        for service_name, config in services.items():
+            image = config.get("image", "")
+            if image.startswith("voipbin/"):
+                # Remove tag if present
+                image_base = image.split(":")[0]
+                if image_base not in images:
+                    images.append(image_base)
+                if image_base not in image_to_services:
+                    image_to_services[image_base] = []
+                image_to_services[image_base].append(service_name)
+    except Exception as e:
+        print(f"{yellow(f'Warning: Error reading docker-compose.yml: {e}')}")
+
+    return images, image_to_services
+
+
+# =============================================================================
 # Sidecar Command Helpers
 # =============================================================================
 
@@ -1539,6 +1718,7 @@ class VoIPBinCLI:
             "clean": self.cmd_clean,
             "update": self.cmd_update,
             "rollback": self.cmd_rollback,
+            "version": self.cmd_version,
             "exit": self.cmd_exit,
             "quit": self.cmd_exit,
             "clear": self.cmd_clear,
@@ -1548,7 +1728,7 @@ class VoIPBinCLI:
         self.help_text = {
             "status": ("Show service status", "status"),
             "ps": ("Alias for status", "ps"),
-            "start": ("Start services", "start [service]\n  start           Start all services\n  start api-manager  Start specific service"),
+            "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (pins versions on first run)\n  start --no-pin     Start without version pinning\n  start api-manager  Start specific service"),
             "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
             "restart": ("Restart services", "restart [service]"),
             "logs": ("View service logs", "logs [-f] <service>\n  logs api-manager     Last 50 lines\n  logs -f api-manager  Follow logs (Ctrl+C to stop)"),
@@ -1556,7 +1736,7 @@ class VoIPBinCLI:
             "kam": ("Kamailio kamcmd", "kam [command]\n  kam              Enter Kamailio context\n  kam ul.dump      Run single command"),
             "db": ("MySQL queries", "db [query]\n  db                                    Enter database context\n  db SELECT * FROM extensions LIMIT 5   Run single query"),
             "api": ("REST API client", "api [method] [path] [data]\n  api                        Enter API context\n  api get /v1.0/extensions   Run single API call"),
-            "ext": ("Manage extensions", "ext <command>\n  ext list                 List all extensions\n  ext create 4000 pass     Create extension\n  ext delete <id>          Delete extension"),
+            "extension": ("Manage extensions", "extension <command>\n  extension list                       List all extensions\n  extension create <ext> <pass> [name] Create extension\n  extension delete <id>                Delete extension"),
             "billing": ("Billing management", "billing <subcommand> <action> [options]\n  Type 'billing help' for more details"),
             "customer": ("Customer management", "customer <action> [options]\n  Type 'customer help' for more details"),
             "number": ("Phone number management", "number <action> [options]\n  Type 'number help' for more details"),
@@ -1585,7 +1765,8 @@ class VoIPBinCLI:
             "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
             "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
             "update": ("Update sandbox", "update [subcommand] [--check]\n  update               Pull latest Docker images + restart services\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Both images and scripts\n  update all --check   Dry-run: show both"),
-            "rollback": ("Rollback to previous backup", "rollback [timestamp]\n  rollback             Restore from latest backup\n  rollback --list      Show available backups\n  rollback 2026-01-27  Restore from specific backup"),
+            "rollback": ("Rollback to previous version", "rollback [N]\n  rollback             Interactive version selection\n  rollback N           Restore version by number (e.g., rollback 2)\n  rollback --list      Show available versions"),
+            "version": ("Show pinned image versions", "version [--json]\n  version              Show version table\n  version --json       Output as JSON for scripting"),
             "exit": ("Exit CLI", "exit"),
             "clear": ("Clear screen", "clear"),
         }
@@ -1679,7 +1860,7 @@ class VoIPBinCLI:
   api               REST API client
 
 {blue('Data Management:')}
-  ext               Extension management
+  extension         Extension management
   agent             Agent management
   billing           Billing and account management
   call              Call management
@@ -1956,8 +2137,68 @@ Type 'help <command>' for detailed usage.
         print(f"\n  Run 'dns list' for full domain reference.")
         print()
 
+    def _create_initial_version_pins(self, project_dir):
+        """Create initial version pins on first start"""
+        override_file = os.path.join(project_dir, "docker-compose.override.yml")
+        versions_dir = os.path.join(project_dir, ".voipbin-versions")
+
+        # Get list of voipbin images and their service mappings
+        images, image_to_services = get_voipbin_images_from_compose(project_dir)
+        if not images:
+            print(yellow(f"  No voipbin images found. Skipping version pinning."))
+            print(gray(f"  (project_dir: {project_dir})"))
+            return
+
+        print(f"  Found {len(images)} voipbin images")
+        print(f"  Resolving tags from Docker Hub...")
+
+        # Progress callback
+        def progress(current, total, image):
+            short_name = image.split("/")[-1] if "/" in image else image
+            print(f"\r  Resolving... [{current}/{total}] {short_name:<30}", end="", flush=True)
+
+        # Resolve tags in parallel
+        results = resolve_image_tags_parallel(images, progress_callback=progress)
+        print()  # New line after progress
+
+        # Separate successful and failed resolutions
+        resolved = []
+        warnings = []
+        for r in results:
+            if r["tag"]:
+                resolved.append(r)
+            else:
+                warnings.append(r)
+
+        if warnings:
+            print(yellow(f"  {len(warnings)} images could not be resolved (will use :latest)"))
+
+        if not resolved:
+            print(yellow("  No images resolved. Will use :latest tags."))
+            return
+
+        print(f"  {green('✓')} Resolved {len(resolved)}/{len(images)} images")
+
+        # Generate override file
+        override_content = self._generate_override_content(resolved, warnings, image_to_services)
+        with open(override_file, "w") as f:
+            f.write(override_content)
+
+        # Save to history as first version
+        os.makedirs(versions_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        history_file = os.path.join(versions_dir, f"{timestamp}.yml")
+        shutil.copy2(override_file, history_file)
+
+        print(f"  {green('✓')} Version pins created")
+        print(f"  {green('✓')} Saved to rollback history")
+
     def cmd_start(self, args):
         """Start services"""
+        # Check for --no-pin flag
+        no_pin = "--no-pin" in args
+        args = [a for a in args if a != "--no-pin"]
+
         service = args[0] if args else ""
 
         if service:
@@ -1968,8 +2209,22 @@ Type 'help <command>' for detailed usage.
                 print(result)
             print(green("✓ Done"))
         else:
-            # Full startup - use start.sh for all setup (network, DNS, etc.)
+            # Full startup
             script_dir = self.config.get("project_dir", ".")
+
+            # Ensure version pinning on first start
+            override_file = os.path.join(script_dir, "docker-compose.override.yml")
+            if not os.path.exists(override_file) and not no_pin:
+                print(f"\n{blue('==>')} First start detected - pinning image versions...")
+                try:
+                    self._create_initial_version_pins(script_dir)
+                except Exception as e:
+                    print(f"{red('Error creating version pins:')} {e}")
+                    print(yellow("Continuing without version pinning..."))
+            elif no_pin:
+                print(f"\n{yellow('Skipping version pinning (--no-pin flag)')}")
+
+            # Use start.sh for all setup (network, DNS, etc.)
             script_path = os.path.join(script_dir, "scripts", "start.sh")
 
             if os.path.exists(script_path):
@@ -2212,7 +2467,7 @@ Type 'help <command>' for detailed usage.
     def cmd_ext(self, args):
         """Manage extensions"""
         if not args:
-            print("Usage: ext list|create|delete")
+            print("Usage: extension list|create|delete")
             return
 
         subcmd = args[0].lower()
@@ -2221,7 +2476,7 @@ Type 'help <command>' for detailed usage.
             self.ext_list()
         elif subcmd == "create":
             if len(args) < 3:
-                print("Usage: ext create <extension> <password> [name]")
+                print("Usage: extension create <extension> <password> [name]")
                 return
             ext = args[1]
             password = args[2]
@@ -2229,7 +2484,7 @@ Type 'help <command>' for detailed usage.
             self.ext_create(ext, password, name)
         elif subcmd == "delete":
             if len(args) < 2:
-                print("Usage: ext delete <id>")
+                print("Usage: extension delete <id>")
                 return
             self.ext_delete(args[1])
         else:
@@ -4074,6 +4329,8 @@ Type 'registrar <subcommand> help' for more details.
                 ("config/coredns", "CoreDNS config"),
                 ("config/dummy-gcp-credentials.json", "dummy GCP credentials"),
                 ("tmp", "tmp directory"),
+                ("docker-compose.override.yml", "version pins"),
+                (".voipbin-versions", "rollback history"),
             ]
 
             for path, desc in files_to_remove:
@@ -4090,6 +4347,165 @@ Type 'registrar <subcommand> help' for more details.
 
         print(f"\n{bold('Cleanup complete!')}")
         print("Run 'init' to initialize, then 'start' to begin.")
+
+    def _show_running_images(self, project_dir, json_output=False):
+        """Show currently running container images when no override file exists"""
+        # Get running voipbin containers and their images
+        result = run_cmd("docker compose ps --format json 2>/dev/null")
+
+        running_images = []
+        if result:
+            import json as json_module
+            for line in result.strip().split('\n'):
+                if not line:
+                    continue
+                try:
+                    container = json_module.loads(line)
+                    service = container.get('Service', '')
+                    image = container.get('Image', '')
+                    state = container.get('State', '')
+
+                    if image.startswith('voipbin/') and state == 'running':
+                        # Get image ID (short form)
+                        image_id_result = run_cmd(f"docker images {image} --format '{{{{.ID}}}}' 2>/dev/null")
+                        image_id = image_id_result.strip()[:12] if image_id_result else 'unknown'
+
+                        # Get image created time
+                        created_result = run_cmd(f"docker images {image} --format '{{{{.CreatedSince}}}}' 2>/dev/null")
+                        created = created_result.strip() if created_result else 'unknown'
+
+                        running_images.append({
+                            'service': service,
+                            'image': image,
+                            'image_id': image_id,
+                            'created': created
+                        })
+                except Exception:
+                    continue
+
+        if json_output:
+            print(json.dumps({
+                "pinned": False,
+                "message": "No version pins found. Showing running images.",
+                "images": running_images
+            }, indent=2))
+            return
+
+        print(f"\n{yellow('No version pins found.')} Using :latest tags from docker-compose.yml.")
+
+        if running_images:
+            print(f"\n{bold('Currently Running Images')}")
+            print("=" * 70)
+            print(f"  {'SERVICE':<25} {'IMAGE ID':<15} {'CREATED':<20}")
+            print("  " + "-" * 65)
+
+            for img in sorted(running_images, key=lambda x: x['service']):
+                service = img['service'][:24]
+                image_id = img['image_id'][:14]
+                created = img['created'][:19]
+                print(f"  {service:<25} {image_id:<15} {created:<20}")
+
+            print(f"\n  Total: {len(running_images)} voipbin containers running")
+        else:
+            print(f"\n{yellow('No voipbin containers currently running.')}")
+            print("Run 'voipbin start' to start services.")
+
+        print(f"\n  Tip: Run '{bold('voipbin update')}' to pin to specific commit-SHA versions")
+
+    def cmd_version(self, args):
+        """Show pinned image versions from docker-compose.override.yml"""
+        project_dir = self.config.get("project_dir", ".")
+        override_file = os.path.join(project_dir, "docker-compose.override.yml")
+        json_output = "--json" in args
+
+        if not os.path.exists(override_file):
+            # No override file - show currently running images instead
+            self._show_running_images(project_dir, json_output)
+            return
+
+        # Parse override file
+        images = []
+        try:
+            with open(override_file, "r") as f:
+                content = f.read()
+
+            # Get file modification time
+            mtime = os.path.getmtime(override_file)
+            updated = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+            # Parse services and images
+            current_service = None
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.endswith(":") and not line.startswith("#") and not line.startswith("image"):
+                    current_service = line[:-1]
+                elif line.startswith("image:") and current_service:
+                    image_full = line.split(":", 1)[1].strip()
+                    if ":" in image_full:
+                        image_name, tag = image_full.rsplit(":", 1)
+                    else:
+                        image_name, tag = image_full, "latest"
+                    images.append({
+                        "service": current_service,
+                        "image": image_name,
+                        "tag": tag
+                    })
+                    current_service = None
+
+        except Exception as e:
+            if json_output:
+                print(json.dumps({"error": str(e), "images": []}))
+            else:
+                print(f"{red('Error reading override file:')} {e}")
+            return
+
+        # Get image creation times from docker inspect
+        for img in images:
+            full_image = f"{img['image']}:{img['tag']}"
+            try:
+                result = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.Created}}", full_image],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    # Parse ISO format: 2026-01-28T15:30:00.123456789Z
+                    created_str = result.stdout.strip()
+                    if created_str:
+                        # Handle both formats with and without nanoseconds
+                        created_str = created_str.split(".")[0]  # Remove nanoseconds
+                        created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        img["created"] = created_dt.strftime("%Y-%m-%d %H:%M")
+                    else:
+                        img["created"] = "-"
+                else:
+                    img["created"] = "-"
+            except Exception:
+                img["created"] = "-"
+
+        if json_output:
+            print(json.dumps({
+                "file": override_file,
+                "last_pulled": updated,
+                "images": images
+            }, indent=2))
+            return
+
+        # Display table
+        print(f"\n{bold('Image Versions')} (from docker-compose.override.yml)")
+        print("=" * 70)
+        print(f"  {'SERVICE':<25} {'TAG':<12} {'IMAGE CREATED':<18}")
+        print("  " + "-" * 65)
+
+        for img in sorted(images, key=lambda x: x["service"]):
+            service = img["service"][:24]
+            tag = img["tag"][:11]
+            created = img.get("created", "-")[:17]
+            print(f"  {service:<25} {tag:<12} {created:<18}")
+
+        print(f"\n  Total: {len(images)} services pinned")
+        print(f"  Last pulled: {updated}")
+        print(f"\n  Tip: Run '{bold('voipbin update')}' to pull latest versions")
+        print(f"       Run '{bold('voipbin rollback --list')}' to see history")
 
     def cmd_update(self, args):
         """Update sandbox - pull images and/or update scripts from GitHub"""
@@ -4114,54 +4530,145 @@ Type 'registrar <subcommand> help' for more details.
             print("Usage: update [scripts|all] [--check]")
 
     def _update_images(self, project_dir, check_only=False):
-        """Pull latest Docker images and restart services"""
+        """Pull Docker images with version pinning to commit-SHA tags"""
         print(f"\n{bold('Docker Image Update')}")
         print("=" * 50)
 
-        if check_only:
-            print(f"\n{blue('==>')} Checking for image updates...")
-            result = run_cmd("docker compose images --format json 2>/dev/null")
-            if result:
-                try:
-                    lines = [line.strip() for line in result.split('\n') if line.strip()]
-                    images = [json.loads(line) for line in lines]
-                    print(f"\n  {'SERVICE':<25} {'IMAGE':<40} {'TAG':<15}")
-                    print("  " + "-" * 80)
-                    for img in images:
-                        svc = img.get("Service", img.get("Container", ""))[:24]
-                        repo = img.get("Repository", "")[:39]
-                        tag = img.get("Tag", "")[:14]
-                        print(f"  {svc:<25} {repo:<40} {tag:<15}")
-                except (json.JSONDecodeError, TypeError):
-                    result = run_cmd("docker compose images 2>/dev/null")
-                    print(result)
-            print(f"\n{yellow('Dry-run mode:')} No changes made.")
-            print("Run 'update' without --check to pull images.")
+        override_file = os.path.join(project_dir, "docker-compose.override.yml")
+        versions_dir = os.path.join(project_dir, ".voipbin-versions")
+
+        # Get list of voipbin images and their service mappings
+        images, image_to_services = get_voipbin_images_from_compose(project_dir)
+        if not images:
+            print(red("No voipbin images found in docker-compose.yml"))
             return
 
-        print(f"\n{blue('==>')} Pulling latest Docker images...")
-        result = run_cmd("docker compose pull 2>&1")
-        if result:
-            lines = result.strip().split('\n')
-            for line in lines[-15:]:
-                print(f"  {line}")
-        print(green("✓ Images updated"))
+        print(f"\n{blue('==>')} Resolving image tags from Docker Hub...")
+        print(f"  Found {len(images)} voipbin images")
 
-        print(f"\n{blue('==>')} Checking database migrations...")
-        alembic_check = run_cmd("which alembic 2>/dev/null")
-        if not alembic_check:
-            print(yellow("  ! Alembic not found. Skipping migrations."))
-        else:
+        # Progress callback
+        def progress(current, total, image):
+            # Extract short name for display
+            short_name = image.split("/")[-1] if "/" in image else image
+            print(f"\r  Resolving... [{current}/{total}] {short_name:<30}", end="", flush=True)
+
+        # Resolve tags in parallel
+        results = resolve_image_tags_parallel(images, progress_callback=progress)
+        print()  # New line after progress
+
+        # Separate successful and failed resolutions
+        resolved = []
+        warnings = []
+        for r in results:
+            if r["tag"]:
+                resolved.append(r)
+            else:
+                warnings.append(r)
+
+        # Show warnings
+        if warnings:
+            print(f"\n{yellow('Warnings:')}")
+            for w in warnings:
+                short_name = w["image"].split("/")[-1]
+                print(f"  ! {short_name}: {w['error']}")
+
+        print(f"\n  {green('✓')} Resolved {len(resolved)}/{len(images)} images")
+
+        if check_only:
+            # Show current vs resolved
+            print(f"\n  {'IMAGE':<35} {'RESOLVED TAG':<20}")
+            print("  " + "-" * 55)
+            for r in sorted(resolved, key=lambda x: x["image"]):
+                short_name = r["image"].split("/")[-1][:34]
+                tag = r["tag"][:19] if r["tag"] else yellow("(keeping latest)")
+                print(f"  {short_name:<35} {tag:<20}")
+            print(f"\n{yellow('Dry-run mode:')} No changes made.")
+            print("Run 'update' without --check to apply changes.")
+            return
+
+        if not resolved:
+            print(yellow("No images resolved. Falling back to docker compose pull."))
+            result = run_cmd("docker compose pull 2>&1")
+            if result:
+                for line in result.strip().split('\n')[-10:]:
+                    print(f"  {line}")
+            return
+
+        # Backup existing override file (if exists)
+        os.makedirs(versions_dir, exist_ok=True)
+        if os.path.exists(override_file):
+            print(f"\n{blue('==>')} Backing up current version...")
+            timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+            backup_file = os.path.join(versions_dir, f"{timestamp}.yml")
+            shutil.copy2(override_file, backup_file)
+            print(f"  Saved to .voipbin-versions/{timestamp}.yml")
+
+        # Generate new override file
+        print(f"\n{blue('==>')} Generating docker-compose.override.yml...")
+        override_content = self._generate_override_content(resolved, warnings, image_to_services)
+        with open(override_file, "w") as f:
+            f.write(override_content)
+        print(f"  {green('✓')} Override file generated")
+
+        # Save new version to history
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        history_file = os.path.join(versions_dir, f"{timestamp}.yml")
+        shutil.copy2(override_file, history_file)
+        print(f"  {green('✓')} Saved to rollback history")
+
+        # Cleanup old backups (keep last 100)
+        backups = sorted(Path(versions_dir).glob("*.yml"))
+        if len(backups) > 100:
+            for old_backup in backups[:-100]:
+                old_backup.unlink()
+
+        # Pull images and run migrations in parallel
+        print(f"\n{blue('==>')} Pulling images and checking migrations (parallel)...")
+
+        def pull_images():
+            """Pull pinned images"""
+            result = run_cmd("docker compose pull 2>&1")
+            return result
+
+        def run_migrations():
+            """Run database migrations if possible"""
+            alembic_check = run_cmd("which alembic 2>/dev/null")
+            if not alembic_check:
+                return "skip", "Alembic not found"
+
             db_check = run_cmd("docker exec voipbin-db mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
             if not db_check:
-                print(yellow("  ! Database not running. Skipping migrations."))
-            else:
-                script_path = os.path.join(project_dir, "scripts", "init_database.sh")
-                if os.path.exists(script_path):
-                    print("  Running alembic migrations...")
-                    os.system(f"{script_path}")
-                    print(green("  ✓ Database migrations complete"))
+                return "skip", "Database not running"
 
+            script_path = os.path.join(project_dir, "scripts", "init_database.sh")
+            if os.path.exists(script_path):
+                os.system(f"{script_path} > /dev/null 2>&1")
+                return "done", None
+
+            return "skip", "Migration script not found"
+
+        # Run both tasks in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pull_future = executor.submit(pull_images)
+            migration_future = executor.submit(run_migrations)
+
+            # Wait for both to complete
+            pull_result = pull_future.result()
+            migration_status, migration_msg = migration_future.result()
+
+        # Show results
+        if pull_result:
+            lines = pull_result.strip().split('\n')
+            for line in lines[-5:]:
+                print(f"  {line}")
+        print(f"  {green('✓')} Images pulled")
+
+        if migration_status == "done":
+            print(f"  {green('✓')} Database migrations complete")
+        elif migration_status == "skip":
+            print(f"  {yellow('!')} Migrations skipped: {migration_msg}")
+
+        # Restart services
         running_services = run_cmd("docker compose ps -q 2>/dev/null")
         if running_services:
             print(f"\n{blue('==>')} Restarting services with new images...")
@@ -4169,6 +4676,50 @@ Type 'registrar <subcommand> help' for more details.
             print(green("✓ Services restarted"))
 
         print(f"\n{bold('Image update complete!')}")
+        print(f"  Run '{bold('voipbin version')}' to see pinned versions")
+        print(f"  Run '{bold('voipbin rollback')}' to restore previous version")
+
+    def _generate_override_content(self, resolved, warnings, image_to_services):
+        """Generate docker-compose.override.yml content
+
+        Args:
+            resolved: list of resolved image dicts with 'image' and 'tag' keys
+            warnings: list of failed image dicts with 'image' and 'error' keys
+            image_to_services: dict mapping image name to list of service names
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [
+            "# Auto-generated by voipbin CLI",
+            f"# Generated: {timestamp}",
+            "# Run 'voipbin update' to refresh",
+            "",
+            "services:",
+        ]
+
+        # Build a sorted list of (service_name, image, tag) tuples
+        service_entries = []
+        for r in resolved:
+            image_name = r["image"]
+            tag = r["tag"]
+            # Get actual service names from docker-compose.yml mapping
+            service_names = image_to_services.get(image_name, [])
+            for service_name in service_names:
+                service_entries.append((service_name, image_name, tag))
+
+        # Sort by service name and add to output
+        for service_name, image_name, tag in sorted(service_entries):
+            lines.append(f"  {service_name}:")
+            lines.append(f"    image: {image_name}:{tag}")
+
+        # Add comments for warnings (images keeping :latest)
+        if warnings:
+            lines.append("")
+            lines.append("  # Images keeping :latest (no commit-SHA tag found):")
+            for w in warnings:
+                lines.append(f"  # - {w['image']}: {w['error']}")
+
+        lines.append("")
+        return "\n".join(lines)
 
     def _update_scripts(self, project_dir, check_only=False):
         """Update scripts and configs from GitHub"""
@@ -4338,8 +4889,224 @@ Type 'registrar <subcommand> help' for more details.
                 print(yellow(f"  Warning: Could not remove {old_backup}: {e}"))
 
     def cmd_rollback(self, args):
-        """Rollback scripts to a previous backup"""
+        """Rollback to a previous image version or script backup"""
         project_dir = self.config.get("project_dir", ".")
+
+        # Check if this is a script rollback
+        if args and args[0] == "scripts":
+            self._rollback_scripts(project_dir, args[1:])
+            return
+
+        # Image version rollback
+        self._rollback_versions(project_dir, args)
+
+    def _rollback_versions(self, project_dir, args):
+        """Rollback to a previous image version"""
+        versions_dir = os.path.join(project_dir, ".voipbin-versions")
+        override_file = os.path.join(project_dir, "docker-compose.override.yml")
+
+        # Build version list - include current override and history
+        version_list = []
+
+        # Add current override file if it exists
+        if os.path.exists(override_file):
+            mtime = os.path.getmtime(override_file)
+            version_list.append({
+                "path": override_file,
+                "timestamp": datetime.fromtimestamp(mtime),
+                "label": "(current)",
+                "is_current": True
+            })
+
+        # Add history files if they exist
+        versions = []
+        if os.path.exists(versions_dir):
+            versions = sorted(Path(versions_dir).glob("*.yml"), reverse=True)
+
+        # Check if we have anything to show
+        if not version_list and not versions:
+            print(f"\n{yellow('No version history found.')}")
+            print("Version history is created when running 'voipbin start' or 'voipbin update'.")
+            return
+
+        # Get current override timestamp for deduplication
+        current_mtime = None
+        if version_list:
+            current_mtime = version_list[0]["timestamp"]
+
+        for v in versions:
+            # Parse timestamp from filename (YYYY-MM-DDTHH-MM-SS.yml)
+            try:
+                parts = v.stem.split("T")
+                date_part = parts[0]
+                time_part = parts[1].replace("-", ":")
+                ts = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                ts = datetime.fromtimestamp(v.stat().st_mtime)
+
+            # Skip if this is essentially the same as current (within 2 seconds)
+            if current_mtime and abs((ts - current_mtime).total_seconds()) < 2:
+                continue
+
+            version_list.append({
+                "path": str(v),
+                "timestamp": ts,
+                "label": "",
+                "is_current": False
+            })
+
+        if "--list" in args:
+            # Show numbered list
+            print(f"\n{bold('Available Versions')}")
+            print("=" * 50)
+            for i, v in enumerate(version_list):
+                ts_str = v["timestamp"].strftime("%Y-%m-%d %H:%M")
+                label = v["label"]
+                print(f"  [{i + 1}] {ts_str}  {label}")
+            print(f"\n  Run 'rollback N' to restore (e.g., 'rollback 2')")
+            return
+
+        # Check for number argument
+        remaining_args = [a for a in args if a != "--list"]
+        if remaining_args:
+            try:
+                idx = int(remaining_args[0]) - 1
+                if 0 <= idx < len(version_list):
+                    selected = version_list[idx]
+                    if selected["is_current"]:
+                        print(yellow("That's the current version. Nothing to restore."))
+                        return
+                    self._restore_version(project_dir, selected, override_file)
+                    return
+                else:
+                    print(red(f"Invalid version number. Choose 1-{len(version_list)}"))
+                    return
+            except ValueError:
+                print(red(f"Invalid argument: {remaining_args[0]}"))
+                print("Use a number (e.g., 'rollback 2') or '--list' to see options.")
+                return
+
+        # Interactive selection
+        self._interactive_version_select(project_dir, version_list, override_file)
+
+    def _interactive_version_select(self, project_dir, version_list, override_file):
+        """Interactive arrow-key selection for version rollback"""
+        import termios
+        import tty
+
+        if not version_list:
+            print(yellow("No versions available."))
+            return
+
+        selected_idx = 0
+        max_idx = len(version_list) - 1
+
+        def get_key():
+            """Read a single keypress"""
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                ch = sys.stdin.read(1)
+                if ch == '\x1b':  # Escape sequence
+                    ch += sys.stdin.read(2)
+                return ch
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+        def render():
+            """Render the selection menu"""
+            # Calculate total lines: header(1) + items + hint(1) + blank lines(2)
+            total_lines = len(version_list) + 4
+
+            # Clear previous output (move up and clear)
+            if hasattr(render, 'rendered'):
+                sys.stdout.write(f"\033[{total_lines}A")  # Move up
+                sys.stdout.write("\033[J")  # Clear to end
+                sys.stdout.flush()
+
+            print(f"\n{bold('Select version to restore:')}")
+            for i, v in enumerate(version_list):
+                ts_str = v["timestamp"].strftime("%Y-%m-%d %H:%M")
+                label = v["label"]
+                if i == selected_idx:
+                    print(f"  {green('>')} {ts_str}  {label}")
+                else:
+                    print(f"    {ts_str}  {label}")
+            print(f"\n  [{dim('↑/↓ move, Enter select, q cancel')}]")
+            sys.stdout.flush()
+            render.rendered = True
+
+        print(f"\033[?25l", end="")  # Hide cursor
+        try:
+            render()
+            while True:
+                key = get_key()
+                if key == '\x1b[A':  # Up arrow
+                    selected_idx = max(0, selected_idx - 1)
+                    render()
+                elif key == '\x1b[B':  # Down arrow
+                    selected_idx = min(max_idx, selected_idx + 1)
+                    render()
+                elif key in ('\r', '\n'):  # Enter
+                    print(f"\033[?25h", end="")  # Show cursor
+                    selected = version_list[selected_idx]
+                    if selected["is_current"]:
+                        print(yellow("\nThat's the current version. Nothing to restore."))
+                        return
+                    self._restore_version(project_dir, selected, override_file)
+                    return
+                elif key in ('q', 'Q', '\x1b'):  # q or Escape
+                    print(f"\033[?25h", end="")  # Show cursor
+                    print("\nCancelled.")
+                    return
+        except Exception as e:
+            print(f"\033[?25h", end="")  # Show cursor
+            # Fallback to numbered selection if interactive fails
+            print(f"\n{yellow('Interactive mode not available. Using numbered selection:')}")
+            for i, v in enumerate(version_list):
+                ts_str = v["timestamp"].strftime("%Y-%m-%d %H:%M")
+                label = v["label"]
+                print(f"  [{i + 1}] {ts_str}  {label}")
+            try:
+                choice = input("\nEnter number to restore (or 'q' to cancel): ").strip()
+                if choice.lower() == 'q':
+                    print("Cancelled.")
+                    return
+                idx = int(choice) - 1
+                if 0 <= idx < len(version_list):
+                    selected = version_list[idx]
+                    if selected["is_current"]:
+                        print(yellow("That's the current version. Nothing to restore."))
+                        return
+                    self._restore_version(project_dir, selected, override_file)
+                else:
+                    print(red("Invalid selection."))
+            except ValueError:
+                print(red("Invalid input."))
+
+    def _restore_version(self, project_dir, version, override_file):
+        """Restore a specific version"""
+        print(f"\n{blue('==>')} Restoring version from {version['timestamp'].strftime('%Y-%m-%d %H:%M')}...")
+
+        # Copy the version file to override
+        shutil.copy2(version["path"], override_file)
+        print(f"  {green('✓')} Restored docker-compose.override.yml")
+
+        # Ask to restart services
+        print(f"\n{yellow('Services need to be restarted to use the restored version.')}")
+        confirm = input("Restart services now? [Y/n]: ").strip().lower()
+        if confirm != 'n':
+            print(f"\n{blue('==>')} Pulling images...")
+            run_cmd("docker compose pull 2>&1")
+            print(f"{blue('==>')} Restarting services...")
+            run_cmd("docker compose up -d 2>&1")
+            print(green("✓ Services restarted"))
+
+        print(f"\n{bold('Rollback complete!')}")
+
+    def _rollback_scripts(self, project_dir, args):
+        """Rollback scripts to a previous backup (legacy)"""
         backup_base = os.path.join(project_dir, BACKUP_DIR)
 
         if "--list" in args or "list" in args:
@@ -4347,7 +5114,7 @@ Type 'registrar <subcommand> help' for more details.
             return
 
         if not os.path.exists(backup_base):
-            print(red("No backups found."))
+            print(red("No script backups found."))
             print("Backups are created automatically when running 'update scripts'.")
             return
 
@@ -4357,7 +5124,7 @@ Type 'registrar <subcommand> help' for more details.
         ], reverse=True)
 
         if not backups:
-            print(red("No backups found."))
+            print(red("No script backups found."))
             return
 
         target_backup = None
@@ -4517,7 +5284,7 @@ class Completer:
                 return ["-f "]
             return [s + " " for s in services if s.startswith(text)]
 
-        if cmd == "ext":
+        if cmd in ("ext", "extension"):
             subcmds = ["list", "create", "delete"]
             return [s + " " for s in subcmds if s.startswith(text)]
 

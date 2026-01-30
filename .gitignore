@@ -2,3 +2,7 @@
 .backup/
 tmp/
 __pycache__/
+
+# Version pinning (local only)
+docker-compose.override.yml
+.voipbin-versions/
