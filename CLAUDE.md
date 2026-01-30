@@ -325,6 +325,34 @@ sudo ./voipbin network setup
 sudo ./voipbin restart kamailio
 ```
 
+### Dynamic IP Detection (After Reboot/Network Change)
+
+The sandbox automatically detects when your host IP changes (e.g., after reboot, hibernate, or network switch) and regenerates all necessary configurations.
+
+**What gets updated automatically:**
+- `.env` file: `HOST_EXTERNAL_IP`, `KAMAILIO_EXTERNAL_IP`, `RTPENGINE_EXTERNAL_IP`
+- CoreDNS Corefile with new IP addresses
+- SSL certificates with new IP in SAN (Subject Alternative Name)
+- Base64-encoded certificates in `.env` (`API_SSL_CERT_BASE64`, etc.)
+- api-manager container is recreated (not just restarted) to pick up new certificates
+
+**When automatic detection happens:**
+- `./scripts/start.sh` - checks at startup
+- `sudo ./voipbin dns regenerate` - forces regeneration
+- `sudo ./voipbin network setup` - checks during network setup
+
+**Manual verification:**
+```bash
+# Check current vs configured IP
+ip route get 8.8.8.8 | grep -oP 'src \K\S+'  # Current IP
+grep HOST_EXTERNAL_IP .env                   # Configured IP
+
+# Force regeneration if needed
+sudo ./scripts/setup-dns.sh --regenerate
+```
+
+**Note:** If you see `ERR_CERT_AUTHORITY_INVALID` after IP change, the certificate was regenerated correctly but your browser may need a hard refresh (Ctrl+Shift+R) or you may need to use a non-incognito window (incognito doesn't trust user-installed CAs).
+
 ## Architecture
 
 ### Infrastructure Services

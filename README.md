@@ -302,6 +302,33 @@ sudo ./voipbin dns test
 sudo ./voipbin dns regenerate
 ```
 
+### Dynamic IP Detection (After Reboot/Network Change)
+
+If your host IP changes (e.g., after reboot, hibernate, or network change), the sandbox automatically detects and regenerates all configurations:
+
+**What gets updated automatically:**
+- `.env` file with new `HOST_EXTERNAL_IP`, `KAMAILIO_EXTERNAL_IP`, `RTPENGINE_EXTERNAL_IP`
+- CoreDNS configuration (`config/coredns/Corefile`)
+- SSL certificates (regenerated with new IP in SAN)
+- Base64-encoded certificates in `.env`
+- API manager container (restarted to use new certificate)
+
+**Automatic detection happens when running:**
+- `sudo ./voipbin start` — Checks IP at startup
+- `sudo ./voipbin dns regenerate` — Checks and updates if changed
+- `sudo ./voipbin network setup` — Checks and updates if changed
+
+**Manual verification:**
+```bash
+# Check if IP has changed
+sudo ./voipbin network status
+
+# Force regenerate everything
+sudo ./voipbin dns regenerate
+```
+
+> **Note:** If you see `ERR_CERT_AUTHORITY_INVALID` after an IP change, run `sudo ./voipbin dns regenerate` to regenerate certificates and restart services.
+
 **Linux**: Modifies `/etc/resolv.conf` to use `127.0.0.1` (CoreDNS)
 **macOS**: Creates `/etc/resolver/voipbin.test` for selective forwarding
 
