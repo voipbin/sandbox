@@ -278,14 +278,24 @@ show_status() {
 
 regenerate_corefile() {
     local host_ip="$1"
+    local force_update="${2:-false}"
+    local ip_changed=false
 
     log_step "Regenerating CoreDNS configuration..."
 
-    # Read external IPs from .env file
+    # Check if IP has changed and update .env if needed
+    if check_ip_changed || [[ "$force_update" == "true" ]]; then
+        local configured_ip=$(get_configured_host_ip)
+        if [[ -n "$configured_ip" && "$configured_ip" != "$host_ip" ]]; then
+            log_warn "Host IP changed: $configured_ip -> $host_ip"
+            log_info "Updating .env with new IPs..."
+            update_env_ips "$host_ip"
+            ip_changed=true
+        fi
+    fi
+
+    # Read external IPs from .env file (may have just been updated)
     local kamailio_ip=""
-    local api_ip=""
-    local admin_ip=""
-    local meet_ip=""
     if [[ -f "$PROJECT_DIR/.env" ]]; then
         kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
     fi
@@ -301,6 +311,17 @@ regenerate_corefile() {
     generate_coredns_config "$host_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
 
     log_info "Corefile regenerated"
+
+    # Regenerate SSL certificate if IP changed
+    if [[ "$ip_changed" == "true" ]]; then
+        regenerate_ssl_certs "$host_ip"
+
+        # Restart api-manager to pick up new certificate
+        if docker ps --format '{{.Names}}' | grep -q "voipbin-api-mgr"; then
+            log_info "Restarting api-manager to apply new certificate..."
+            cd "$PROJECT_DIR" && docker compose rm -sf api-manager && docker compose up -d api-manager
+        fi
+    fi
 
     # Restart CoreDNS if running
     if check_coredns; then
@@ -336,8 +357,9 @@ main() {
                 ;;
             --regenerate|-r)
                 check_root
-                local host_ip=$(detect_host_ip)
-                regenerate_corefile "$host_ip"
+                # Use fresh IP detection, not from .env
+                local host_ip=$(detect_current_host_ip)
+                regenerate_corefile "$host_ip" "true"
                 test_dns "$host_ip"
                 exit 0
                 ;;
