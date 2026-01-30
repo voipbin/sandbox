@@ -13,6 +13,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Source common functions
+source "$SCRIPT_DIR/common.sh"
+
 NETWORK_NAME="sandbox_default"
 
 # Interface configurations for internal network
@@ -130,7 +133,27 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Load external IPs from .env
+# Check if host IP has changed and update .env if needed
+IP_CHANGED=false
+if check_ip_changed; then
+    current_ip=$(detect_current_host_ip)
+    configured_ip=$(get_configured_host_ip)
+    log_warn "Host IP changed: $configured_ip -> $current_ip"
+    log_info "Updating .env with new IPs..."
+    update_env_ips "$current_ip"
+
+    # Regenerate SSL certificate
+    regenerate_ssl_certs "$current_ip"
+
+    # Regenerate CoreDNS config
+    kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+    generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
+    log_info "CoreDNS configuration regenerated"
+
+    IP_CHANGED=true
+fi
+
+# Load external IPs from .env (may have just been updated)
 load_external_ips
 
 # Check if Docker network exists
@@ -233,3 +256,12 @@ fi
 echo ""
 log_info "Restart services to use new interfaces:"
 log_info "  docker compose restart kamailio rtpengine"
+
+# Restart api-manager if IP changed to pick up new certificate
+if [[ "$IP_CHANGED" == "true" ]]; then
+    if docker ps --format '{{.Names}}' | grep -q "voipbin-api-mgr"; then
+        echo ""
+        log_info "Restarting api-manager to apply new certificate..."
+        cd "$PROJECT_DIR" && docker compose rm -sf api-manager && docker compose up -d api-manager
+    fi
+fi

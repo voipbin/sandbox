@@ -508,6 +508,18 @@ main() {
         exit 1
     fi
 
+    # Step 4.5: Check if host IP has changed and regenerate configs if needed
+    log_step "Checking host IP configuration..."
+    if check_ip_changed; then
+        local current_ip=$(detect_current_host_ip)
+        local configured_ip=$(get_configured_host_ip)
+        log_warn "Host IP changed: $configured_ip -> $current_ip"
+        log_info "Regenerating IP configuration..."
+        regenerate_ip_config
+    else
+        log_info "Host IP unchanged: $(get_configured_host_ip)"
+    fi
+
     # Step 5: Start infrastructure services first
     log_step "Starting infrastructure services (db, redis, rabbitmq)..."
     # Unset all environment variables that might override .env file values
