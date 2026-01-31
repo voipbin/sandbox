@@ -444,11 +444,18 @@ setup_test_customer() {
     # Create accesskey for API access
     if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
         log_info "  Creating API access key..."
-        docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
+        local accesskey_output
+        accesskey_output=$(docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
             --customer-id "$CUSTOMER_ID" \
             --name "Sandbox API Key" \
             --detail "Default API key for sandbox testing" \
-            --expire 87600h 2>&1 | grep -v severity || true
+            --expire 87600h 2>&1 | grep -v severity || true)
+        # Extract the token from the output (format: "token: <token>")
+        ACCESSKEY_TOKEN=$(echo "$accesskey_output" | grep -oP '(?<=token:\s)[^\s]+' | head -1)
+        if [ -z "$ACCESSKEY_TOKEN" ]; then
+            # Try alternative format (JSON output)
+            ACCESSKEY_TOKEN=$(echo "$accesskey_output" | jq -r '.token' 2>/dev/null || true)
+        fi
     fi
 
     # Add initial balance to billing account
@@ -466,8 +473,9 @@ setup_test_customer() {
 }
 
 main() {
-    # Global variable for customer ID (set by setup_test_customer or fetch_customer_id)
+    # Global variables (set by setup_test_customer or fetch_customer_id)
     CUSTOMER_ID=""
+    ACCESSKEY_TOKEN=""
 
     echo ""
     echo "=============================================="
@@ -651,6 +659,17 @@ main() {
     echo ""
     echo "  To verify: voipbin> customer list"
     echo ""
+    if [ -n "$ACCESSKEY_TOKEN" ] && [ "$ACCESSKEY_TOKEN" != "null" ]; then
+        echo "-----------------------------------------------"
+        echo "  Default API Key (created on first run)"
+        echo "-----------------------------------------------"
+        echo "  Token:         $ACCESSKEY_TOKEN"
+        echo ""
+        echo "  Usage: curl https://api.voipbin.test:8443/v1.0/calls?accesskey=$ACCESSKEY_TOKEN"
+        echo ""
+        echo "  To verify: voipbin> customer accesskey list"
+        echo ""
+    fi
     echo "-----------------------------------------------"
     echo "  Default SIP Extensions (created on first run)"
     echo "-----------------------------------------------"
