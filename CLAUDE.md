@@ -388,6 +388,9 @@ Key services:
 - `flow-manager` - Workflow execution engine
 - `billing-manager` - Usage tracking
 - `registrar-manager` - SIP registration
+- `contact-manager` - Contact management
+- `rag-manager` - RAG (Retrieval Augmented Generation) knowledge base
+- `timeline-manager` - Call timeline analytics (requires ClickHouse)
 
 ### Frontend
 
@@ -469,23 +472,45 @@ If you need to recreate test data after a reset:
 
 ### Manual Setup Steps
 
-#### 1. Check/Create Customer
+#### 1. Create Customer
 
 ```bash
 # List existing customers
 docker exec voipbin-customer-mgr /app/bin/customer-control customer list
 
-# Create new customer (creates admin agent automatically)
-# Admin username = email, password = email
+# Create new customer (agent-manager auto-creates admin agent with random password)
 docker exec voipbin-customer-mgr /app/bin/customer-control customer create \
   --name "Test Customer" \
   --email "admin@localhost"
 ```
 
-#### 2. Login to Get JWT Token
+#### 2. Get Customer ID and Set Admin Password
+
+The admin agent is created automatically by agent-manager with a random unusable password.
+You must set the password explicitly using `agent-control`.
 
 ```bash
-# Login with admin credentials (username=password=email)
+# Get customer ID
+CUSTOMER_ID=$(docker exec voipbin-customer-mgr /app/bin/customer-control customer list 2>/dev/null \
+  | jq -r '.[] | select(.email == "admin@localhost") | .id')
+
+# Wait for agent-manager to process the event (takes a few seconds via RabbitMQ)
+sleep 5
+
+# Get admin agent ID
+AGENT_ID=$(docker exec voipbin-agent-mgr /app/bin/agent-control agent list \
+  --customer-id "$CUSTOMER_ID" 2>/dev/null | jq -r '.[0].id')
+
+# Set admin password
+docker exec voipbin-agent-mgr /app/bin/agent-control agent update-password \
+  --id "$AGENT_ID" \
+  --password "admin@localhost"
+```
+
+#### 3. Login to Get JWT Token
+
+```bash
+# Login with admin credentials
 curl -sk -X POST https://localhost:8443/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "admin@localhost", "password": "admin@localhost"}'
@@ -493,10 +518,10 @@ curl -sk -X POST https://localhost:8443/auth/login \
 # Response contains: {"username": "...", "token": "JWT_TOKEN_HERE"}
 ```
 
-#### 3. Create Extensions via API
+#### 4. Create Extensions via API
 
 ```bash
-TOKEN="<jwt_token_from_step_2>"
+TOKEN="<jwt_token_from_step_3>"
 
 # Create extension
 curl -sk -X POST https://localhost:8443/v1.0/extensions \
@@ -505,21 +530,17 @@ curl -sk -X POST https://localhost:8443/v1.0/extensions \
   -d '{"extension": "2000", "password": "pass2000", "name": "Extension 2000"}'
 ```
 
-#### 4. Create API Key via API
+#### 5. Create API Key via CLI
 
 ```bash
-# expire = Unix timestamp (required, must be in the future)
-EXPIRE=$(($(date +%s) + 31536000))  # 1 year from now
-
-curl -sk -X POST https://localhost:8443/v1.0/accesskeys \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "{\"name\": \"API Key\", \"detail\": \"For testing\", \"expire\": $EXPIRE}"
-
-# Response contains: {"token": "API_KEY_HERE", ...}
+docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
+  --customer-id "$CUSTOMER_ID" \
+  --name "API Key" \
+  --detail "For testing" \
+  --expire 87600h
 ```
 
-#### 5. Get Customer ID
+#### 6. Get Customer ID
 
 ```bash
 curl -sk -X GET https://localhost:8443/v1.0/customer \
