@@ -375,12 +375,13 @@ fetch_customer_id() {
     local api_host="localhost"
     local api_port="8443"
     local customer_email="admin@localhost"
+    local customer_password="admin@localhost"
 
     # Login to get token
     local login_response
     login_response=$(curl -sk -X POST "https://${api_host}:${api_port}/auth/login" \
         -H "Content-Type: application/json" \
-        -d "{\"username\": \"$customer_email\", \"password\": \"$customer_email\"}" 2>/dev/null)
+        -d "{\"username\": \"$customer_email\", \"password\": \"$customer_password\"}" 2>/dev/null)
 
     local token
     token=$(echo "$login_response" | jq -r '.token' 2>/dev/null)
@@ -393,27 +394,83 @@ fetch_customer_id() {
     fi
 }
 
+# Wait for agent-manager to process customer creation event and create admin agent
+wait_for_admin_agent() {
+    local customer_id="$1"
+    local max_wait=30
+    local waited=0
+
+    log_info "  Waiting for admin agent to be created..."
+    while [ $waited -lt $max_wait ]; do
+        local agent_list
+        agent_list=$(docker exec voipbin-agent-mgr /app/bin/agent-control agent list \
+            --customer-id "$customer_id" 2>/dev/null || true)
+
+        local agent_id
+        agent_id=$(echo "$agent_list" | jq -r '.[0].id' 2>/dev/null)
+
+        if [ -n "$agent_id" ] && [ "$agent_id" != "null" ]; then
+            echo "$agent_id"
+            return 0
+        fi
+
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    return 1
+}
+
 # Setup test customer and extensions
 setup_test_customer() {
     local api_host="localhost"
     local api_port="8443"
     local customer_email="admin@localhost"
+    local customer_password="admin@localhost"
     local customer_name="Sandbox Admin"
 
-    # Create customer
+    # Step 1: Create customer via CLI
+    # agent-manager will auto-create an admin agent with a random unusable password
     log_info "  Creating customer: $customer_email"
     docker exec voipbin-customer-mgr /app/bin/customer-control customer create \
         --name "$customer_name" \
         --email "$customer_email" 2>&1 | grep -E "(Success|ID:)" || true
 
-    # Wait a moment for customer to be created
-    sleep 2
+    # Step 2: Get customer ID from the customer-manager CLI
+    log_info "  Fetching customer ID..."
+    local customer_list
+    customer_list=$(docker exec voipbin-customer-mgr /app/bin/customer-control customer list 2>/dev/null || true)
+    CUSTOMER_ID=$(echo "$customer_list" | jq -r '.[] | select(.email == "'"$customer_email"'") | .id' 2>/dev/null | head -1)
 
-    # Login to get token
+    if [ -z "$CUSTOMER_ID" ] || [ "$CUSTOMER_ID" == "null" ]; then
+        log_warn "  Could not find customer ID. You can run setup_test_customer.sh manually."
+        return 1
+    fi
+    log_info "  Customer ID: $CUSTOMER_ID"
+
+    # Step 3: Wait for agent-manager to create the admin agent (via RabbitMQ event)
+    local admin_agent_id
+    admin_agent_id=$(wait_for_admin_agent "$CUSTOMER_ID")
+
+    if [ -z "$admin_agent_id" ]; then
+        log_warn "  Admin agent was not created in time. You can run setup_test_customer.sh manually."
+        return 1
+    fi
+    log_info "  Admin agent ID: $admin_agent_id"
+
+    # Step 4: Set admin password using agent-control CLI
+    # The agent was created with a random password, so we must set it explicitly
+    log_info "  Setting admin password..."
+    docker exec voipbin-agent-mgr /app/bin/agent-control agent update-password \
+        --id "$admin_agent_id" \
+        --password "$customer_password" 2>&1 | grep -v severity || true
+
+    # Step 5: Login to get JWT token
+    sleep 1
     local login_response
     login_response=$(curl -sk -X POST "https://${api_host}:${api_port}/auth/login" \
         -H "Content-Type: application/json" \
-        -d "{\"username\": \"$customer_email\", \"password\": \"$customer_email\"}")
+        -d "{\"username\": \"$customer_email\", \"password\": \"$customer_password\"}")
 
     local token
     token=$(echo "$login_response" | jq -r '.token' 2>/dev/null)
@@ -423,7 +480,7 @@ setup_test_customer() {
         return 1
     fi
 
-    # Create extensions
+    # Step 6: Create extensions
     for ext in 1000 2000 3000; do
         log_info "  Creating extension: $ext"
         curl -sk -X POST "https://${api_host}:${api_port}/v1.0/extensions" \
@@ -432,33 +489,30 @@ setup_test_customer() {
             -d "{\"extension\": \"$ext\", \"password\": \"pass$ext\", \"name\": \"Extension $ext\"}" > /dev/null 2>&1 || true
     done
 
-    # Get customer ID and billing account ID
+    # Step 7: Get billing account ID
     local customer_info
     customer_info=$(curl -sk -X GET "https://${api_host}:${api_port}/v1.0/customer" \
         -H "Authorization: Bearer $token")
 
-    CUSTOMER_ID=$(echo "$customer_info" | jq -r '.id' 2>/dev/null)
     local billing_account_id
     billing_account_id=$(echo "$customer_info" | jq -r '.billing_account_id' 2>/dev/null)
 
-    # Create accesskey for API access
-    if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
-        log_info "  Creating API access key..."
-        local accesskey_output
-        accesskey_output=$(docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
-            --customer-id "$CUSTOMER_ID" \
-            --name "Sandbox API Key" \
-            --detail "Default API key for sandbox testing" \
-            --expire 87600h 2>&1 | grep -v severity || true)
-        # Extract the token from the output (format: "token: <token>")
-        ACCESSKEY_TOKEN=$(echo "$accesskey_output" | grep -oP '(?<=token:\s)[^\s]+' | head -1)
-        if [ -z "$ACCESSKEY_TOKEN" ]; then
-            # Try alternative format (JSON output)
-            ACCESSKEY_TOKEN=$(echo "$accesskey_output" | jq -r '.token' 2>/dev/null || true)
-        fi
+    # Step 8: Create accesskey for API access
+    log_info "  Creating API access key..."
+    local accesskey_output
+    accesskey_output=$(docker exec voipbin-customer-mgr /app/bin/customer-control accesskey create \
+        --customer-id "$CUSTOMER_ID" \
+        --name "Sandbox API Key" \
+        --detail "Default API key for sandbox testing" \
+        --expire 87600h 2>&1 | grep -v severity || true)
+    # Extract the token from the output (format: "token: <token>")
+    ACCESSKEY_TOKEN=$(echo "$accesskey_output" | grep -oP '(?<=token:\s)[^\s]+' | head -1)
+    if [ -z "$ACCESSKEY_TOKEN" ]; then
+        # Try alternative format (JSON output)
+        ACCESSKEY_TOKEN=$(echo "$accesskey_output" | jq -r '.token' 2>/dev/null || true)
     fi
 
-    # Add initial balance to billing account
+    # Step 9: Add initial balance to billing account
     if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ]; then
         log_info "  Adding initial balance to billing account..."
         docker exec voipbin-billing-mgr /app/bin/billing-control account add-balance \

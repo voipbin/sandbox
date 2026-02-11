@@ -217,8 +217,8 @@ main() {
 
     # Step 5: Generate random keys
     log_step "Generating security keys..."
-    STORAGE_JWT_KEY=$(generate_random_key)
-    log_info "  Generated STORAGE_JWT_KEY"
+    JWT_KEY=$(generate_random_key)
+    log_info "  Generated JWT_KEY"
     echo ""
 
     # Step 6: Create dummy GCP credentials file
@@ -337,6 +337,7 @@ OPENAI_API_KEY=
 CARTESIA_API_KEY=
 ELEVENLABS_API_KEY=
 DEEPGRAM_API_KEY=
+XAI_API_KEY=
 
 # ==============================================================================
 # AWS (OPTIONAL - for transcription)
@@ -345,17 +346,34 @@ AWS_ACCESS_KEY=
 AWS_SECRET_KEY=
 
 # ==============================================================================
-# Storage
+# Security & Storage
 # ==============================================================================
-STORAGE_JWT_KEY=$STORAGE_JWT_KEY
+JWT_KEY=$JWT_KEY
+EMAIL_VERIFY_BASE_URL=https://api.voipbin.test:8443
 
 # ==============================================================================
-# Monitoring (OPTIONAL)
+# Analytics & Monitoring (OPTIONAL)
 # ==============================================================================
+CLICKHOUSE_ADDRESS=
+CLICKHOUSE_DATABASE=default
 HOMER_URI=
+HOMER_API_ADDRESS=
+HOMER_AUTH_TOKEN=
+HOMER_WHITELIST=
 
 # PSTN whitelist - defaults to HOST_EXTERNAL_IP in docker-compose.yml
 PSTN_WHITELIST_IPS=
+
+# ==============================================================================
+# RAG (OPTIONAL - for knowledge base features)
+# ==============================================================================
+GCS_BUCKET=
+GCS_EMBEDDINGS_PATH=rag/embeddings.gob
+RAG_DOCS_BASE_PATH=/app/docs
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+RAG_LLM_MODEL=gpt-4o
+RAG_TOP_K=5
+RAG_CHUNK_MAX_TOKENS=800
 EOF
 
     log_info "  Created $ENV_FILE"
