@@ -17,6 +17,7 @@ DB_ROOT_PASSWORD="root_password"
 # Monorepo configuration
 MONOREPO_URL="https://github.com/voipbin/monorepo.git"
 MONOREPO_BRANCH="main"
+MONOREPO_PIN="0ce70d7d3a0df3c49af817d6c2c14e6a9b2f7f9b"  # single-commit pin: race-fix merge #561
 DBSCHEME_PATH="bin-dbscheme-manager"
 
 # Colors for output
@@ -120,12 +121,12 @@ setup_dbscheme() {
     if [ -d "$DBSCHEME_DIR" ]; then
         log_info "  Updating existing dbscheme directory..."
         cd "$DBSCHEME_DIR"
-        git pull origin "$MONOREPO_BRANCH" 2>/dev/null || true
+        git fetch origin "$MONOREPO_PIN" 2>/dev/null && git checkout -q "$MONOREPO_PIN" 2>/dev/null || git checkout -q "$MONOREPO_PIN" 2>/dev/null || true
     else
         log_info "  Cloning dbscheme from monorepo..."
         # Use sparse checkout to only get the dbscheme-manager directory
         cd "$PROJECT_DIR/tmp"
-        git clone --depth 1 --filter=blob:none --sparse "$MONOREPO_URL" bin-dbscheme-manager-repo 2>/dev/null || {
+        git clone --filter=blob:none --sparse "$MONOREPO_URL" bin-dbscheme-manager-repo 2>/dev/null && (cd bin-dbscheme-manager-repo && git checkout -q "$MONOREPO_PIN" 2>/dev/null || true) || {
             # Fallback: clone from local monorepo if available
             if [ -d "/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager" ]; then
                 log_info "  Using local monorepo..."
@@ -243,12 +244,25 @@ EOF
 run_migrations() {
     log_step "Running alembic migrations (parallel)..."
 
-    # Check if alembic is installed
+    # Check if alembic is installed with a compatible SQLAlchemy version.
+    # The monorepo dbscheme migrations require SQLAlchemy 1.x (they use the
+    # 1.x-only MetaData(bind=...) API). SQLAlchemy 2.x breaks them, so we must
+    # pin "sqlalchemy<2.0" — matching the dbscheme Dockerfile. A bare
+    # `command -v alembic` check is NOT enough: alembic may already be present
+    # alongside SQLAlchemy 2.x, which passes the check but fails at upgrade head.
+    local need_install=false
     if ! command -v alembic &> /dev/null; then
-        log_warn "Alembic not found. Installing..."
-        pip3 install alembic mysqlclient PyMySQL 2>/dev/null || {
+        need_install=true
+    elif ! python3 -c 'import sqlalchemy,sys; sys.exit(0 if sqlalchemy.__version__.split(".")[0]=="1" else 1)' 2>/dev/null; then
+        log_warn "Incompatible SQLAlchemy detected (need 1.x). Reinstalling pinned versions..."
+        need_install=true
+    fi
+
+    if [ "$need_install" = true ]; then
+        log_warn "Installing alembic with pinned SQLAlchemy<2.0..."
+        pip3 install "sqlalchemy<2.0" alembic PyMySQL 2>/dev/null || {
             log_error "Failed to install alembic. Please install it manually:"
-            log_error "  pip3 install alembic mysqlclient PyMySQL"
+            log_error "  pip3 install 'sqlalchemy<2.0' alembic PyMySQL"
             return 1
         }
     fi

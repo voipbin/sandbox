@@ -480,6 +480,27 @@ setup_test_customer() {
         return 1
     fi
 
+    # Step 5b: Set billing plan type BEFORE creating extensions.
+    # New customers get a billing account with an empty plan_type. Resource-
+    # limited resources (extensions, agents) call billing's resource-limit
+    # check, which fails with "unknown plan type" until a plan is set. The
+    # sandbox is for evaluation, so we use the 'unlimited' plan to avoid any
+    # limit blocking the test setup. This MUST run before extension creation.
+    local billing_account_id
+    local customer_info_plan
+    customer_info_plan=$(curl -sk -X GET "https://${api_host}:${api_port}/v1.0/customer" \
+        -H "Authorization: Bearer $token" 2>/dev/null)
+    billing_account_id=$(echo "$customer_info_plan" | jq -r '.billing_account_id' 2>/dev/null)
+    if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ] && \
+       [ "$billing_account_id" != "00000000-0000-0000-0000-000000000000" ]; then
+        log_info "  Setting billing plan type (unlimited) for sandbox..."
+        docker exec voipbin-billing-mgr /app/bin/billing-control account update-plan-type \
+            --id "$billing_account_id" \
+            --plan-type unlimited 2>&1 | grep -v severity || true
+    else
+        log_warn "  Billing account not ready yet; plan type not set. Extensions may fail until set."
+    fi
+
     # Step 6: Create extensions
     for ext in 1000 2000 3000; do
         log_info "  Creating extension: $ext"
