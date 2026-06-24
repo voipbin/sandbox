@@ -97,6 +97,44 @@ fi
 
 echo "Login successful. Token obtained."
 
+# 5b. Set billing plan type BEFORE creating extensions.
+# A new customer's billing account is created ASYNCHRONOUSLY by
+# billing-manager (it subscribes to the customer_created event, creates
+# the account, then calls back UpdateBillingAccountID on the customer).
+# So billing_account_id can still be the zero UUID right after creation.
+# We POLL until it is populated, then set the plan. Pinned images do not
+# set a default plan, and resource-limited resources (extensions, agents)
+# fail their billing resource-limit check until a plan is set.
+echo ""
+echo "Step 5b: Setting billing plan type (unlimited)..."
+BILLING_ACCOUNT_ID_PLAN=""
+CUSTOMER_INFO_PLAN=""
+PLAN_WAITED=0
+PLAN_MAX_WAIT=30
+echo "Waiting for billing account to be provisioned..."
+while [ $PLAN_WAITED -lt $PLAN_MAX_WAIT ]; do
+    CUSTOMER_INFO_PLAN=$(curl -sk -X GET "https://${API_HOST}:${API_PORT}/v1.0/customer" \
+        -H "Authorization: Bearer ${TOKEN}" 2>/dev/null) || true
+    BILLING_ACCOUNT_ID_PLAN=$(echo "$CUSTOMER_INFO_PLAN" | jq -r '.billing_account_id' 2>/dev/null) || true
+    if [ -n "$BILLING_ACCOUNT_ID_PLAN" ] && [ "$BILLING_ACCOUNT_ID_PLAN" != "null" ] && \
+       [ "$BILLING_ACCOUNT_ID_PLAN" != "00000000-0000-0000-0000-000000000000" ]; then
+        break
+    fi
+    echo -n "."
+    sleep 2
+    PLAN_WAITED=$((PLAN_WAITED + 2))
+done
+echo ""
+if [ -n "$BILLING_ACCOUNT_ID_PLAN" ] && [ "$BILLING_ACCOUNT_ID_PLAN" != "null" ] && \
+   [ "$BILLING_ACCOUNT_ID_PLAN" != "00000000-0000-0000-0000-000000000000" ]; then
+    docker exec voipbin-billing-mgr /app/bin/billing-control account update-plan-type \
+        --id "$BILLING_ACCOUNT_ID_PLAN" \
+        --plan-type unlimited 2>&1 | grep -v severity || true
+    echo "Billing plan type set to unlimited"
+else
+    echo "WARNING: Billing account not ready after ${PLAN_MAX_WAIT}s; plan type not set. Extensions may fail."
+fi
+
 # 6. Create extensions
 echo ""
 echo "Step 6: Creating extensions..."

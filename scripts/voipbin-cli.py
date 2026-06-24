@@ -4646,6 +4646,36 @@ Type 'registrar <subcommand> help' for more details.
         override_file = os.path.join(project_dir, "docker-compose.override.yml")
         versions_dir = os.path.join(project_dir, ".voipbin-versions")
 
+        # PIN GUARD: if versions.lock exists, this sandbox is pinned to a
+        # verified release snapshot. Re-resolving "latest" from Docker Hub would
+        # silently break the pin and reintroduce the image/schema mismatch that
+        # versions.lock exists to prevent. Honor the pin: just pull the digests
+        # already written in docker-compose.yml. The pin is intentionally sticky;
+        # changing it is a deliberate maintainer action, not a routine update.
+        lock_file = os.path.join(project_dir, "versions.lock")
+        if os.path.exists(lock_file):
+            print(f"\n{yellow('==>')} versions.lock found - this sandbox is PINNED to a verified snapshot.")
+            print(f"  {blue('Skipping')} 'latest' re-resolution to preserve the pin.")
+            print(f"  Pulling the pinned image digests from docker-compose.yml instead.")
+            try:
+                with open(lock_file) as lf:
+                    _lock = json.load(lf)
+                tgt = _lock.get("target_commit", "")
+                if tgt:
+                    print(f"  Pinned snapshot: {tgt[:12]} ({_lock.get('target_commit_desc','')})")
+            except Exception:
+                pass
+            if check_only:
+                print(f"\n{yellow('Dry-run:')} pinned - no changes. Pinned digests are in docker-compose.yml.")
+                return
+            print(f"\n{blue('==>')} docker compose pull (pinned digests)...")
+            result = run_cmd("docker compose pull 2>&1")
+            if result:
+                for line in result.strip().split("\n")[-12:]:
+                    print(f"  {line}")
+            print(f"\n  {green('✓')} Pinned images pulled. To change the pin, edit versions.lock + docker-compose.yml deliberately.")
+            return
+
         # Get list of voipbin images and their service mappings
         images, image_to_services = get_voipbin_images_from_compose(project_dir)
         if not images:
