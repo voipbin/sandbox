@@ -481,16 +481,31 @@ setup_test_customer() {
     fi
 
     # Step 5b: Set billing plan type BEFORE creating extensions.
-    # New customers get a billing account with an empty plan_type. Resource-
-    # limited resources (extensions, agents) call billing's resource-limit
-    # check, which fails with "unknown plan type" until a plan is set. The
-    # sandbox is for evaluation, so we use the 'unlimited' plan to avoid any
-    # limit blocking the test setup. This MUST run before extension creation.
-    local billing_account_id
-    local customer_info_plan
-    customer_info_plan=$(curl -sk -X GET "https://${api_host}:${api_port}/v1.0/customer" \
-        -H "Authorization: Bearer $token" 2>/dev/null)
-    billing_account_id=$(echo "$customer_info_plan" | jq -r '.billing_account_id' 2>/dev/null)
+    # A new customer's billing account is created ASYNCHRONOUSLY by
+    # billing-manager (it subscribes to the customer_created event, creates
+    # the account, then calls back UpdateBillingAccountID on the customer).
+    # So billing_account_id can still be the zero UUID right after creation.
+    # We POLL until it is populated, then set the plan. Pinned images do not
+    # set a default plan, and resource-limited resources (extensions, agents)
+    # fail their billing resource-limit check until a plan is set.
+    local billing_account_id=""
+    local customer_info_plan=""
+    local plan_waited=0
+    local plan_max_wait=30
+    log_info "  Waiting for billing account to be provisioned..."
+    while [ $plan_waited -lt $plan_max_wait ]; do
+        customer_info_plan=$(curl -sk -X GET "https://${api_host}:${api_port}/v1.0/customer" \
+            -H "Authorization: Bearer $token" 2>/dev/null) || true
+        billing_account_id=$(echo "$customer_info_plan" | jq -r '.billing_account_id' 2>/dev/null) || true
+        if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ] && \
+           [ "$billing_account_id" != "00000000-0000-0000-0000-000000000000" ]; then
+            break
+        fi
+        echo -n "."
+        sleep 2
+        plan_waited=$((plan_waited + 2))
+    done
+    echo ""
     if [ -n "$billing_account_id" ] && [ "$billing_account_id" != "null" ] && \
        [ "$billing_account_id" != "00000000-0000-0000-0000-000000000000" ]; then
         log_info "  Setting billing plan type (unlimited) for sandbox..."
@@ -498,7 +513,7 @@ setup_test_customer() {
             --id "$billing_account_id" \
             --plan-type unlimited 2>&1 | grep -v severity || true
     else
-        log_warn "  Billing account not ready yet; plan type not set. Extensions may fail until set."
+        log_warn "  Billing account not ready after ${plan_max_wait}s; plan type not set. Extensions may fail."
     fi
 
     # Step 6: Create extensions
@@ -506,7 +521,7 @@ setup_test_customer() {
         log_info "  Creating extension: $ext"
         curl -sk -X POST "https://${api_host}:${api_port}/v1.0/extensions" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
+                -H "Authorization: Bearer $token" \
             -d "{\"extension\": \"$ext\", \"password\": \"pass$ext\", \"name\": \"Extension $ext\"}" > /dev/null 2>&1 || true
     done
 
