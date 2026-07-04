@@ -17,7 +17,14 @@ DB_ROOT_PASSWORD="root_password"
 # Monorepo configuration
 MONOREPO_URL="https://github.com/voipbin/monorepo.git"
 MONOREPO_BRANCH="main"
-MONOREPO_PIN="0ce70d7d3a0df3c49af817d6c2c14e6a9b2f7f9b"  # single-commit pin: race-fix merge #561
+# Single source of truth for the dbscheme pin is versions.lock (design §3.3).
+# The old hardcoded MONOREPO_PIN here caused three-way manual sync drift
+# (versions.lock vs compose vs this script).
+MONOREPO_PIN="$(python3 -c "import json;print(json.load(open('$PROJECT_DIR/versions.lock')).get('dbscheme_monorepo_commit',''))" 2>/dev/null || true)"
+if [ -z "$MONOREPO_PIN" ]; then
+    echo "[ERROR] Could not read dbscheme_monorepo_commit from versions.lock" >&2
+    exit 1
+fi
 DBSCHEME_PATH="bin-dbscheme-manager"
 
 # Colors for output
@@ -396,16 +403,15 @@ main() {
     create_databases
     echo ""
 
-    # Setup dbscheme files
-    setup_dbscheme
-    echo ""
-
-    # Configure alembic
-    configure_alembic
-    echo ""
-
-    # Run migrations
-    run_migrations
+    # Delegate schema migration to the containerized migrate.sh (design §3.3):
+    # runs alembic inside python:3.11-slim on the compose network - no host
+    # pip/alembic required. The legacy host-alembic functions
+    # (setup_dbscheme/configure_alembic/run_migrations) remain above for
+    # reference/fallback but are no longer on the default path.
+    if ! "$SCRIPT_DIR/migrate.sh"; then
+        log_error "Containerized migration failed (scripts/migrate.sh)."
+        exit 1
+    fi
     echo ""
 
     echo "=============================================="

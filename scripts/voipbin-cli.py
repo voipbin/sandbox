@@ -10,9 +10,11 @@ This CLI requires sudo for full functionality (network setup, DNS config, etc.)
 
 import atexit
 import getpass
+import hashlib
 import json
 import os
 import readline
+import re
 import shlex
 import shutil
 import signal
@@ -1743,6 +1745,8 @@ class VoIPBinCLI:
             "init": self.cmd_init,
             "clean": self.cmd_clean,
             "update": self.cmd_update,
+            "backup": self.cmd_backup,
+            "restore": self.cmd_restore,
             "rollback": self.cmd_rollback,
             "version": self.cmd_version,
             "exit": self.cmd_exit,
@@ -1789,9 +1793,11 @@ class VoIPBinCLI:
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
             "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                       Show current network configuration\n  network setup                        Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                     Remove VoIP network interfaces"),
             "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
-            "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
-            "update": ("Update sandbox", "update [subcommand] [--check]\n  update               Pull latest Docker images + restart services\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Both images and scripts\n  update all --check   Dry-run: show both"),
-            "rollback": ("Rollback to previous version", "rollback [N]\n  rollback             Interactive version selection\n  rollback N           Restore version by number (e.g., rollback 2)\n  rollback --list      Show available versions"),
+            "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
+            "update": ("Update sandbox", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing"),
+            "backup": ("Create a full data backup", "backup\n  Dumps MySQL (all databases), archives recording volumes, and copies\n  .env/certs/versions.lock into backups/<timestamp>/ (chmod 700/600).\n  Runs while services are up (mysqldump --single-transaction).\n  Retention: last 7 backups are kept.\n  NOTE: backups contain your full .env secrets in plaintext - copy them\n  off-host (rsync/rclone) for real disaster recovery."),
+            "restore": ("Restore data from a backup (DESTRUCTIVE)", "restore <timestamp> --force\n  restore              List available backups\n  restore <ts> --force Restore MySQL dump + recordings + config from backups/<ts>/\n  DESTRUCTIVE: overwrites current DATA. Requires --force AND all services\n  stopped except db and redis. Flushes Redis after import.\n  (restore = DATA from backups/. rollback = image override history, unpinned repos only.)"),
+            "rollback": ("Rollback to previous version", "rollback [N]\n  rollback             Interactive version selection\n  rollback N           Restore version by number (e.g., rollback 2)\n  rollback --list      Show available versions\n  NOTE: rollback replays docker-compose.override.yml IMAGE snapshots and only\n  applies to UNPINNED repos (refused when versions.lock exists).\n  For DATA restore use 'restore <ts>' instead."),
             "version": ("Show pinned image versions", "version [--json]\n  version              Show version table\n  version --json       Output as JSON for scripting"),
             "exit": ("Exit CLI", "exit"),
             "clear": ("Clear screen", "clear"),
@@ -1875,8 +1881,10 @@ class VoIPBinCLI:
 
 {blue('Setup & Cleanup:')}
   init              Initialize sandbox (.env, certs)
-  update [options]  Update (scripts, all, --check)
-  rollback          Rollback to previous backup (--list)
+  update [options]  Update (scripts, all, --check) - 'update all' = full pinned upgrade
+  backup            Full data backup (MySQL + recordings + config) to backups/<ts>/
+  restore <ts>      Restore DATA from a backup (DESTRUCTIVE, requires --force + stopped services)
+  rollback          Rollback image override history (UNPINNED repos only, --list)
   clean [options]   Cleanup (--containers, --volumes, --images, --network, --dns, --purge, --all)
 
 {blue('Contexts:')}
@@ -4326,7 +4334,7 @@ Type 'registrar <subcommand> help' for more details.
             print("")
             print("Options:")
             print("  --containers  Remove app containers (keeps infrastructure: db, redis, mq, dns)")
-            print("  --volumes     Remove docker volumes (database, recordings)")
+            print("  --volumes     Remove docker volumes (database, recordings, redis/rabbitmq state)")
             print("  --images      Remove docker images")
             print("  --network     Teardown VoIP network interfaces")
             print("  --dns         Remove DNS configuration")
@@ -4620,23 +4628,733 @@ Type 'registrar <subcommand> help' for more details.
         """Update sandbox - pull images and/or update scripts from GitHub"""
         project_dir = self.config.get("project_dir", ".")
         check_only = "--check" in args
-        args = [a for a in args if a != "--check"]
+        skip_backup = "--skip-backup" in args
+        resume_from = None
+        backup_ts = None
+        filtered = []
+        for a in args:
+            if a in ("--check", "--skip-backup"):
+                continue
+            if a.startswith("--resume-from="):
+                resume_from = a.split("=", 1)[1]
+                continue
+            if a.startswith("--backup-ts="):
+                backup_ts = a.split("=", 1)[1]
+                continue
+            filtered.append(a)
+        args = filtered
 
         # Determine what to update
         subcommand = args[0] if args else ""
 
+        pinned = os.path.exists(os.path.join(project_dir, "versions.lock"))
+
+        if resume_from == "pull" and not pinned:
+            # The pulled commit REMOVED versions.lock (unpin release). Falling
+            # through to the unpinned path silently would skip migrations -
+            # tell the operator what happened instead.
+            print(f"{yellow('!')} Resumed after git pull, but versions.lock is GONE in the new")
+            print("  commit (the release unpinned this repo). The pinned upgrade flow does")
+            print("  not apply anymore - run 'update all' again to use the standard path,")
+            print("  and run scripts/migrate.sh manually if the release requires migrations.")
+            return
+
         if subcommand == "scripts":
             self._update_scripts(project_dir, check_only)
         elif subcommand == "all":
-            self._update_scripts(project_dir, check_only)
-            if not check_only:
-                print("")
-            self._update_images(project_dir, check_only)
+            if pinned:
+                # Pinned repo: safe-ordered upgrade flow (design §3.5).
+                self._upgrade_pinned(
+                    project_dir,
+                    check_only=check_only,
+                    skip_backup=skip_backup,
+                    resume_from=resume_from,
+                    backup_ts=backup_ts,
+                )
+            else:
+                self._update_scripts(project_dir, check_only)
+                if not check_only:
+                    print("")
+                self._update_images(project_dir, check_only)
         elif subcommand in ("", "images"):
             self._update_images(project_dir, check_only)
         else:
             print(f"{red('Unknown subcommand:')} {subcommand}")
-            print("Usage: update [scripts|all] [--check]")
+            print("Usage: update [scripts|images|all] [--check] [--skip-backup]")
+
+    # -------------------------------------------------------------------------
+    # Pinned-repo upgrade flow (design §3.5)
+    # -------------------------------------------------------------------------
+
+    def _compose_project_name(self, project_dir):
+        """Derive the docker compose project name (for network naming)"""
+        env_name = os.environ.get("COMPOSE_PROJECT_NAME")
+        if env_name:
+            return env_name
+        base = os.path.basename(os.path.abspath(project_dir)).lower()
+        name = re.sub(r"[^a-z0-9_-]", "", base)
+        return name or "voipbin"
+
+    def _upgrade_pinned(self, project_dir, check_only=False, skip_backup=False,
+                        resume_from=None, backup_ts=None):
+        """Safe-ordered upgrade for a pinned repo:
+        backup -> git pull -> re-exec -> compose pull -> migrate -> up -d -> verify
+
+        The git pull in step 2 overwrites THIS running file. To avoid executing
+        stale code for steps 3-6, we re-exec the CLI after step 2 with
+        --resume-from=pull (which doubles as the re-entry loop guard).
+        """
+        print(f"\n{bold('Pinned Upgrade (update all)')}")
+        print("=" * 50)
+
+        if check_only:
+            print(f"\n{yellow('Dry-run:')} pinned repo detected (versions.lock). 'update all' would run:")
+            print("  1. backup                  - full data backup into backups/<ts>/ (skip with --skip-backup)")
+            print("  2. update scripts          - git pull (new docker-compose.yml + versions.lock + scripts)")
+            print("     (the CLI then re-execs itself so steps 3-6 run the NEW code)")
+            print("  3. docker compose pull     - fetch the new pinned digests")
+            print("  4. scripts/migrate.sh      - alembic migrations at the new dbscheme pin (abort on failure)")
+            print("  5. docker compose up -d    - recreate only containers whose digest changed")
+            print("  6. verify                  - poll container health (120s) + GET api-manager /ping")
+            print(f"\n{yellow('No changes made.')} Run 'update all' without --check to upgrade.")
+            return
+
+        if resume_from != "pull":
+            # Concurrency lock: held from here THROUGH the execv (the lock file
+            # survives the process image swap) and released at the end of the
+            # resumed run. Blocks concurrent backup / second update all.
+            lock = self._acquire_op_lock(project_dir, "update all")
+            if not lock:
+                return
+            # Any unexpected exception (incl. Ctrl-C during mysqldump) before
+            # the execv must not leak the lock: on the success path execv
+            # replaces the process so this except never runs, and the resumed
+            # process owns/releases the lock via atexit.
+            try:
+                self._upgrade_pinned_pre_exec(project_dir, lock, skip_backup, backup_ts)
+            except BaseException:
+                self._release_op_lock(lock)
+                raise
+            return  # only reached on abort paths inside pre_exec
+
+        # ---- Resumed process (new code) continues from step 3. NEVER re-exec here. ----
+        # The op lock acquired before the execv is still on disk; release it on
+        # ANY exit path of this process (abort or success) via atexit.
+        _lock_path = os.path.join(project_dir, ".voipbin-op.lock")
+        atexit.register(self._release_op_lock, _lock_path)
+        print(f"\n{blue('==>')} Resumed after script update (steps 1-2 already done).")
+        if backup_ts:
+            print(f"  Pre-upgrade backup: backups/{backup_ts}/")
+
+        restore_hint = f"voipbin restore {backup_ts} --force" if backup_ts else "voipbin restore <ts> --force"
+
+        # ---- Step 3: docker compose pull (fetch the NEW pinned digests) ----
+        print(f"\n{blue('==>')} Step 3/6: pulling new pinned images (docker compose pull)...")
+        rc = subprocess.call("docker compose pull", shell=True, cwd=project_dir)
+        if rc != 0:
+            print(f"\n{red('Upgrade aborted:')} docker compose pull failed (exit {rc}).")
+            print("  Old containers are still running the old digests; safe to re-run 'update all'.")
+            return
+
+        # ---- Step 4: migrations (surfaced live, abort on failure) ----
+        migrate_script = os.path.join(project_dir, "scripts", "migrate.sh")
+        print(f"\n{blue('==>')} Step 4/6: running database migrations (scripts/migrate.sh)...")
+        if not os.path.exists(migrate_script):
+            print(f"\n{red('Upgrade aborted:')} {migrate_script} not found.")
+            print("  The 'update scripts' step may have pulled an incomplete tree -")
+            print("  check 'git status' in the repo, or re-clone and retry 'update all'.")
+            return
+        rc = subprocess.call(["bash", migrate_script], cwd=project_dir)
+        if rc != 0:
+            print(f"\n{red('Upgrade aborted:')} migration failed (exit {rc}).")
+            print(f"\n{yellow('MySQL DDL is non-transactional - the migration may be PARTIALLY applied.')}")
+            print("  Recovery procedure:")
+            print("    1. voipbin stop --all")
+            print(f"    2. {restore_hint}    (restores pre-upgrade schema + data)")
+            print("    3. git checkout <previous commit>   (reverts compose/versions.lock/scripts)")
+            print("    4. voipbin start")
+            return
+
+        # ---- Step 5: recreate changed containers ----
+        print(f"\n{blue('==>')} Step 5/6: recreating services (docker compose up -d)...")
+        rc = subprocess.call("docker compose up -d", shell=True, cwd=project_dir)
+        if rc != 0:
+            print(f"\n{red('Upgrade aborted:')} docker compose up -d failed (exit {rc}).")
+            print(f"  If services are broken: stop, then '{restore_hint}' and git checkout the previous commit.")
+            return
+
+        # ---- Step 6: verify ----
+        print(f"\n{blue('==>')} Step 6/6: verifying stack health...")
+        if self._verify_stack(project_dir):
+            print(f"\n{bold(green('Upgrade complete!'))}")
+            if backup_ts:
+                print(f"  Pre-upgrade backup kept at backups/{backup_ts}/")
+            print("  Run 'voipbin status' to inspect services.")
+        else:
+            print(f"\n{red('Upgrade verification FAILED.')}")
+            print("  Recovery options:")
+            print("    - Data rollback:  stop services, then run:")
+            print(f"        {restore_hint}")
+            print("    - Image rollback: git checkout the previous repo commit")
+            print("      (docker-compose.yml + versions.lock + scripts are git-versioned), then")
+            print("      'docker compose up -d'.")
+            print(f"  {yellow('Do NOT use')} 'voipbin rollback' here: it replays docker-compose.override.yml")
+            print("  snapshots that only exist on UNPINNED repos and would silently unpin this repo.")
+
+    def _upgrade_pinned_pre_exec(self, project_dir, lock, skip_backup, backup_ts):
+        """Steps 1-2 of the pinned upgrade + the re-exec. Runs with the op lock
+        held; the CALLER releases the lock if this raises. Returning (instead
+        of exec'ing) means the upgrade aborted - the caller just returns."""
+        # ---- Step 1: backup (BEFORE git pull - captures the OLD pin state) ----
+        if skip_backup:
+            print(f"\n{yellow('==>')} Step 1/6: backup SKIPPED (--skip-backup)")
+        else:
+            print(f"\n{blue('==>')} Step 1/6: creating pre-upgrade backup...")
+            backup_ts = self._do_backup(project_dir)
+            if not backup_ts:
+                print(f"\n{red('Upgrade aborted:')} backup failed. Nothing was changed.")
+                print("  Fix the backup problem, or re-run with --skip-backup to opt out (not recommended).")
+                self._release_op_lock(lock)
+                return
+
+        # ---- Step 2: update scripts (git pull) ----
+        print(f"\n{blue('==>')} Step 2/6: updating scripts (git pull)...")
+        if not self._update_scripts(project_dir, check_only=False):
+            print(f"\n{red('Upgrade aborted:')} git pull failed. The old pin is intact.")
+            if backup_ts:
+                print(f"  Pre-upgrade backup: backups/{backup_ts}/ (untouched state, nothing to restore)")
+            self._release_op_lock(lock)
+            return
+
+        # ---- Re-exec: the git pull may have overwritten this very file. ----
+        # CPython loaded the OLD code at startup; steps 3-6 must run the NEW
+        # code. --resume-from=pull is the loop guard: the resumed process
+        # never re-execs again.
+        # NOTE for interactive-shell users: execv REPLACES this process, so
+        # after the upgrade finishes the CLI exits instead of returning to
+        # the voipbin> prompt. Communicate that now.
+        print(f"\n{blue('==>')} Re-executing CLI to continue with the updated code...")
+        print("  (After the upgrade completes, the CLI will exit - start it again")
+        print("   with 'sudo ./voipbin' if you were in the interactive shell.)")
+        argv = [sys.executable, os.path.abspath(__file__), "update", "all", "--resume-from=pull"]
+        if backup_ts:
+            argv.append(f"--backup-ts={backup_ts}")
+        if skip_backup:
+            argv.append("--skip-backup")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, argv)
+
+    def _verify_stack(self, project_dir, timeout=120):
+        """Poll compose health until no container is starting/unhealthy, then
+        ping api-manager from a helper container on the compose network."""
+        deadline = time.time() + timeout
+        bad = []
+        while time.time() < deadline:
+            output = run_cmd("docker compose ps --format json 2>/dev/null")
+            entries = []
+            if output:
+                for line in output.strip().split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, list):
+                        entries.extend(parsed)
+                    else:
+                        entries.append(parsed)
+            bad = []
+            for e in entries:
+                name = e.get("Name") or e.get("Service") or "?"
+                # Containers WITHOUT a healthcheck have no/empty Health field -
+                # treat absent as OK.
+                health = (e.get("Health") or "").lower()
+                state = (e.get("State") or "").lower()
+                if health in ("starting", "unhealthy"):
+                    bad.append((name, health))
+                elif state == "restarting":
+                    bad.append((name, state))
+            if not bad:
+                break
+            print(f"\r  Waiting for {len(bad)} container(s) to become healthy... ", end="", flush=True)
+            time.sleep(5)
+        print()
+
+        if bad:
+            print(f"  {red('✗')} Timed out after {timeout}s. Problem containers:")
+            for name, why in bad:
+                print(f"    - {name}: {why}")
+            print("  Inspect why with: docker compose logs --tail 50 <service>")
+            return False
+        print(f"  {green('✓')} All containers healthy (or no healthcheck defined)")
+
+        # API ping from a helper container on the compose network
+        # (the bin-api-manager image may lack curl).
+        # Resolve the network the SAME way migrate.sh does: from the running db
+        # container's attachments (robust against COMPOSE_PROJECT_NAME overrides),
+        # falling back to the derived <project>_default name.
+        db_container = self.config.get("db_container", "voipbin-db")
+        network = run_cmd(
+            "docker inspect " + shlex.quote(db_container) +
+            " -f '{{range $k,$v := .NetworkSettings.Networks}}{{println $k}}{{end}}' 2>/dev/null"
+        )
+        network = network.strip().splitlines()[0].strip() if network and network.strip() else \
+            f"{self._compose_project_name(project_dir)}_default"
+        print(f"  Pinging api-manager via network '{network}'...")
+        result = subprocess.run(
+            f"docker run --rm --network {shlex.quote(network)} curlimages/curl "
+            f"-sk -o /dev/null -w '%{{http_code}}' --max-time 15 https://api-manager:443/ping",
+            shell=True, capture_output=True, text=True, cwd=project_dir,
+        )
+        code = (result.stdout or "").strip()
+        if result.returncode == 0 and code and code != "000":
+            print(f"  {green('✓')} api-manager /ping responded (HTTP {code})")
+            return True
+        print(f"  {red('✗')} api-manager /ping failed (curl exit {result.returncode}, HTTP '{code or '-'}')")
+        if result.stderr:
+            print(f"    {result.stderr.strip().splitlines()[-1]}")
+        return False
+
+    # -------------------------------------------------------------------------
+    # Backup / Restore (design §3.4)
+    # -------------------------------------------------------------------------
+
+    DATA_BACKUP_DIR = "backups"
+    DATA_BACKUP_KEEP = 7
+    RECORDING_VOLUMES = [
+        ("asterisk-call-recording", "recordings-call.tar.gz"),
+        ("asterisk-conf-recording", "recordings-conf.tar.gz"),
+    ]
+
+    def _resolve_volume(self, project_dir, volume):
+        """Resolve a compose volume name to its real docker volume name.
+
+        Compose prefixes named volumes with the project name
+        (e.g. sandbox_asterisk-call-recording). Prefer an exact-name match,
+        then <project>_<name>, then any single suffix match."""
+        out = run_cmd("docker volume ls --format '{{.Name}}'") or ""
+        names = [n.strip() for n in out.strip().split("\n") if n.strip()]
+        if volume in names:
+            return volume
+        prefixed = f"{self._compose_project_name(project_dir)}_{volume}"
+        if prefixed in names:
+            return prefixed
+        suffix_matches = [n for n in names if n.endswith(f"_{volume}")]
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        return None
+
+    def _acquire_op_lock(self, project_dir, op):
+        """Advisory lock so backup/upgrade cannot run concurrently.
+
+        mysqldump --single-transaction is NOT safe against concurrent DDL:
+        a backup taken while migrations run could produce a 'valid-looking'
+        dump of a half-migrated schema. Returns the lock path on success,
+        None if another operation holds the lock.
+        """
+        lock_path = os.path.join(project_dir, ".voipbin-op.lock")
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{op} pid={os.getpid()} {time.strftime('%F %T')}\n".encode())
+            os.close(fd)
+            return lock_path
+        except FileExistsError:
+            try:
+                holder = open(lock_path).read().strip()
+            except Exception:
+                holder = "unknown"
+            print(f"\n{red('Another voipbin operation is in progress:')} {holder or 'unknown (lock just created?)'}")
+            print(f"  Refusing to run '{op}' concurrently (backup during a migration")
+            print("  would capture a half-migrated schema).")
+            # Liveness hint: if the recorded pid is dead, the lock is stale.
+            stale_hint = ""
+            pid_m = re.search(r"pid=(\d+)", holder or "")
+            if pid_m:
+                try:
+                    os.kill(int(pid_m.group(1)), 0)
+                except ProcessLookupError:
+                    stale_hint = " (that pid is NOT running - the lock looks stale)"
+                except PermissionError:
+                    pass  # pid exists under another user
+            print(f"  If that operation crashed, remove the stale lock: rm {lock_path}{stale_hint}")
+            return None
+
+    def _release_op_lock(self, lock_path):
+        try:
+            if lock_path and os.path.exists(lock_path):
+                os.remove(lock_path)
+        except Exception:
+            pass
+
+    def cmd_backup(self, args):
+        """Create a full data backup (MySQL + recordings + config)"""
+        project_dir = self.config.get("project_dir", ".")
+        lock = self._acquire_op_lock(project_dir, "backup")
+        if not lock:
+            return
+        try:
+            ts = self._do_backup(project_dir)
+        finally:
+            self._release_op_lock(lock)
+        if ts:
+            print(f"\n{bold(green('Backup complete:'))} backups/{ts}/")
+            print(f"  {yellow('Reminder:')} this backup contains your full .env secrets in plaintext,")
+            print("  and a backup on the same disk dies with the disk. Copy it off-host, e.g.:")
+            print(f"    rsync -a {os.path.join(project_dir, self.DATA_BACKUP_DIR, ts)} user@other-host:/backups/voipbin/")
+        else:
+            print(f"\n{red('Backup FAILED.')}")
+
+    def _do_backup(self, project_dir):
+        """Create backups/<ts>/ with mysql dump, recordings tars, config copies
+        and a manifest. Returns the timestamp string on success, None on failure
+        (callers MUST abort on None)."""
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
+        backup_dir = os.path.join(backups_base, ts)
+        db_password = self.config.get("db_password", "root_password")
+
+        def fail(msg):
+            print(f"  {red('✗')} {msg}")
+            # Remove the partial backup so it can never be restored from.
+            try:
+                if os.path.isdir(backup_dir):
+                    shutil.rmtree(backup_dir)
+            except Exception:
+                pass
+            return None
+
+        try:
+            # exist_ok=False: if a backup with the same second-resolution ts
+            # already exists, refuse instead of silently reusing the directory
+            # (a later fail()/rmtree would otherwise destroy the earlier,
+            # already-reported-successful backup).
+            os.makedirs(backup_dir, exist_ok=False)
+            os.chmod(backups_base, 0o700)
+            os.chmod(backup_dir, 0o700)
+        except FileExistsError:
+            print(f"{red('✗')} Backup {ts} already exists - retry in 1 second.")
+            return None
+        except Exception as e:
+            return fail(f"Could not create backup directory: {e}")
+
+        print(f"\n{bold('Data Backup')} -> backups/{ts}/")
+        print("=" * 50)
+
+        # 1. MySQL dump (consistent for InnoDB while services run)
+        print(f"\n{blue('==>')} Dumping MySQL (all databases)...")
+        dump_path = os.path.join(backup_dir, "mysql.sql.gz")
+        db_container = self.config.get("db_container", "voipbin-db")
+        dump_cmd = (
+            "set -o pipefail; "
+            # password via the container's own env, not host argv: a literal
+            # -p<password> on the docker exec command line is visible to every
+            # user on the host via 'ps aux' for the whole dump duration.
+            f"docker exec {shlex.quote(db_container)} "
+            "sh -c 'exec mysqldump --single-transaction --routines "
+            "--all-databases -uroot -p\"${MYSQL_ROOT_PASSWORD:-root_password}\"' "
+            f"| gzip > {shlex.quote(dump_path)}"
+        )
+        rc = subprocess.call(["bash", "-c", dump_cmd])
+        if rc != 0 or not os.path.exists(dump_path) or os.path.getsize(dump_path) == 0:
+            return fail(f"mysqldump failed (exit {rc}). Is voipbin-db running?")
+        print(f"  {green('✓')} mysql.sql.gz ({os.path.getsize(dump_path)} bytes)")
+
+        # 2. Recording volumes
+        abs_backup_dir = os.path.abspath(backup_dir)
+        for volume, archive in self.RECORDING_VOLUMES:
+            real_vol = self._resolve_volume(project_dir, volume)
+            if not real_vol:
+                print(f"  {yellow('!')} volume {volume} not found - skipping (no recordings yet?)")
+                continue
+            print(f"\n{blue('==>')} Archiving volume {real_vol}...")
+            rc = subprocess.call(
+                f"docker run --rm -v {shlex.quote(real_vol)}:/src:ro "
+                f"-v {shlex.quote(abs_backup_dir)}:/dst alpine "
+                f"tar czf /dst/{shlex.quote(archive)} -C /src .",
+                shell=True,
+            )
+            if rc != 0:
+                return fail(f"Archiving volume {real_vol} failed (exit {rc}).")
+            print(f"  {green('✓')} {archive}")
+
+        # 3. Config copies (.env, certs/, versions.lock)
+        print(f"\n{blue('==>')} Copying config (.env, certs/, versions.lock)...")
+        config_dir = os.path.join(backup_dir, "config")
+        try:
+            os.makedirs(config_dir, exist_ok=True)
+            env_path = os.path.join(project_dir, ".env")
+            if os.path.exists(env_path):
+                shutil.copy2(env_path, os.path.join(config_dir, ".env"))
+            lock_path = os.path.join(project_dir, "versions.lock")
+            if os.path.exists(lock_path):
+                shutil.copy2(lock_path, os.path.join(config_dir, "versions.lock"))
+            certs_path = os.path.join(project_dir, "certs")
+            if os.path.isdir(certs_path):
+                shutil.copytree(certs_path, os.path.join(config_dir, "certs"), dirs_exist_ok=True)
+            print(f"  {green('✓')} config copied")
+        except Exception as e:
+            return fail(f"Config copy failed: {e}")
+
+        # 4. Manifest
+        try:
+            target_commit = ""
+            lock_path = os.path.join(project_dir, "versions.lock")
+            if os.path.exists(lock_path):
+                try:
+                    with open(lock_path) as lf:
+                        target_commit = json.load(lf).get("target_commit", "")
+                except Exception:
+                    target_commit = ""
+            compose_sha256 = ""
+            compose_path = os.path.join(project_dir, "docker-compose.yml")
+            if os.path.exists(compose_path):
+                h = hashlib.sha256()
+                with open(compose_path, "rb") as cf:
+                    for chunk in iter(lambda: cf.read(65536), b""):
+                        h.update(chunk)
+                compose_sha256 = h.hexdigest()
+
+            sizes = {}
+            for root, _dirs, files in os.walk(backup_dir):
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    sizes[os.path.relpath(fp, backup_dir)] = os.path.getsize(fp)
+
+            manifest = {
+                "timestamp": ts,
+                "target_commit": target_commit,
+                "compose_sha256": compose_sha256,
+                "sizes": sizes,
+            }
+            with open(os.path.join(backup_dir, "manifest.json"), "w") as mf:
+                json.dump(manifest, mf, indent=2)
+        except Exception as e:
+            return fail(f"Manifest write failed: {e}")
+
+        # 5. Tighten permissions (backup contains the full .env secret set)
+        try:
+            for root, dirs, files in os.walk(backup_dir):
+                for d in dirs:
+                    os.chmod(os.path.join(root, d), 0o700)
+                for fn in files:
+                    os.chmod(os.path.join(root, fn), 0o600)
+        except Exception as e:
+            return fail(f"Could not set backup permissions: {e}")
+
+        # 6. Retention: keep the last N TIMESTAMP-SHAPED backups. Non-timestamp
+        # directories (e.g. operator's manual copies) are never touched, and
+        # the backup just taken can never be pruned.
+        try:
+            entries = sorted(
+                d for d in os.listdir(backups_base)
+                if os.path.isdir(os.path.join(backups_base, d))
+                and re.fullmatch(r"\d{8}-\d{6}", d)
+            )
+            for old in entries[:-self.DATA_BACKUP_KEEP]:
+                if old == ts:
+                    continue
+                shutil.rmtree(os.path.join(backups_base, old))
+                print(f"  Pruned old backup: {old}")
+        except Exception as e:
+            print(f"  {yellow('!')} Retention cleanup warning: {e}")
+
+        print(f"\n  {green('✓')} Backup written to backups/{ts}/")
+        return ts
+
+    def cmd_restore(self, args):
+        """Restore data from a backup (DESTRUCTIVE)"""
+        project_dir = self.config.get("project_dir", ".")
+        backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
+        db_password = self.config.get("db_password", "root_password")
+
+        available = []
+        if os.path.isdir(backups_base):
+            available = sorted(
+                d for d in os.listdir(backups_base)
+                if os.path.isdir(os.path.join(backups_base, d))
+            )
+
+        positional = [a for a in args if not a.startswith("--")]
+        force = "--force" in args
+
+        if not positional:
+            print(f"\n{bold('Available backups')} (backups/)")
+            print("=" * 50)
+            if not available:
+                print("  (none - run 'voipbin backup' first)")
+            for b in available:
+                print(f"  {b}")
+            print(f"\nUsage: restore <timestamp> --force")
+            print(f"{yellow('DESTRUCTIVE:')} overwrites current MySQL data and recordings.")
+            return
+
+        ts = positional[0]
+        # ts must be a backup timestamp - rejects path traversal
+        # ('restore ../../etc') and anything not produced by _do_backup.
+        if not re.fullmatch(r"\d{8}-\d{6}", ts):
+            print(f"{red('Invalid backup timestamp:')} {ts}")
+            print("  Expected format: YYYYmmdd-HHMMSS (as listed by 'restore' with no args).")
+            return
+        backup_dir = os.path.join(backups_base, ts)
+        if not os.path.isdir(backup_dir):
+            print(f"{red('Backup not found:')} backups/{ts}/")
+            if available:
+                print("Available: " + ", ".join(available))
+            return
+
+        if not force:
+            print(f"\n{red('Refusing to restore without --force.')}")
+            print(f"  'restore {ts}' will OVERWRITE the current MySQL data, recordings and .env")
+            print(f"  with the contents of backups/{ts}/. This cannot be undone.")
+            print(f"  If you are sure: restore {ts} --force")
+            return
+
+        # Guard: all services must be stopped except db and redis.
+        # Scope: the compose PROJECT the target db container belongs to
+        # (via the com.docker.compose.project label). This is checked against
+        # ACTUAL RUNNING CONTAINERS, so a COMPOSE_PROJECT_NAME mismatch cannot
+        # let the target stack slip past the guard (Round-1 finding M1), while
+        # unrelated stacks on the same host do not block the restore.
+        db_container = self.config.get("db_container", "voipbin-db")
+        redis_container = self.config.get("redis_container", "voipbin-redis")
+        ps_out = run_cmd("docker ps --format '{{.Names}}' 2>/dev/null") or ""
+        running_names = [n.strip() for n in ps_out.split("\n") if n.strip()]
+        if db_container not in running_names:
+            print(f"\n{red('Database is not running.')} Restore needs db (and redis) up:")
+            print("  docker compose up -d db redis")
+            return
+        project = run_cmd(
+            f"docker inspect {shlex.quote(db_container)} "
+            "-f '{{index .Config.Labels \"com.docker.compose.project\"}}' 2>/dev/null"
+        )
+        project = (project or "").strip()
+        if project:
+            stack_out = run_cmd(
+                "docker ps --format '{{.Names}}' "
+                f"--filter label=com.docker.compose.project={shlex.quote(project)} 2>/dev/null"
+            ) or ""
+            stack_names = [n.strip() for n in stack_out.split("\n") if n.strip()]
+        else:
+            # db container not compose-managed: fall back to blocking on any
+            # running voipbin-* container other than db/redis (conservative).
+            stack_names = [n for n in running_names if "voipbin" in n]
+        allowed_names = {db_container, redis_container}
+        extra = sorted(n for n in stack_names if n not in allowed_names)
+        if extra:
+            print(f"\n{red('Refusing to restore while services are running.')}")
+            print("  Restore requires ALL services stopped except db and redis. Still running")
+            print(f"  in the target stack ({project or 'unlabeled'}):")
+            for s in extra:
+                print(f"    - {s}")
+            print("\n  Stop them first:  voipbin stop --all && docker compose up -d db redis")
+            return
+
+        # Backup integrity gate: a partial backup (interrupted mid-write)
+        # has no manifest - refuse to restore from it (Round-1 finding M3).
+        manifest_path = os.path.join(backup_dir, "manifest.json")
+        if not os.path.exists(manifest_path):
+            print(f"{red('✗')} manifest.json missing in backups/{ts}/ - backup is incomplete")
+            print("  (probably interrupted). Refusing to restore from a partial backup.")
+            return
+        rc = subprocess.call(["gunzip", "-t", os.path.join(backup_dir, "mysql.sql.gz")]) \
+            if os.path.exists(os.path.join(backup_dir, "mysql.sql.gz")) else 1
+        if rc != 0:
+            print(f"{red('✗')} mysql.sql.gz missing or corrupt in backups/{ts}/ - aborting.")
+            return
+
+        print(f"\n{bold('Restoring from')} backups/{ts}/")
+        print("=" * 50)
+
+        # 1. MySQL import
+        dump_path = os.path.join(backup_dir, "mysql.sql.gz")
+        if not os.path.exists(dump_path):
+            print(f"{red('✗')} {dump_path} missing - backup is incomplete, aborting.")
+            return
+        print(f"\n{blue('==>')} Importing MySQL dump...")
+        rc = subprocess.call([
+            "bash", "-c",
+            "set -o pipefail; "
+            f"gunzip -c {shlex.quote(dump_path)} "
+            # password via container env, not host argv (ps aux exposure)
+            f"| docker exec -i {shlex.quote(self.config.get('db_container', 'voipbin-db'))} "
+            "sh -c 'exec mysql -uroot -p\"${MYSQL_ROOT_PASSWORD:-root_password}\"'",
+        ])
+        if rc != 0:
+            print(f"{red('✗')} MySQL import failed (exit {rc}). Database may be in a partial state.")
+            print(f"  Re-run 'restore {ts} --force' after fixing the problem.")
+            return
+        print(f"  {green('✓')} MySQL restored")
+
+        # 2. Recordings
+        for volume, archive in self.RECORDING_VOLUMES:
+            archive_path = os.path.join(backup_dir, archive)
+            if not os.path.exists(archive_path):
+                print(f"  {yellow('!')} {archive} not in backup - skipping volume {volume}")
+                continue
+            real_vol = self._resolve_volume(project_dir, volume) or volume
+            print(f"\n{blue('==>')} Restoring volume {real_vol}...")
+            rc = subprocess.call(
+                f"docker run --rm -v {shlex.quote(real_vol)}:/dst "
+                f"-v {shlex.quote(os.path.abspath(backup_dir))}:/src:ro alpine "
+                "sh -c " + shlex.quote(f"rm -rf /dst/* && tar xzf /src/{archive} -C /dst"),
+                shell=True,
+            )
+            if rc != 0:
+                print(f"{red('✗')} Restoring volume {volume} failed (exit {rc}). Aborting.")
+                print(f"  {yellow('Note:')} MySQL was already imported from this backup, so the stack")
+                print("  is in a PARTIALLY-restored state. Fix the volume issue and re-run")
+                print(f"  'restore {ts} --force' before starting services.")
+                return
+            print(f"  {green('✓')} {volume} restored")
+
+        # 3. Flush Redis AFTER the import: bin-* services read cache-first with
+        # 24h TTLs, so stale Redis rows would shadow the restored MySQL state
+        # for up to a day (and Redis is AOF-persistent now).
+        if redis_container in running_names:
+            print(f"\n{blue('==>')} Flushing Redis cache...")
+            rc = subprocess.call(f"docker exec {shlex.quote(redis_container)} redis-cli FLUSHALL", shell=True)
+            if rc != 0:
+                print(f"  {yellow('!')} Redis FLUSHALL failed - flush manually before starting services:")
+                print("    docker exec voipbin-redis redis-cli FLUSHALL")
+            else:
+                print(f"  {green('✓')} Redis flushed")
+        else:
+            print(f"\n{yellow('!')} Redis is not running - flush it before starting services:")
+            print("    docker compose up -d redis && docker exec voipbin-redis redis-cli FLUSHALL")
+
+        # 4. Config: restore .env (keeping a .env.pre-restore copy of the current one)
+        backed_env = os.path.join(backup_dir, "config", ".env")
+        if os.path.exists(backed_env):
+            print(f"\n{blue('==>')} Restoring .env...")
+            current_env = os.path.join(project_dir, ".env")
+            try:
+                if os.path.exists(current_env):
+                    pre_path = os.path.join(project_dir, ".env.pre-restore")
+                    if os.path.exists(pre_path):
+                        # never silently clobber an earlier pre-restore copy
+                        pre_path = os.path.join(
+                            project_dir,
+                            f".env.pre-restore.{time.strftime('%Y%m%d-%H%M%S')}",
+                        )
+                    shutil.copy2(current_env, pre_path)
+                    print(f"  Current .env saved as {os.path.basename(pre_path)}")
+                shutil.copy2(backed_env, current_env)
+                print(f"  {green('✓')} .env restored")
+            except Exception as e:
+                print(f"  {red('✗')} .env restore failed: {e}")
+                print(f"  Copy it manually: cp backups/{ts}/config/.env .env")
+                return
+        cfg_dir = os.path.join(backup_dir, "config")
+        if os.path.isdir(cfg_dir):
+            print(f"  Note: certs/ and versions.lock copies are available in backups/{ts}/config/")
+            print("  (not applied automatically - they normally track the git repo state).")
+
+        print(f"\n{bold(green('Restore complete.'))} Next steps:")
+        print("  1. voipbin start          (or: docker compose up -d)")
+        print("  2. voipbin status         (verify all services are healthy)")
 
     def _update_images(self, project_dir, check_only=False):
         """Pull Docker images with version pinning to commit-SHA tags"""
@@ -4667,6 +5385,7 @@ Type 'registrar <subcommand> help' for more details.
                 pass
             if check_only:
                 print(f"\n{yellow('Dry-run:')} pinned - no changes. Pinned digests are in docker-compose.yml.")
+                print(f"  Real upgrades on a pinned repo go through '{bold('voipbin update all')}'.")
                 return
             print(f"\n{blue('==>')} docker compose pull (pinned digests)...")
             result = run_cmd("docker compose pull 2>&1")
@@ -4674,6 +5393,8 @@ Type 'registrar <subcommand> help' for more details.
                 for line in result.strip().split("\n")[-12:]:
                     print(f"  {line}")
             print(f"\n  {green('✓')} Pinned images pulled. To change the pin, edit versions.lock + docker-compose.yml deliberately.")
+            print(f"  {yellow('Hint:')} pulling alone is a no-op for upgrades - new digests only arrive via git.")
+            print(f"  Real upgrades = '{bold('voipbin update all')}' (backup -> git pull -> pull -> migrate -> up -> verify).")
             return
 
         # Get list of voipbin images and their service mappings
@@ -4770,19 +5491,29 @@ Type 'registrar <subcommand> help' for more details.
             return result
 
         def run_migrations():
-            """Run database migrations if possible"""
-            alembic_check = run_cmd("which alembic 2>/dev/null")
-            if not alembic_check:
-                return "skip", "Alembic not found"
-
-            db_check = run_cmd("docker exec voipbin-db mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
+            """Run database migrations via the containerized migrate.sh
+            (no host alembic needed; non-interactive by design)."""
+            # migrate.sh resolves the dbscheme pin from versions.lock. On a
+            # genuinely unpinned repo there is no lock to migrate against -
+            # skip with guidance instead of guaranteed failure.
+            if not os.path.exists(os.path.join(project_dir, "versions.lock")):
+                return "skip", "No versions.lock (unpinned repo) - run scripts/migrate.sh manually if needed"
+            db_container = self.config.get("db_container", "voipbin-db")
+            db_check = run_cmd(f"docker exec {shlex.quote(db_container)} mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
             if not db_check:
                 return "skip", "Database not running"
 
-            script_path = os.path.join(project_dir, "scripts", "init_database.sh")
+            script_path = os.path.join(project_dir, "scripts", "migrate.sh")
             if os.path.exists(script_path):
-                os.system(f"{script_path} > /dev/null 2>&1")
-                return "done", None
+                # Surface migration output and check the exit code (the old
+                # `os.system(... > /dev/null 2>&1)` swallow hid real failures).
+                mig = subprocess.run(
+                    ["bash", script_path], capture_output=True, text=True, cwd=project_dir
+                )
+                if mig.returncode == 0:
+                    return "done", None
+                tail = "\n".join((mig.stdout + "\n" + mig.stderr).strip().splitlines()[-15:])
+                return "fail", f"migrate.sh exited {mig.returncode}:\n{tail}"
 
             return "skip", "Migration script not found"
 
@@ -4804,6 +5535,9 @@ Type 'registrar <subcommand> help' for more details.
 
         if migration_status == "done":
             print(f"  {green('✓')} Database migrations complete")
+        elif migration_status == "fail":
+            print(f"  {red('✗')} Database migrations FAILED: {migration_msg}")
+            print(f"    Fix the problem and re-run migrations before relying on the new images.")
         elif migration_status == "skip":
             print(f"  {yellow('!')} Migrations skipped: {migration_msg}")
 
@@ -4861,7 +5595,10 @@ Type 'registrar <subcommand> help' for more details.
         return "\n".join(lines)
 
     def _update_scripts(self, project_dir, check_only=False):
-        """Update scripts and configs from GitHub"""
+        """Update scripts and configs from GitHub.
+
+        Returns True on success (including already-up-to-date), False on failure
+        so upgrade callers can abort."""
         print(f"\n{bold('Script Update from GitHub')}")
         print("=" * 50)
 
@@ -4870,13 +5607,13 @@ Type 'registrar <subcommand> help' for more details.
         if not os.path.exists(".git"):
             print(red("Error: Not a git repository."))
             print("This command requires the sandbox to be cloned from GitHub.")
-            return
+            return False
 
         print(f"\n{blue('==>')} Fetching from remote...")
         fetch_result = run_cmd("git fetch origin 2>&1")
         if "error" in fetch_result.lower() or "fatal" in fetch_result.lower():
             print(red(f"  Error fetching: {fetch_result}"))
-            return
+            return False
         print(green("  ✓ Fetched latest"))
 
         current_branch = run_cmd("git rev-parse --abbrev-ref HEAD")
@@ -4904,7 +5641,7 @@ Type 'registrar <subcommand> help' for more details.
 
         if not diff_stat:
             print(green("  Already up to date!"))
-            return
+            return True
 
         print(f"\n{yellow('Changes available:')}")
         for line in diff_stat.split('\n')[-20:]:
@@ -4922,7 +5659,7 @@ Type 'registrar <subcommand> help' for more details.
         if check_only:
             print(f"\n{yellow('Dry-run mode:')} No changes made.")
             print("Run 'update scripts' without --check to apply updates.")
-            return
+            return True
 
         backup_path = self._create_backup(project_dir, significant_changes)
         if backup_path:
@@ -4943,7 +5680,7 @@ Type 'registrar <subcommand> help' for more details.
             if stashed:
                 print(f"\n{blue('==>')} Restoring stashed changes...")
                 run_cmd("git stash pop")
-            return
+            return False
 
         print(green("  ✓ Updated successfully"))
 
@@ -4960,6 +5697,7 @@ Type 'registrar <subcommand> help' for more details.
 
         print(f"\n{bold('Script update complete!')}")
         print("Run 'status' to check service status.")
+        return True
 
     def _create_backup(self, project_dir, changed_files):
         """Create a backup of modified files before updating"""
@@ -5030,6 +5768,24 @@ Type 'registrar <subcommand> help' for more details.
     def cmd_rollback(self, args):
         """Rollback to a previous image version or script backup"""
         project_dir = self.config.get("project_dir", ".")
+
+        # PINNED-REPO GUARD (design §3.5): rollback replays
+        # docker-compose.override.yml snapshots, which are ONLY written on the
+        # UNPINNED update path. On a pinned repo there is either nothing to
+        # replay, or a stale override that would silently SHADOW the pinned
+        # digests in docker-compose.yml - unpinning the repo without telling
+        # you. Refuse and point at the pinned-safe alternatives.
+        if os.path.exists(os.path.join(project_dir, "versions.lock")):
+            print(f"\n{red('rollback is disabled on a pinned repo')} (versions.lock found).")
+            print("  'rollback' replays docker-compose.override.yml snapshots, which are only")
+            print("  written by the UNPINNED update path. Restoring one here would shadow the")
+            print("  pinned digests in docker-compose.yml and silently unpin this repo.")
+            print("\n  What you probably want instead:")
+            print(f"    - Data restore:   {bold('voipbin restore <ts> --force')}  (from backups/)")
+            print("    - Image rollback: git checkout the previous repo commit")
+            print("      (docker-compose.yml + versions.lock + scripts are git-versioned),")
+            print("      then 'docker compose up -d'.")
+            return
 
         # Check if this is a script rollback
         if args and args[0] == "scripts":
@@ -5541,7 +6297,11 @@ Commands:
   restart [service]   Restart services
   logs <service>      View logs
   init                Initialize sandbox (generates .env and certs)
-  update [options]    Pull latest images and run DB migrations
+  update [options]    Update sandbox (pinned repos: 'update all' = backup ->
+                      git pull -> migrate -> recreate -> verify)
+  backup              Full data backup (MySQL + recordings + config)
+  restore <ts> --force  Restore data from a backup (DESTRUCTIVE)
+  rollback            Image rollback from override history (unpinned repos only)
   dns [subcommand]    DNS configuration (status, list, setup, regenerate, test)
   certs [subcommand]  Certificate management (status, trust)
   network [subcommand] VoIP network management (status, setup, teardown)
