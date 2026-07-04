@@ -49,7 +49,6 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
-    container_name: voipbin-mq
     # Fixed hostname: RabbitMQ keys its mnesia data dir as rabbit@<hostname>.
     # Without this pin, every container recreate gets a new container-id
     # hostname and ORPHANS the persisted data in rabbitmq_data.
@@ -119,7 +118,6 @@ services:
   rtpengine:
     image: voipbin/voip-rtpengine@sha256:795adc2c6232af184267e6d4fc21ce87c32c285333a27273885ebe4a32c508de
     logging: *default-logging
-    container_name: voipbin-rtpengine
     restart: unless-stopped
     network_mode: host
     environment:
@@ -176,8 +174,13 @@ services:
       - KAMAILIO_INTERNAL_LB_ADDR=10.100.0.200
       - KAMAILIO_INTERNAL_ADDR=10.100.0.200
       # Database for SIP authentication
-      # Uses localhost since Kamailio runs on host network and DB port is exposed
-      - KAMAILIO_AUTH_DB_URL=mysql://root:root_password@127.0.0.1:3306/bin_manager
+      # Kamailio runs on network_mode: host, so it cannot resolve compose
+      # service-name DNS (127.0.0.11) and must reach db/redis via a routable
+      # host/IP with the port published on the host. Default (127.0.0.1)
+      # preserves today's single-node behavior; operators splitting the state
+      # layer onto a separate host override KAMAILIO_DB_HOST/KAMAILIO_REDIS_HOST
+      # in .env instead of editing compose (Phase 1, address externalization).
+      - KAMAILIO_AUTH_DB_URL=mysql://root:${DB_ROOT_PASSWORD:-root_password}@${KAMAILIO_DB_HOST:-127.0.0.1}:3306/bin_manager
       - KAMAILIO_AUTH_USER_COLUMN=username
       - KAMAILIO_AUTH_DOMAIN_COLUMN=realm
       - KAMAILIO_AUTH_PASSWORD_COLUMN=password
@@ -189,8 +192,8 @@ services:
       - RTPENGINE_SOCKS=ws://127.0.0.1:9101/ng
       # Monitoring
       - HOMER_URI=${HOMER_URI:-sip:127.0.0.1:9060}
-      # Redis for cache (exposed on host port 6379)
-      - REDIS_CACHE_ADDRESS=127.0.0.1
+      # Redis for cache (exposed on host port 6379). See KAMAILIO_DB_HOST note above.
+      - REDIS_CACHE_ADDRESS=${KAMAILIO_REDIS_HOST:-127.0.0.1}
       # PSTN whitelist - defaults to host IP so local PSTN-style calls work
       - PSTN_WHITELIST_IPS=${PSTN_WHITELIST_IPS:-${HOST_EXTERNAL_IP:-127.0.0.1}}
     depends_on:
@@ -250,7 +253,6 @@ services:
   asterisk-call-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
     logging: *default-logging
-    container_name: voipbin-ast-call-proxy
     restart: unless-stopped
     network_mode: "service:asterisk-call"
     command: ./asterisk-proxy
@@ -287,7 +289,6 @@ services:
   asterisk-conference:
     image: voipbin/voip-asterisk-conference@sha256:9373e55da26ae4da02250543e94a5d1918e3cc7bda197c98ed712c21919a6780
     logging: *default-logging
-    container_name: voipbin-ast-conf
     restart: unless-stopped
     hostname: voipbin-ast-conf
     command: /k8s_start.sh
@@ -317,7 +318,6 @@ services:
   asterisk-conference-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
     logging: *default-logging
-    container_name: voipbin-ast-conf-proxy
     restart: unless-stopped
     network_mode: "service:asterisk-conference"
     command: ./asterisk-proxy
@@ -386,7 +386,6 @@ services:
   asterisk-registrar-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
     logging: *default-logging
-    container_name: voipbin-ast-registrar-proxy
     restart: unless-stopped
     network_mode: "service:asterisk-registrar"
     command: ./asterisk-proxy
@@ -456,7 +455,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-ai-mgr
     restart: always
     depends_on:
       db:
@@ -494,8 +492,7 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      default:
-        ipv4_address: 10.100.0.100
+      - default
     environment:
       - DATABASE_DSN=root:root_password@tcp(db:3306)/bin_manager
       - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
@@ -614,7 +611,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-contact-mgr
     restart: always
     depends_on:
       db:
@@ -723,7 +719,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-email-mgr
     restart: always
     depends_on:
       db:
@@ -809,7 +804,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-message-mgr
     restart: always
     depends_on:
       db:
@@ -898,7 +892,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-pipecat-mgr
     restart: always
     depends_on:
       db:
@@ -958,7 +951,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-rag-mgr
     restart: always
     depends_on:
       rabbitmq:
@@ -1137,7 +1129,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-timeline-mgr
     restart: always
     depends_on:
       rabbitmq:
@@ -1161,7 +1152,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    container_name: voipbin-transcribe-mgr
     restart: always
     depends_on:
       db:
@@ -1294,12 +1284,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    container_name: voipbin-admin
     hostname: voipbin-admin-host
     restart: always
     networks:
-      default:
-        ipv4_address: 10.100.0.101
+      - default
     ports:
       - "0.0.0.0:3003:80"
     depends_on:
@@ -1321,12 +1309,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    container_name: voipbin-meet
     hostname: voipbin-meet-host
     restart: always
     networks:
-      default:
-        ipv4_address: 10.100.0.102
+      - default
     ports:
       - "0.0.0.0:3004:80"
     depends_on:
@@ -1351,8 +1337,7 @@ services:
     hostname: voipbin-talk-host
     restart: always
     networks:
-      default:
-        ipv4_address: 10.100.0.103
+      - default
     ports:
       - "0.0.0.0:3005:80"
     depends_on:

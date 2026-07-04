@@ -2227,6 +2227,53 @@ Type 'help <command>' for detailed usage.
         print(f"  {green('✓')} Version pins created")
         print(f"  {green('✓')} Saved to rollback history")
 
+    def _check_ticker_replica_guard(self):
+        """Phase 1 (address externalization) guard: bin-billing-manager and
+        bin-ai-manager run time.Ticker-based periodic jobs (monthly token
+        top-up, failed-event retry, hourly batch job) with NO leader election
+        or distributed lock (verified against monorepo main.go). Running N>1
+        replicas of either service today duplicate-executes those jobs. This
+        is an ordinary application of the no-premature-hardening policy: we
+        warn loudly rather than build a distributed lock nobody has asked for
+        yet. See docs/plans/2026-07-05-production-grade-horizontal-scale-design.md
+        §1.4 for the full analysis.
+        """
+        RISKY_SERVICES = ("billing-manager", "ai-manager")
+        output = run_cmd("docker compose ps --format json 2>/dev/null")
+        if not output:
+            return
+        entries = []
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, list):
+                entries.extend(parsed)
+            else:
+                entries.append(parsed)
+        counts = {}
+        for e in entries:
+            svc = e.get("Service") or ""
+            if svc:
+                counts[svc] = counts.get(svc, 0) + 1
+        for svc in RISKY_SERVICES:
+            n = counts.get(svc, 0)
+            if n > 1:
+                print(
+                    f"{yellow('WARNING:')} {n} replicas of '{svc}' are running. "
+                    f"This service runs a time.Ticker-based periodic job "
+                    f"(e.g. monthly billing top-up / failed-event retry) with "
+                    f"NO leader election or distributed lock. Each replica will "
+                    f"independently fire the same job on its own schedule, "
+                    f"duplicating the work (e.g. duplicate billing top-ups). "
+                    f"Do not scale '{svc}' above 1 replica until this is fixed "
+                    f"in the monorepo (bin-billing-manager/bin-ai-manager)."
+                )
+
     def cmd_start(self, args):
         """Start services"""
         # Check for --no-pin flag
@@ -2242,6 +2289,7 @@ Type 'help <command>' for detailed usage.
             if result:
                 print(result)
             print(green("✓ Done"))
+            self._check_ticker_replica_guard()
         else:
             # Full startup
             script_dir = self.config.get("project_dir", ".")
@@ -2271,6 +2319,7 @@ Type 'help <command>' for detailed usage.
                 if result:
                     print(result)
                 print(green("✓ Done"))
+            self._check_ticker_replica_guard()
 
     def cmd_stop(self, args):
         """Stop services"""

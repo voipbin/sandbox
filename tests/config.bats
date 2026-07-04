@@ -114,17 +114,32 @@ teardown() {
 # =============================================================================
 # docker-compose.yml - Container Fixed IPs
 # =============================================================================
+# NOTE: admin/meet/talk/api-manager static ipv4_address pins were removed in
+# Phase 1 of the horizontal-scale-architecture design (docs/plans/2026-07-05):
+# these services are only reached via published host ports + DNS, never
+# referenced by another service's hardcoded IP, so service-name DNS is safe
+# and sufficient. Asterisk-call/registrar/conference static IPs remain (they
+# ARE referenced by Kamailio's hardcoded routing) until Phase 3 replaces them
+# with dispatcher-list generation.
 
-@test "docker-compose.yml assigns fixed IP 10.100.0.101 to admin" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: 10.100.0.101"
+@test "docker-compose.yml does not assign a fixed IP to admin (removed Phase 1)" {
+    run grep -A2 "^  square-admin:" "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.101"* ]]
 }
 
-@test "docker-compose.yml assigns fixed IP 10.100.0.102 to meet" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: 10.100.0.102"
+@test "docker-compose.yml does not assign a fixed IP to meet (removed Phase 1)" {
+    run grep -A2 "^  square-meet:" "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.102"* ]]
 }
 
-@test "docker-compose.yml assigns fixed IP 10.100.0.103 to talk" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: 10.100.0.103"
+@test "docker-compose.yml does not assign a fixed IP to talk (removed Phase 1)" {
+    run grep -A2 "^  square-talk:" "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.103"* ]]
+}
+
+@test "docker-compose.yml does not assign a fixed IP to api-manager (removed Phase 1)" {
+    run grep -A3 "^  api-manager:" "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.100"* ]]
 }
 
 # =============================================================================
@@ -244,14 +259,12 @@ teardown() {
 # Script Consistency Checks
 # =============================================================================
 
-@test "common.sh defines same container IPs as docker-compose.yml" {
-    # common.sh defines these for reference
-    source "$SCRIPTS_DIR/common.sh"
-
-    # Verify they match docker-compose.yml
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: $ADMIN_IP"
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: $MEET_IP"
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: $TALK_IP"
+@test "common.sh no longer defines removed static IP variables for admin/meet/talk/api" {
+    # Phase 1 removed ADMIN_IP/MEET_IP/TALK_IP/API_MANAGER_IP entirely (dead vars
+    # referencing addresses that no longer exist in docker-compose.yml) — assert
+    # they're gone rather than leaving a vacuous/false-passing consistency check.
+    run grep -E '^(API_MANAGER_IP|ADMIN_IP|MEET_IP|TALK_IP)=' "$SCRIPTS_DIR/common.sh"
+    [ "$status" -ne 0 ]
 }
 
 @test "setup-voip-network.sh defines same internal IPs as expected" {
