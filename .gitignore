@@ -12,3 +12,8 @@ config/dummy-gcp-credentials.json
 tmp/
 .test_data_initialized
 .backup/
+# Data backups (contain plaintext .env secrets - never commit; copy off-host)
+backups/
+.env.pre-restore
+# RabbitMQ delayed-message plugin (downloaded on first start)
+config/rabbitmq/plugins/*.ez

@@ -1,3 +1,12 @@
+# Default log rotation for every service: without this, docker's json-file
+# driver grows without bound and eventually fills the disk on a long-lived
+# single-server deployment.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # ===========================================================================
   # Infrastructure Services
@@ -7,6 +16,8 @@ services:
   db:
     image: mysql:8.0
     container_name: voipbin-db
+    restart: always
+    logging: *default-logging
     ports:
       - "3306:3306"
     environment:
@@ -23,8 +34,13 @@ services:
   redis:
     image: redis:alpine
     container_name: voipbin-redis
+    restart: always
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -34,14 +50,24 @@ services:
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: voipbin-mq
+    # Fixed hostname: RabbitMQ keys its mnesia data dir as rabbit@<hostname>.
+    # Without this pin, every container recreate gets a new container-id
+    # hostname and ORPHANS the persisted data in rabbitmq_data.
+    hostname: voipbin-rabbitmq
+    restart: always
+    logging: *default-logging
     ports:
       - "5672:5672"
       - "15672:15672"
+    # Delayed-message plugin lives in a host bind dir (config/rabbitmq/plugins)
+    # mounted at a SEPARATE path and added via RABBITMQ_PLUGINS_DIR, so:
+    # - container recreate does NOT re-download (offline-safe)
+    # - image upgrades are NOT shadowed by a stale named volume over /plugins
     entrypoint: >
       /bin/sh -c "
-      if [ ! -f /plugins/rabbitmq_delayed_message_exchange-3.13.0.ez ]; then
-        rm -f /plugins/rabbitmq_delayed_message_exchange-*.ez 2>/dev/null;
-        wget -P /plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.13.0/rabbitmq_delayed_message_exchange-3.13.0.ez;
+      if [ ! -f /opt/rabbitmq-extra-plugins/rabbitmq_delayed_message_exchange-3.13.0.ez ]; then
+        rm -f /opt/rabbitmq-extra-plugins/rabbitmq_delayed_message_exchange-*.ez 2>/dev/null;
+        wget -P /opt/rabbitmq-extra-plugins/ https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.13.0/rabbitmq_delayed_message_exchange-3.13.0.ez;
       fi;
       rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange;
       exec docker-entrypoint.sh rabbitmq-server
@@ -49,6 +75,10 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=guest
       - RABBITMQ_DEFAULT_PASS=guest
+      - RABBITMQ_PLUGINS_DIR=/opt/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./config/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -66,6 +96,7 @@ services:
   #   - LAN (HOST_EXTERNAL_IP:53) - for SIP devices on the network
   coredns:
     image: coredns/coredns:latest
+    logging: *default-logging
     container_name: voipbin-dns
     restart: always
     ports:
@@ -87,6 +118,7 @@ services:
   # Uses host network for optimal media performance
   rtpengine:
     image: voipbin/voip-rtpengine@sha256:795adc2c6232af184267e6d4fc21ce87c32c285333a27273885ebe4a32c508de
+    logging: *default-logging
     container_name: voipbin-rtpengine
     restart: unless-stopped
     network_mode: host
@@ -187,6 +219,7 @@ services:
   # Asterisk Call Server - handles call routing and media
   asterisk-call:
     image: voipbin/voip-asterisk-call@sha256:b32ac7a4f52381b13906d3e60f1acd32b52ef709bcb701452418b9f68d52c8f1
+    logging: *default-logging
     container_name: voipbin-ast-call
     restart: unless-stopped
     hostname: voipbin-ast-call
@@ -220,6 +253,7 @@ services:
   # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Call server
   asterisk-call-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
+    logging: *default-logging
     container_name: voipbin-ast-call-proxy
     restart: unless-stopped
     network_mode: "service:asterisk-call"
@@ -256,6 +290,7 @@ services:
   # Asterisk Conference Server - handles conference/confbridge calls
   asterisk-conference:
     image: voipbin/voip-asterisk-conference@sha256:9373e55da26ae4da02250543e94a5d1918e3cc7bda197c98ed712c21919a6780
+    logging: *default-logging
     container_name: voipbin-ast-conf
     restart: unless-stopped
     hostname: voipbin-ast-conf
@@ -285,6 +320,7 @@ services:
   # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Conference server
   asterisk-conference-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
+    logging: *default-logging
     container_name: voipbin-ast-conf-proxy
     restart: unless-stopped
     network_mode: "service:asterisk-conference"
@@ -321,6 +357,7 @@ services:
   # Asterisk Registrar Server - handles SIP registration for extensions
   asterisk-registrar:
     image: voipbin/voip-asterisk-registrar@sha256:8e008c0704c9eee46e2675e69cbc9766fd1f5bdaebd58ecd029a2a135ea42466
+    logging: *default-logging
     container_name: voipbin-ast-registrar
     restart: unless-stopped
     hostname: voipbin-ast-registrar
@@ -352,6 +389,7 @@ services:
   # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Registrar server
   asterisk-registrar-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
+    logging: *default-logging
     container_name: voipbin-ast-registrar-proxy
     restart: unless-stopped
     network_mode: "service:asterisk-registrar"
@@ -388,6 +426,13 @@ services:
 
   agent-manager:
     image: voipbin/bin-agent-manager@sha256:3df69949cd56bbe4460adc83e61c21ae673342ae814c9a672dce24ce90032522
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-agent-mgr
     restart: always
     depends_on:
@@ -408,6 +453,13 @@ services:
 
   ai-manager:
     image: voipbin/bin-ai-manager@sha256:cd3f8a69b3f18135e60dd2b16b3b3fd9c4b293e3b51a989f178880ab2fbb5956
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-ai-mgr
     restart: always
     depends_on:
@@ -429,6 +481,13 @@ services:
 
   api-manager:
     image: voipbin/bin-api-manager@sha256:587aac44bd298bc65d5c277027cf7748ffbcdd24ed9b9cd15c0e62e1db94d413
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-api-mgr
     restart: always
     depends_on:
@@ -462,6 +521,13 @@ services:
 
   billing-manager:
     image: voipbin/bin-billing-manager@sha256:61d0673623ef0c8cabab13d4af76df12313f5992f8668b35d02bdc4ad115d55b
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-billing-mgr
     restart: always
     depends_on:
@@ -482,6 +548,13 @@ services:
 
   call-manager:
     image: voipbin/bin-call-manager@sha256:57aca652d1332b1aac7e0fd729c1cbf327a027f2a19e5795defffd2200ae1953
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-call-mgr
     restart: always
     depends_on:
@@ -511,6 +584,13 @@ services:
 
   campaign-manager:
     image: voipbin/bin-campaign-manager@sha256:199de72322350b75b71fc1d7187b2dc0974a9e45d32120ba3d8c29af136cb825
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-campaign-mgr
     restart: always
     depends_on:
@@ -531,6 +611,13 @@ services:
 
   contact-manager:
     image: voipbin/bin-contact-manager@sha256:7e81275b1c5e52ee722aeb27478759c5894d7aa0ec529670da661ab16ddc5405
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-contact-mgr
     restart: always
     depends_on:
@@ -551,6 +638,13 @@ services:
 
   conference-manager:
     image: voipbin/bin-conference-manager@sha256:2346cf885f5a3a3950c00bba35992adf48115d5052994b939a5492156297e1ac
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-conference-mgr
     restart: always
     depends_on:
@@ -571,6 +665,13 @@ services:
 
   conversation-manager:
     image: voipbin/bin-conversation-manager@sha256:11a395970da11a563d04176ea3b7ce0005d8ee5edcff9f0d37e36d5675c6efb8
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-conversation-mgr
     restart: always
     depends_on:
@@ -591,6 +692,13 @@ services:
 
   customer-manager:
     image: voipbin/bin-customer-manager@sha256:0f3e877b128d252280707c8c25c4d847dfcf7f36a753cf2827ce08dc874be965
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-customer-mgr
     restart: always
     depends_on:
@@ -612,6 +720,13 @@ services:
 
   email-manager:
     image: voipbin/bin-email-manager@sha256:c70969931a6ca8d456b6a9a08a7fd74d1bfb0476b6643172d55926ee2f93d65e
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-email-mgr
     restart: always
     depends_on:
@@ -634,6 +749,13 @@ services:
 
   flow-manager:
     image: voipbin/bin-flow-manager@sha256:f70fdf27d19d10215058ee6614f6fb2aaf324919a7af73945891cf92e53ba132
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-flow-mgr
     restart: always
     depends_on:
@@ -655,6 +777,13 @@ services:
 
   hook-manager:
     image: voipbin/bin-hook-manager@sha256:8031714d6557a3055473a9da3087e617841d8a47272fb143077dca387b50ef7e
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-hook-mgr
     restart: always
     depends_on:
@@ -677,6 +806,13 @@ services:
 
   message-manager:
     image: voipbin/bin-message-manager@sha256:e27e0458b7895f6f5144d7ff197bf6996024ed41ca42b8f8caabe99b7f5420e4
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-message-mgr
     restart: always
     depends_on:
@@ -699,6 +835,13 @@ services:
 
   number-manager:
     image: voipbin/bin-number-manager@sha256:43a9767443696841c8e0b3770ebdfa253ade1eaabb449217b06492a681a59e11
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-number-mgr
     restart: always
     depends_on:
@@ -724,6 +867,13 @@ services:
 
   outdial-manager:
     image: voipbin/bin-outdial-manager@sha256:372878a9d04a86e90d8a91f343861d9b7473cf723328e524ec325e25f49edf99
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-outdial-mgr
     restart: always
     depends_on:
@@ -744,6 +894,13 @@ services:
 
   pipecat-manager:
     image: voipbin/bin-pipecat-manager@sha256:53598e8189d37a09756c7e376625f0940e0c9958d4ac1bfc39245651192c8af1
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-pipecat-mgr
     restart: always
     depends_on:
@@ -770,6 +927,13 @@ services:
 
   queue-manager:
     image: voipbin/bin-queue-manager@sha256:b324f52e59c2de8bab298d2c4223baf681c63036bb69e5f6083a7a58ebaf44e7
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-queue-mgr
     restart: always
     depends_on:
@@ -790,6 +954,13 @@ services:
 
   rag-manager:
     image: voipbin/bin-rag-manager@sha256:55c5c189f6a5f7cb4b4afb81e8cf695d1b49a6f1045de2c55fedf7b9fe7788ae
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-rag-mgr
     restart: always
     depends_on:
@@ -814,6 +985,13 @@ services:
 
   registrar-manager:
     image: voipbin/bin-registrar-manager@sha256:310b19f3c0262a0f12ce4f48c07fecad3e6b598ce9604d7369823dce753fea46
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-registrar-mgr
     restart: always
     depends_on:
@@ -837,6 +1015,13 @@ services:
 
   route-manager:
     image: voipbin/bin-route-manager@sha256:e832bb3e44de354717faa433fad0297d18451b3ed197788ce9b91b90fa90a14c
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-route-mgr
     restart: always
     depends_on:
@@ -855,21 +1040,21 @@ services:
       - PROMETHEUS_LISTEN_ADDRESS=:2112
     command: ./route-manager
 
-  sentinel-manager:
-    image: voipbin/bin-sentinel-manager@sha256:2102bbd08ea865d2fb601ca5552021a0c2c0eaaa323f63391e03f797dc2883f7
-    container_name: voipbin-sentinel-mgr
-    restart: always
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      - RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672
-      - PROMETHEUS_ENDPOINT=/metrics
-      - PROMETHEUS_LISTEN_ADDRESS=:2112
-    command: ./sentinel-manager
+  # sentinel-manager is intentionally NOT run here: it requires the
+  # Kubernetes API (rest.InClusterConfig) and crash-loops in compose.
+  # Its role (watching Asterisk pods to trigger call recovery) is a
+  # planned docker-events bridge; see docs/plans/2026-07-04-single-
+  # server-production-mode-design.md section 3.6.
 
   storage-manager:
     image: voipbin/bin-storage-manager@sha256:eb7c22d70f6f6b8edf5f0ba47ae36f862c0cec0124c0b72f8da67509ebfebffb
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-storage-mgr
     restart: always
     depends_on:
@@ -894,6 +1079,13 @@ services:
 
   tag-manager:
     image: voipbin/bin-tag-manager@sha256:f8815abc77a8a9b26f3a00f571a1f4ebe55d13010e9115c943992f29dababfbf
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-tag-mgr
     restart: always
     depends_on:
@@ -914,6 +1106,13 @@ services:
 
   talk-manager:
     image: voipbin/bin-talk-manager@sha256:b0a8aec2a891856371a3c9e49880285bb41098b6ba16fd7544591a107cd7e750
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-talk-mgr
     restart: always
     depends_on:
@@ -934,6 +1133,13 @@ services:
 
   timeline-manager:
     image: voipbin/bin-timeline-manager@sha256:262870fffefcba8e8ff930a88403fadc42d77657ea757565d5cf8bb5478461eb
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-timeline-mgr
     restart: always
     depends_on:
@@ -951,6 +1157,13 @@ services:
 
   transcribe-manager:
     image: voipbin/bin-transcribe-manager@sha256:570d842dbcfb425a058d0ea6bab14b8171718df9b23470ef4b3a7f0b95c67f99
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-transcribe-mgr
     restart: always
     depends_on:
@@ -977,6 +1190,13 @@ services:
 
   transfer-manager:
     image: voipbin/bin-transfer-manager@sha256:e20de2d414622bc39ded50ba5e15f6854b87469f0467ef8862dfb9f8a8435ae3
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-transfer-mgr
     restart: always
     depends_on:
@@ -997,6 +1217,13 @@ services:
 
   tts-manager:
     image: voipbin/bin-tts-manager@sha256:ba0b7c9516ac2d24a3d904341bcc2ad30cc7f8cce85c3269e817c892d8e3304e
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-tts-mgr
     restart: always
     depends_on:
@@ -1020,6 +1247,13 @@ services:
 
   webhook-manager:
     image: voipbin/bin-webhook-manager@sha256:cfe75e29b7d82bc43c81883401ca545e053efbd680ca51a9e74328ae26ac7c45
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     container_name: voipbin-webhook-mgr
     restart: always
     depends_on:
@@ -1056,6 +1290,13 @@ services:
 
   square-admin:
     image: voipbin/square-admin@sha256:7d669682dee77925f765d4171332b58a5d1ce8d8c3633b46069556222f1f4eed
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     container_name: voipbin-admin
     hostname: voipbin-admin-host
     restart: always
@@ -1076,6 +1317,13 @@ services:
 
   square-meet:
     image: voipbin/square-meet@sha256:56ccd44d7cabc0c02724d17b39c2bc2c9e8e5fd1dd94365076ee8247821d6c8c
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     container_name: voipbin-meet
     hostname: voipbin-meet-host
     restart: always
@@ -1095,6 +1343,13 @@ services:
 
   square-talk:
     image: voipbin/square-talk@sha256:e3f7f6be89a02576b50093ce7ca1c8d0730626bae717e0c943af82794991a252
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     container_name: voipbin-talk
     hostname: voipbin-talk-host
     restart: always
@@ -1115,6 +1370,8 @@ services:
       - REACT_APP_REGISTRAR_DOMAIN=${REGISTRAR_DOMAIN:-registrar.voipbin.test}
 
 volumes:
+  redis_data:
+  rabbitmq_data:
   db_data:
   asterisk-call-recording:
   asterisk-conf-recording:

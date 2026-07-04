@@ -17,7 +17,14 @@ DB_ROOT_PASSWORD="root_password"
 # Monorepo configuration
 MONOREPO_URL="https://github.com/voipbin/monorepo.git"
 MONOREPO_BRANCH="main"
-MONOREPO_PIN="0ce70d7d3a0df3c49af817d6c2c14e6a9b2f7f9b"  # single-commit pin: race-fix merge #561
+# Single source of truth for the dbscheme pin is versions.lock (design §3.3).
+# The old hardcoded MONOREPO_PIN here caused three-way manual sync drift
+# (versions.lock vs compose vs this script).
+MONOREPO_PIN="$(python3 -c "import json;print(json.load(open('$PROJECT_DIR/versions.lock')).get('dbscheme_monorepo_commit',''))" 2>/dev/null || true)"
+if [ -z "$MONOREPO_PIN" ]; then
+    echo "[ERROR] Could not read dbscheme_monorepo_commit from versions.lock" >&2
+    exit 1
+fi
 DBSCHEME_PATH="bin-dbscheme-manager"
 
 # Colors for output

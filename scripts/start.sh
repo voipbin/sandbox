@@ -634,13 +634,12 @@ main() {
     if check_database_initialized; then
         log_info "Database is already initialized"
     else
-        log_warn "Database not initialized. Running init_database.sh..."
-        if check_command alembic; then
-            "$SCRIPT_DIR/init_database.sh"
-        else
-            log_error "Alembic is required for database initialization!"
-            log_error "Install with: pip3 install alembic mysqlclient PyMySQL"
-            log_error "Then run: voipbin> start"
+        log_warn "Database not initialized. Running containerized migration (migrate.sh)..."
+        # migrate.sh runs alembic inside a python:3.11-slim container on the
+        # compose network — no host pip/alembic required (design §3.3).
+        if ! "$SCRIPT_DIR/migrate.sh"; then
+            log_error "Database migration failed!"
+            log_error "Check the output above, then re-run: voipbin> start"
             exit 1
         fi
     fi
