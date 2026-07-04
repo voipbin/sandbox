@@ -63,35 +63,59 @@ def fake_subprocess_call(cmd, **kw):
     return 0
 
 
+class _FakeCompleted:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+def fake_subprocess_run(cmd, **kw):
+    calls.append(("run", cmd if isinstance(cmd, str) else " ".join(map(str, cmd))))
+    return _FakeCompleted()
+
+
 def fake_run_cmd(cmd, **kw):
     calls.append(("run_cmd", cmd))
     return ""
 
 
 execv_calls = []
+execv_lock_state = []
 
 
 def fake_execv(exe, argv):
     execv_calls.append(argv)
+    # record whether the op lock exists AT THE MOMENT of exec (in production
+    # execv replaces the process image, so this is the last observable moment)
+    execv_lock_state.append(os.path.exists(os.path.join(tmp, ".voipbin-op.lock")))
     raise RuntimeError("EXECV")  # execv never returns; simulate by raising
 
 
 m.subprocess.call = fake_subprocess_call
+m.subprocess.run = fake_subprocess_run
 m.run_cmd = fake_run_cmd
 m.os.execv = fake_execv
 
 # ---------------- B1: rollback pinned guard ----------------
+import io, contextlib
 calls.clear()
 cli = mkcli(tmp)
-cli.cmd_rollback([])
+_out = io.StringIO()
+with contextlib.redirect_stdout(_out):
+    cli.cmd_rollback([])
 check("B1 rollback refuses on pinned repo (no docker/git calls)",
       not any("docker" in c[1] or "git" in c[1] for c in calls), str(calls))
+# a silent no-op body would also pass the check above - require the guard
+# to actually EXPLAIN the refusal (pinned/versions.lock mentioned).
+_b1_txt = _out.getvalue().lower()
+check("B1 refusal message names the pinned/versions.lock guard",
+      ("pinned" in _b1_txt) or ("versions.lock" in _b1_txt), _b1_txt[:200])
 
 # ---------------- B2: update all --check = no changes ----------------
 calls.clear()
 execv_calls.clear()
 cli.cmd_update(["all", "--check"])
-check("B2 update all --check performs no subprocess calls and no execv",
+check("B2 update all --check performs no subprocess call/run and no execv",
       not calls and not execv_calls, f"calls={calls} execv={execv_calls}")
 
 # ---------------- B3: fresh update all = backup -> scripts -> execv ----------------
@@ -115,11 +139,13 @@ check("B3 no pull/migrate ran in the old process",
       not any("compose pull" in c[1] or "migrate" in c[1] for c in calls), str(calls))
 
 # ---------------- B4: backup failure aborts ----------------
-# (clear the op lock left by B3: the simulated execv raised instead of
-# replacing the process, so the lock was intentionally NOT released there -
-# in production the resumed process releases it via atexit)
 lockfile = os.path.join(tmp, ".voipbin-op.lock")
-check("B3b op lock held through (simulated) execv", os.path.exists(lockfile))
+check("B3b op lock held AT the moment of execv",
+      bool(execv_lock_state) and execv_lock_state[0] is True, str(execv_lock_state))
+# the simulated execv RAISED (unlike production, where it never returns), so
+# the pre-exec exception guard correctly released the lock afterwards.
+check("B3c raising execv releases the lock (exception guard)",
+      not os.path.exists(lockfile))
 os.path.exists(lockfile) and os.remove(lockfile)
 seq2 = []
 cli3 = mkcli(tmp)

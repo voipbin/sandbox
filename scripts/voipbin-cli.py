@@ -4726,46 +4726,16 @@ Type 'registrar <subcommand> help' for more details.
             lock = self._acquire_op_lock(project_dir, "update all")
             if not lock:
                 return
-            # ---- Step 1: backup (BEFORE git pull - captures the OLD pin state) ----
-            if skip_backup:
-                print(f"\n{yellow('==>')} Step 1/6: backup SKIPPED (--skip-backup)")
-            else:
-                print(f"\n{blue('==>')} Step 1/6: creating pre-upgrade backup...")
-                backup_ts = self._do_backup(project_dir)
-                if not backup_ts:
-                    print(f"\n{red('Upgrade aborted:')} backup failed. Nothing was changed.")
-                    print("  Fix the backup problem, or re-run with --skip-backup to opt out (not recommended).")
-                    self._release_op_lock(lock)
-                    return
-
-            # ---- Step 2: update scripts (git pull) ----
-            print(f"\n{blue('==>')} Step 2/6: updating scripts (git pull)...")
-            if not self._update_scripts(project_dir, check_only=False):
-                print(f"\n{red('Upgrade aborted:')} git pull failed. The old pin is intact.")
-                if backup_ts:
-                    print(f"  Pre-upgrade backup: backups/{backup_ts}/ (untouched state, nothing to restore)")
+            # Any unexpected exception (incl. Ctrl-C during mysqldump) before
+            # the execv must not leak the lock: on the success path execv
+            # replaces the process so this except never runs, and the resumed
+            # process owns/releases the lock via atexit.
+            try:
+                self._upgrade_pinned_pre_exec(project_dir, lock, skip_backup, backup_ts)
+            except BaseException:
                 self._release_op_lock(lock)
-                return
-
-            # ---- Re-exec: the git pull may have overwritten this very file. ----
-            # CPython loaded the OLD code at startup; steps 3-6 must run the NEW
-            # code. --resume-from=pull is the loop guard: the resumed process
-            # never re-execs again.
-            # NOTE for interactive-shell users: execv REPLACES this process, so
-            # after the upgrade finishes the CLI exits instead of returning to
-            # the voipbin> prompt. Communicate that now.
-            print(f"\n{blue('==>')} Re-executing CLI to continue with the updated code...")
-            print("  (After the upgrade completes, the CLI will exit - start it again")
-            print("   with 'sudo ./voipbin' if you were in the interactive shell.)")
-            argv = [sys.executable, os.path.abspath(__file__), "update", "all", "--resume-from=pull"]
-            if backup_ts:
-                argv.append(f"--backup-ts={backup_ts}")
-            if skip_backup:
-                argv.append("--skip-backup")
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os.execv(sys.executable, argv)
-            return  # not reached
+                raise
+            return  # only reached on abort paths inside pre_exec
 
         # ---- Resumed process (new code) continues from step 3. NEVER re-exec here. ----
         # The op lock acquired before the execv is still on disk; release it on
@@ -4831,6 +4801,50 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  {yellow('Do NOT use')} 'voipbin rollback' here: it replays docker-compose.override.yml")
             print("  snapshots that only exist on UNPINNED repos and would silently unpin this repo.")
 
+    def _upgrade_pinned_pre_exec(self, project_dir, lock, skip_backup, backup_ts):
+        """Steps 1-2 of the pinned upgrade + the re-exec. Runs with the op lock
+        held; the CALLER releases the lock if this raises. Returning (instead
+        of exec'ing) means the upgrade aborted - the caller just returns."""
+        # ---- Step 1: backup (BEFORE git pull - captures the OLD pin state) ----
+        if skip_backup:
+            print(f"\n{yellow('==>')} Step 1/6: backup SKIPPED (--skip-backup)")
+        else:
+            print(f"\n{blue('==>')} Step 1/6: creating pre-upgrade backup...")
+            backup_ts = self._do_backup(project_dir)
+            if not backup_ts:
+                print(f"\n{red('Upgrade aborted:')} backup failed. Nothing was changed.")
+                print("  Fix the backup problem, or re-run with --skip-backup to opt out (not recommended).")
+                self._release_op_lock(lock)
+                return
+
+        # ---- Step 2: update scripts (git pull) ----
+        print(f"\n{blue('==>')} Step 2/6: updating scripts (git pull)...")
+        if not self._update_scripts(project_dir, check_only=False):
+            print(f"\n{red('Upgrade aborted:')} git pull failed. The old pin is intact.")
+            if backup_ts:
+                print(f"  Pre-upgrade backup: backups/{backup_ts}/ (untouched state, nothing to restore)")
+            self._release_op_lock(lock)
+            return
+
+        # ---- Re-exec: the git pull may have overwritten this very file. ----
+        # CPython loaded the OLD code at startup; steps 3-6 must run the NEW
+        # code. --resume-from=pull is the loop guard: the resumed process
+        # never re-execs again.
+        # NOTE for interactive-shell users: execv REPLACES this process, so
+        # after the upgrade finishes the CLI exits instead of returning to
+        # the voipbin> prompt. Communicate that now.
+        print(f"\n{blue('==>')} Re-executing CLI to continue with the updated code...")
+        print("  (After the upgrade completes, the CLI will exit - start it again")
+        print("   with 'sudo ./voipbin' if you were in the interactive shell.)")
+        argv = [sys.executable, os.path.abspath(__file__), "update", "all", "--resume-from=pull"]
+        if backup_ts:
+            argv.append(f"--backup-ts={backup_ts}")
+        if skip_backup:
+            argv.append("--skip-backup")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, argv)
+
     def _verify_stack(self, project_dir, timeout=120):
         """Poll compose health until no container is starting/unhealthy, then
         ping api-manager from a helper container on the compose network."""
@@ -4879,7 +4893,16 @@ Type 'registrar <subcommand> help' for more details.
 
         # API ping from a helper container on the compose network
         # (the bin-api-manager image may lack curl).
-        network = f"{self._compose_project_name(project_dir)}_default"
+        # Resolve the network the SAME way migrate.sh does: from the running db
+        # container's attachments (robust against COMPOSE_PROJECT_NAME overrides),
+        # falling back to the derived <project>_default name.
+        db_container = self.config.get("db_container", "voipbin-db")
+        network = run_cmd(
+            "docker inspect " + shlex.quote(db_container) +
+            " -f '{{range $k,$v := .NetworkSettings.Networks}}{{println $k}}{{end}}' 2>/dev/null"
+        )
+        network = network.strip().splitlines()[0].strip() if network and network.strip() else \
+            f"{self._compose_project_name(project_dir)}_default"
         print(f"  Pinging api-manager via network '{network}'...")
         result = subprocess.run(
             f"docker run --rm --network {shlex.quote(network)} curlimages/curl "
@@ -4943,10 +4966,20 @@ Type 'registrar <subcommand> help' for more details.
                 holder = open(lock_path).read().strip()
             except Exception:
                 holder = "unknown"
-            print(f"\n{red('Another voipbin operation is in progress:')} {holder}")
+            print(f"\n{red('Another voipbin operation is in progress:')} {holder or 'unknown (lock just created?)'}")
             print(f"  Refusing to run '{op}' concurrently (backup during a migration")
             print("  would capture a half-migrated schema).")
-            print(f"  If that operation crashed, remove the stale lock: rm {lock_path}")
+            # Liveness hint: if the recorded pid is dead, the lock is stale.
+            stale_hint = ""
+            pid_m = re.search(r"pid=(\d+)", holder or "")
+            if pid_m:
+                try:
+                    os.kill(int(pid_m.group(1)), 0)
+                except ProcessLookupError:
+                    stale_hint = " (that pid is NOT running - the lock looks stale)"
+                except PermissionError:
+                    pass  # pid exists under another user
+            print(f"  If that operation crashed, remove the stale lock: rm {lock_path}{stale_hint}")
             return None
 
     def _release_op_lock(self, lock_path):
@@ -5016,8 +5049,12 @@ Type 'registrar <subcommand> help' for more details.
         db_container = self.config.get("db_container", "voipbin-db")
         dump_cmd = (
             "set -o pipefail; "
-            f"docker exec {shlex.quote(db_container)} mysqldump --single-transaction --routines "
-            f"--all-databases -uroot -p{shlex.quote(db_password)} "
+            # password via the container's own env, not host argv: a literal
+            # -p<password> on the docker exec command line is visible to every
+            # user on the host via 'ps aux' for the whole dump duration.
+            f"docker exec {shlex.quote(db_container)} "
+            "sh -c 'exec mysqldump --single-transaction --routines "
+            "--all-databases -uroot -p\"${MYSQL_ROOT_PASSWORD:-root_password}\"' "
             f"| gzip > {shlex.quote(dump_path)}"
         )
         rc = subprocess.call(["bash", "-c", dump_cmd])
@@ -5241,7 +5278,9 @@ Type 'registrar <subcommand> help' for more details.
             "bash", "-c",
             "set -o pipefail; "
             f"gunzip -c {shlex.quote(dump_path)} "
-            f"| docker exec -i {shlex.quote(self.config.get('db_container', 'voipbin-db'))} mysql -uroot -p{shlex.quote(db_password)}",
+            # password via container env, not host argv (ps aux exposure)
+            f"| docker exec -i {shlex.quote(self.config.get('db_container', 'voipbin-db'))} "
+            "sh -c 'exec mysql -uroot -p\"${MYSQL_ROOT_PASSWORD:-root_password}\"'",
         ])
         if rc != 0:
             print(f"{red('✗')} MySQL import failed (exit {rc}). Database may be in a partial state.")

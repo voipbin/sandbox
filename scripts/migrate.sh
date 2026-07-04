@@ -25,15 +25,28 @@ DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 DB_CONTAINER="${VOIPBIN_DB_CONTAINER:-voipbin-db}"
 DB_USER="root"
 DB_PASSWORD="root_password"
+# All mysql invocations read the password from the CONTAINER's env
+# (MYSQL_ROOT_PASSWORD) instead of putting it on the host argv, where it
+# would be visible to every user via 'ps aux'.
+MYSQL_IN_DB='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}"'
 
 # Exact pins (design §3.3; version floats rejected in review).
+# The FULL dependency tree is pinned and installed with --no-deps so the
+# resolver can never float a transitive dep (Mako/MarkupSafe/greenlet/cffi/
+# pycparser/typing-extensions are alembic/SQLAlchemy/cryptography deps).
 # cryptography is REQUIRED by PyMySQL for MySQL 8's caching_sha2_password
 # default auth plugin (found in live T6 testing, not optional).
-PIP_PINS="alembic==1.11.3 SQLAlchemy==1.4.52 PyMySQL==1.1.0 cryptography==42.0.8"
-MIGRATE_IMAGE="python:3.11-slim"
+PIP_PINS="alembic==1.11.3 SQLAlchemy==1.4.52 PyMySQL==1.1.0 cryptography==42.0.8 Mako==1.3.5 MarkupSafe==2.1.5 typing-extensions==4.12.2 greenlet==3.0.3 cffi==1.16.0 pycparser==2.22"
+# Digest-pinned (multi-arch index digest) to match the versions.lock philosophy:
+# a mutable tag here would let the migration environment drift between runs.
+MIGRATE_IMAGE="python:3.11-slim@sha256:b27df5841f3355e9473f9a516d38a6783b6c8dfeacaf2d14a240f443b368ddb6"
 
 log()  { echo -e "\033[0;32m[migrate]\033[0m $1"; }
 err()  { echo -e "\033[0;31m[migrate:ERROR]\033[0m $1" >&2; }
+
+# Any temp fetch dir is cleaned up on ANY exit (incl. SIGINT / set -e aborts).
+WORKDIR=""
+trap '[ -n "$WORKDIR" ] && rm -rf "$WORKDIR"' EXIT
 
 # --- 1. Resolve the dbscheme pin from versions.lock (single source of truth) ---
 LOCK_FILE="$PROJECT_DIR/versions.lock"
@@ -46,7 +59,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-DBSCHEME_COMMIT="$(python3 -c "import json,sys;print(json.load(open('$LOCK_FILE')).get('dbscheme_monorepo_commit',''))")" || {
+DBSCHEME_COMMIT="$(VB_LOCK_FILE="$LOCK_FILE" python3 -c "import json,os;print(json.load(open(os.environ['VB_LOCK_FILE'])).get('dbscheme_monorepo_commit',''))")" || {
     err "Failed to parse $LOCK_FILE (invalid JSON?)."
     exit 1
 }
@@ -69,37 +82,48 @@ fetch_dbscheme() {
     fi
 
     rm -rf "$DBSCHEME_DIR"
-    local workdir
-    workdir="$(mktemp -d "$PROJECT_DIR/tmp/dbscheme-fetch.XXXXXX")"
+    WORKDIR="$(mktemp -d "$PROJECT_DIR/tmp/dbscheme-fetch.XXXXXX")"
+    local workdir="$WORKDIR"
+    local mono_dir="${VOIPBIN_MONOREPO_DIR:-$HOME/gitvoipbin/monorepo}"
 
     log "Fetching monorepo@${DBSCHEME_COMMIT:0:12} (sparse: bin-dbscheme-manager)..."
-    if git clone --filter=blob:none --sparse --no-checkout "$MONOREPO_URL" "$workdir/repo" 2>/dev/null; then
-        (
+    local clone_ok=0
+    if git clone --filter=blob:none --sparse --no-checkout "$MONOREPO_URL" "$workdir/repo" 2>"$workdir/clone.err"; then
+        if (
             cd "$workdir/repo"
             git sparse-checkout set bin-dbscheme-manager
             git fetch -q origin "$DBSCHEME_COMMIT" 2>/dev/null || true
             git checkout -q "$DBSCHEME_COMMIT"
-        ) || { err "checkout of pinned commit failed"; rm -rf "$workdir"; return 1; }
-        mv "$workdir/repo/bin-dbscheme-manager" "$DBSCHEME_DIR"
-    elif [ -d "${VOIPBIN_MONOREPO_DIR:-$HOME/gitvoipbin/monorepo}/bin-dbscheme-manager" ]; then
+        ); then
+            clone_ok=1
+            mv "$workdir/repo/bin-dbscheme-manager" "$DBSCHEME_DIR"
+        else
+            err "checkout of pinned commit ${DBSCHEME_COMMIT:0:12} failed (unreachable on origin?)."
+            log "Trying the local monorepo fallback..."
+        fi
+    fi
+    if [ "$clone_ok" = "0" ] && [ -d "$mono_dir/bin-dbscheme-manager" ]; then
         # Offline fallback: local monorepo checkout (override via VOIPBIN_MONOREPO_DIR).
-        local mono_dir="${VOIPBIN_MONOREPO_DIR:-$HOME/gitvoipbin/monorepo}"
-        log "Clone failed; falling back to local monorepo copy at $mono_dir."
+        log "Falling back to local monorepo copy at $mono_dir."
         (
             cd "$mono_dir"
             git archive "$DBSCHEME_COMMIT" bin-dbscheme-manager | tar -x -C "$workdir"
         ) || {
             err "local git archive at pinned commit failed."
             err "Hint: the local monorepo may be stale - run 'git fetch' in $mono_dir."
-            rm -rf "$workdir"; return 1
+            return 1
         }
         mv "$workdir/bin-dbscheme-manager" "$DBSCHEME_DIR"
-    else
+    elif [ "$clone_ok" = "0" ]; then
         err "Could not fetch monorepo (network) and no local fallback exists."
-        rm -rf "$workdir"
+        if [ -s "$workdir/clone.err" ]; then
+            err "git clone said:"
+            tail -3 "$workdir/clone.err" >&2
+        fi
         return 1
     fi
     rm -rf "$workdir"
+    WORKDIR=""
     echo "$DBSCHEME_COMMIT" > "$DBSCHEME_DIR/.pin"
     log "dbscheme ready at $DBSCHEME_DIR"
 }
@@ -120,7 +144,7 @@ log "compose network: $NETWORK"
 
 log "Waiting for MySQL to accept connections..."
 for i in $(seq 1 30); do
-    if docker exec "$DB_CONTAINER" mysql -u"$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
+    if docker exec "$DB_CONTAINER" sh -c "$MYSQL_IN_DB -e 'SELECT 1'" "$DB_USER" >/dev/null 2>&1; then
         break
     fi
     [ "$i" = "30" ] && { err "MySQL not ready after 60s."; exit 1; }
@@ -131,8 +155,7 @@ done
 #        utf8/utf8_general_ci. The MySQL 8 default utf8mb4 breaks several
 #        migrations with Error 1071 'Specified key was too long' because
 #        4-byte chars push long VARCHAR indexes past the 3072-byte limit.) ---
-CREATE_OUT="$(docker exec "$DB_CONTAINER" mysql -u"$DB_USER" -p"$DB_PASSWORD" \
-    -e "CREATE DATABASE IF NOT EXISTS bin_manager CHARACTER SET utf8 COLLATE utf8_general_ci; CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;" 2>&1)" || {
+CREATE_OUT="$(docker exec "$DB_CONTAINER" sh -c "$MYSQL_IN_DB -e 'CREATE DATABASE IF NOT EXISTS bin_manager CHARACTER SET utf8 COLLATE utf8_general_ci; CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;'" "$DB_USER" 2>&1)" || {
     err "CREATE DATABASE failed:"
     echo "$CREATE_OUT" | grep -v "Using a password" >&2 || true
     exit 1
@@ -191,10 +214,9 @@ run_stream() {
     docker run --rm \
         --network "$NETWORK" \
         -v "$DBSCHEME_DIR:/dbscheme:ro" \
-        -v "$DBSCHEME_DIR/$stream_dir/alembic.ini:/dbscheme/$stream_dir/alembic.ini:ro" \
         -w "/dbscheme/$stream_dir" \
         "$MIGRATE_IMAGE" \
-        /bin/sh -c "pip install -q $PIP_PINS && alembic -c alembic.ini upgrade head"
+        /bin/sh -c "pip install -q --no-deps $PIP_PINS && alembic -c alembic.ini upgrade head"
     log "$label: OK"
 }
 

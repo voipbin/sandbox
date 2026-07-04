@@ -70,7 +70,11 @@ check("T7 mysql.sql.gz exists+nonempty",
 rc = subprocess.run(["gunzip", "-t", os.path.join(bdir, "mysql.sql.gz")]).returncode
 check("T7 gunzip -t passes", rc == 0)
 man = json.load(open(os.path.join(bdir, "manifest.json")))
-check("T7 manifest has target_commit", bool(man.get("versions_lock_target_commit") or man.get("target_commit")), str(man.keys()))
+_lock = json.load(open(os.path.join(WORKTREE, "versions.lock")))
+_man_commit = man.get("versions_lock_target_commit") or man.get("target_commit")
+check("T7 manifest target_commit MATCHES versions.lock",
+      bool(_man_commit) and _man_commit == _lock.get("target_commit"),
+      f"manifest={_man_commit!r} lock={_lock.get('target_commit')!r}")
 check("T7 dir mode 700", oct(os.stat(bdir).st_mode & 0o777) == "0o700", oct(os.stat(bdir).st_mode & 0o777))
 gz = os.path.join(bdir, "mysql.sql.gz")
 check("T7 file mode 600", oct(os.stat(gz).st_mode & 0o777) == "0o600", oct(os.stat(gz).st_mode & 0o777))
@@ -81,8 +85,14 @@ check("T7 config/.env or versions.lock copied",
 mysql("UPDATE bin_manager.t7_marker SET note='DAMAGED' WHERE id=1;")
 assert mysql("SELECT note FROM bin_manager.t7_marker WHERE id=1;") == "DAMAGED"
 
-# --- T8 restore (needs --force; stop rabbitmq first — the guard allows only
-# db and redis to be running, and we verified the guard fires when it isn't) ---
+# --- T8a: the stopped-services guard FIRES while rabbitmq is still up ---
+pre = mysql("SELECT note FROM bin_manager.t7_marker WHERE id=1;")
+cli.cmd_restore([ts, "--force"])  # rabbitmq running -> guard must refuse
+post = mysql("SELECT note FROM bin_manager.t7_marker WHERE id=1;")
+check("T8a guard refuses restore while rabbitmq is running (no import happened)",
+      pre == post == "DAMAGED", f"pre={pre} post={post}")
+
+# --- T8 restore (needs --force; stop rabbitmq so only db/redis remain) ---
 subprocess.run(["docker", "stop", "voipbin-test-rabbitmq-1"], capture_output=True)
 cli.cmd_restore([ts, "--force"])
 subprocess.run(["docker", "start", "voipbin-test-rabbitmq-1"], capture_output=True)
