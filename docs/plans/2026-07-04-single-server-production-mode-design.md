@@ -330,6 +330,16 @@ contracts at unit level; the live scratch-clone scenario is Iteration 2).
 1. RabbitMQ plugin pinning: exact .ez version compatible with the pinned
    rabbitmq image tag — resolve at implementation (inspect current image tag).
 
+**Accepted dependencies (recorded for transparency):**
+- migrate.sh runs `pip install` at migration time — a network dependency at
+  upgrade time. Accepted because `update all` already requires the network
+  (git pull + docker pull); unlike the monorepo fetch (which has the
+  VOIPBIN_MONOREPO_DIR offline fallback) there is no pip fallback. A
+  pre-built migration image would remove this (Iteration 2 candidate).
+- Recording restore is asymmetric when the volume did not exist at backup
+  time: the archive is skipped on backup, so restore leaves current
+  recordings in place (conservative direction, documented).
+
 (Former OQ2 — whether bin-* images carry wget — was resolved in Round 2:
 they are alpine/bookworm based, wget available; §3.2 records the per-digest
 confirmation step.)

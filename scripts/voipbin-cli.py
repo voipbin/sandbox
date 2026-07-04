@@ -1792,7 +1792,7 @@ class VoIPBinCLI:
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
             "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                       Show current network configuration\n  network setup                        Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                     Remove VoIP network interfaces"),
             "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
-            "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
+            "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
             "update": ("Update sandbox", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing"),
             "backup": ("Create a full data backup", "backup\n  Dumps MySQL (all databases), archives recording volumes, and copies\n  .env/certs/versions.lock into backups/<timestamp>/ (chmod 700/600).\n  Runs while services are up (mysqldump --single-transaction).\n  Retention: last 7 backups are kept.\n  NOTE: backups contain your full .env secrets in plaintext - copy them\n  off-host (rsync/rclone) for real disaster recovery."),
             "restore": ("Restore data from a backup (DESTRUCTIVE)", "restore <timestamp> --force\n  restore              List available backups\n  restore <ts> --force Restore MySQL dump + recordings + config from backups/<ts>/\n  DESTRUCTIVE: overwrites current DATA. Requires --force AND all services\n  stopped except db and redis. Flushes Redis after import.\n  (restore = DATA from backups/. rollback = image override history, unpinned repos only.)"),
@@ -4333,7 +4333,7 @@ Type 'registrar <subcommand> help' for more details.
             print("")
             print("Options:")
             print("  --containers  Remove app containers (keeps infrastructure: db, redis, mq, dns)")
-            print("  --volumes     Remove docker volumes (database, recordings)")
+            print("  --volumes     Remove docker volumes (database, recordings, redis/rabbitmq state)")
             print("  --images      Remove docker images")
             print("  --network     Teardown VoIP network interfaces")
             print("  --dns         Remove DNS configuration")
@@ -4720,6 +4720,12 @@ Type 'registrar <subcommand> help' for more details.
             return
 
         if resume_from != "pull":
+            # Concurrency lock: held from here THROUGH the execv (the lock file
+            # survives the process image swap) and released at the end of the
+            # resumed run. Blocks concurrent backup / second update all.
+            lock = self._acquire_op_lock(project_dir, "update all")
+            if not lock:
+                return
             # ---- Step 1: backup (BEFORE git pull - captures the OLD pin state) ----
             if skip_backup:
                 print(f"\n{yellow('==>')} Step 1/6: backup SKIPPED (--skip-backup)")
@@ -4729,6 +4735,7 @@ Type 'registrar <subcommand> help' for more details.
                 if not backup_ts:
                     print(f"\n{red('Upgrade aborted:')} backup failed. Nothing was changed.")
                     print("  Fix the backup problem, or re-run with --skip-backup to opt out (not recommended).")
+                    self._release_op_lock(lock)
                     return
 
             # ---- Step 2: update scripts (git pull) ----
@@ -4737,13 +4744,19 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"\n{red('Upgrade aborted:')} git pull failed. The old pin is intact.")
                 if backup_ts:
                     print(f"  Pre-upgrade backup: backups/{backup_ts}/ (untouched state, nothing to restore)")
+                self._release_op_lock(lock)
                 return
 
             # ---- Re-exec: the git pull may have overwritten this very file. ----
             # CPython loaded the OLD code at startup; steps 3-6 must run the NEW
             # code. --resume-from=pull is the loop guard: the resumed process
             # never re-execs again.
+            # NOTE for interactive-shell users: execv REPLACES this process, so
+            # after the upgrade finishes the CLI exits instead of returning to
+            # the voipbin> prompt. Communicate that now.
             print(f"\n{blue('==>')} Re-executing CLI to continue with the updated code...")
+            print("  (After the upgrade completes, the CLI will exit - start it again")
+            print("   with 'sudo ./voipbin' if you were in the interactive shell.)")
             argv = [sys.executable, os.path.abspath(__file__), "update", "all", "--resume-from=pull"]
             if backup_ts:
                 argv.append(f"--backup-ts={backup_ts}")
@@ -4755,6 +4768,10 @@ Type 'registrar <subcommand> help' for more details.
             return  # not reached
 
         # ---- Resumed process (new code) continues from step 3. NEVER re-exec here. ----
+        # The op lock acquired before the execv is still on disk; release it on
+        # ANY exit path of this process (abort or success) via atexit.
+        _lock_path = os.path.join(project_dir, ".voipbin-op.lock")
+        atexit.register(self._release_op_lock, _lock_path)
         print(f"\n{blue('==>')} Resumed after script update (steps 1-2 already done).")
         if backup_ts:
             print(f"  Pre-upgrade backup: backups/{backup_ts}/")
@@ -4904,10 +4921,48 @@ Type 'registrar <subcommand> help' for more details.
             return suffix_matches[0]
         return None
 
+    def _acquire_op_lock(self, project_dir, op):
+        """Advisory lock so backup/upgrade cannot run concurrently.
+
+        mysqldump --single-transaction is NOT safe against concurrent DDL:
+        a backup taken while migrations run could produce a 'valid-looking'
+        dump of a half-migrated schema. Returns the lock path on success,
+        None if another operation holds the lock.
+        """
+        lock_path = os.path.join(project_dir, ".voipbin-op.lock")
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{op} pid={os.getpid()} {time.strftime('%F %T')}\n".encode())
+            os.close(fd)
+            return lock_path
+        except FileExistsError:
+            try:
+                holder = open(lock_path).read().strip()
+            except Exception:
+                holder = "unknown"
+            print(f"\n{red('Another voipbin operation is in progress:')} {holder}")
+            print(f"  Refusing to run '{op}' concurrently (backup during a migration")
+            print("  would capture a half-migrated schema).")
+            print(f"  If that operation crashed, remove the stale lock: rm {lock_path}")
+            return None
+
+    def _release_op_lock(self, lock_path):
+        try:
+            if lock_path and os.path.exists(lock_path):
+                os.remove(lock_path)
+        except Exception:
+            pass
+
     def cmd_backup(self, args):
         """Create a full data backup (MySQL + recordings + config)"""
         project_dir = self.config.get("project_dir", ".")
-        ts = self._do_backup(project_dir)
+        lock = self._acquire_op_lock(project_dir, "backup")
+        if not lock:
+            return
+        try:
+            ts = self._do_backup(project_dir)
+        finally:
+            self._release_op_lock(lock)
         if ts:
             print(f"\n{bold(green('Backup complete:'))} backups/{ts}/")
             print(f"  {yellow('Reminder:')} this backup contains your full .env secrets in plaintext,")
@@ -5091,6 +5146,13 @@ Type 'registrar <subcommand> help' for more details.
             return
 
         ts = positional[0]
+        # ts must be a backup timestamp - rejects path traversal
+        # ('restore ../../etc') and anything not produced by _do_backup.
+        import re as _re
+        if not _re.fullmatch(r"\d{8}-\d{6}", ts):
+            print(f"{red('Invalid backup timestamp:')} {ts}")
+            print("  Expected format: YYYYmmdd-HHMMSS (as listed by 'restore' with no args).")
+            return
         backup_dir = os.path.join(backups_base, ts)
         if not os.path.isdir(backup_dir):
             print(f"{red('Backup not found:')} backups/{ts}/")
@@ -5378,16 +5440,19 @@ Type 'registrar <subcommand> help' for more details.
             return result
 
         def run_migrations():
-            """Run database migrations if possible"""
-            alembic_check = run_cmd("which alembic 2>/dev/null")
-            if not alembic_check:
-                return "skip", "Alembic not found"
-
-            db_check = run_cmd("docker exec voipbin-db mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
+            """Run database migrations via the containerized migrate.sh
+            (no host alembic needed; non-interactive by design)."""
+            # migrate.sh resolves the dbscheme pin from versions.lock. On a
+            # genuinely unpinned repo there is no lock to migrate against -
+            # skip with guidance instead of guaranteed failure.
+            if not os.path.exists(os.path.join(project_dir, "versions.lock")):
+                return "skip", "No versions.lock (unpinned repo) - run scripts/migrate.sh manually if needed"
+            db_container = self.config.get("db_container", "voipbin-db")
+            db_check = run_cmd(f"docker exec {shlex.quote(db_container)} mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
             if not db_check:
                 return "skip", "Database not running"
 
-            script_path = os.path.join(project_dir, "scripts", "init_database.sh")
+            script_path = os.path.join(project_dir, "scripts", "migrate.sh")
             if os.path.exists(script_path):
                 # Surface migration output and check the exit code (the old
                 # `os.system(... > /dev/null 2>&1)` swallow hid real failures).
@@ -5397,7 +5462,7 @@ Type 'registrar <subcommand> help' for more details.
                 if mig.returncode == 0:
                     return "done", None
                 tail = "\n".join((mig.stdout + "\n" + mig.stderr).strip().splitlines()[-15:])
-                return "fail", f"init_database.sh exited {mig.returncode}:\n{tail}"
+                return "fail", f"migrate.sh exited {mig.returncode}:\n{tail}"
 
             return "skip", "Migration script not found"
 
@@ -6181,7 +6246,11 @@ Commands:
   restart [service]   Restart services
   logs <service>      View logs
   init                Initialize sandbox (generates .env and certs)
-  update [options]    Pull latest images and run DB migrations
+  update [options]    Update sandbox (pinned repos: 'update all' = backup ->
+                      git pull -> migrate -> recreate -> verify)
+  backup              Full data backup (MySQL + recordings + config)
+  restore <ts> --force  Restore data from a backup (DESTRUCTIVE)
+  rollback            Image rollback from override history (unpinned repos only)
   dns [subcommand]    DNS configuration (status, list, setup, regenerate, test)
   certs [subcommand]  Certificate management (status, trust)
   network [subcommand] VoIP network management (status, setup, teardown)

@@ -53,13 +53,12 @@ check_dependencies() {
         missing+=("python3")
     fi
 
-    # Alembic
+    # Alembic is NO LONGER required on the host: schema migrations run inside
+    # a container via scripts/migrate.sh (delegated by start.sh and
+    # init_database.sh). Only informational.
     if check_command alembic; then
         local alembic_version=$(alembic --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "installed")
-        log_info "Alembic: $alembic_version"
-    else
-        log_warn "Alembic: not installed (required for database initialization)"
-        log_warn "  Install with: pip3 install alembic mysqlclient PyMySQL"
+        log_info "Alembic: $alembic_version (host install not needed - migrations are containerized)"
     fi
 
     # OpenSSL (for certificate generation)

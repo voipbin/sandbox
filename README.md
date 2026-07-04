@@ -221,8 +221,8 @@ VoIPBin Sandbox orchestrates a microservices architecture with four core layers:
 sudo apt update && sudo apt install -y docker.io docker-compose-v2
 sudo usermod -aG docker $USER && newgrp docker
 
-# Python dependencies (for database migrations)
-pip3 install alembic mysqlclient PyMySQL
+# Database migrations run inside a container (scripts/migrate.sh) -
+# no host alembic/mysqlclient installation is needed.
 
 # mkcert (for browser-trusted SSL certificates)
 sudo apt install -y mkcert
@@ -235,8 +235,7 @@ mkcert -install
 # Docker Desktop
 brew install --cask docker
 
-# Python dependencies
-pip3 install alembic mysqlclient PyMySQL
+# Database migrations run inside a container - no host Python deps needed.
 
 # mkcert
 brew install mkcert
@@ -535,9 +534,11 @@ These commands use manager container CLIs for direct resource management:
 | Command | Description |
 |---------|-------------|
 | `init` | Initialize sandbox (generate .env, certs) |
-| `update [images/scripts/all]` | Update Docker images or scripts |
+| `update [images/scripts/all]` | Update Docker images or scripts (pinned repos: `update all` = full safe upgrade: backup, git pull, migrate, recreate, verify) |
 | `update --check` | Dry-run to preview updates |
-| `rollback [timestamp]` | Rollback to previous backup |
+| `backup` | Full data backup (MySQL + recordings + config) into `backups/<ts>/` |
+| `restore <ts> --force` | Restore DATA from a backup (DESTRUCTIVE; services must be stopped except db/redis) |
+| `rollback [timestamp]` | Roll back image versions from override history (UNPINNED repos only; for data recovery use `restore`) |
 | `clean [options]` | Cleanup sandbox resources |
 | `config [key] [value]` | View/set CLI configuration |
 

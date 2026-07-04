@@ -77,12 +77,14 @@ The `init_database.sh` script:
 2. Downloads schema from monorepo's `bin-dbscheme-manager`
 3. Runs alembic migrations to create all tables
 
-**Note:** Requires `alembic` and `mysqlclient` Python packages installed locally.
+**Note:** Migrations run inside a container (`scripts/migrate.sh`, python:3.11-slim
+on the compose network). No host `alembic`/`mysqlclient` installation is needed.
 
 ## Environment Setup
 
 **Prerequisites:**
-- `pip3 install alembic mysqlclient PyMySQL` - for database migrations
+- Docker + Docker Compose v2 (2.24.4+ recommended; the test override
+  `docker-compose.test.yml` uses `!reset`/`!override` merge tags)
 - `mkcert` (recommended) - for browser-trusted SSL certificates
   ```bash
   sudo apt install mkcert && mkcert -install

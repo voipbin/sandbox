@@ -115,6 +115,12 @@ check("B3 no pull/migrate ran in the old process",
       not any("compose pull" in c[1] or "migrate" in c[1] for c in calls), str(calls))
 
 # ---------------- B4: backup failure aborts ----------------
+# (clear the op lock left by B3: the simulated execv raised instead of
+# replacing the process, so the lock was intentionally NOT released there -
+# in production the resumed process releases it via atexit)
+lockfile = os.path.join(tmp, ".voipbin-op.lock")
+check("B3b op lock held through (simulated) execv", os.path.exists(lockfile))
+os.path.exists(lockfile) and os.remove(lockfile)
 seq2 = []
 cli3 = mkcli(tmp)
 cli3._do_backup = lambda pd: (seq2.append("backup"), None)[1]  # backup FAILS
@@ -123,6 +129,17 @@ execv_calls.clear()
 cli3.cmd_update(["all"])
 check("B4 backup failure -> no git pull, no execv",
       seq2 == ["backup"] and not execv_calls, f"seq={seq2} execv={execv_calls}")
+check("B4b op lock released after backup-failure abort",
+      not os.path.exists(lockfile))
+
+# ---------------- B4c: concurrent op refused while lock held ----------------
+open(lockfile, "w").write("update all pid=99999\n")
+seq2b = []
+cli3b = mkcli(tmp)
+cli3b._do_backup = lambda pd: (seq2b.append("backup"), "x")[1]
+cli3b.cmd_update(["all"])
+check("B4c second 'update all' refused while lock held", seq2b == [], str(seq2b))
+os.remove(lockfile)
 
 # ---------------- B5: resumed process order, no re-exec ----------------
 seq3 = []
