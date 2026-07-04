@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import readline
+import re
 import shlex
 import shutil
 import signal
@@ -4690,9 +4691,8 @@ Type 'registrar <subcommand> help' for more details.
         env_name = os.environ.get("COMPOSE_PROJECT_NAME")
         if env_name:
             return env_name
-        import re as _re
         base = os.path.basename(os.path.abspath(project_dir)).lower()
-        name = _re.sub(r"[^a-z0-9_-]", "", base)
+        name = re.sub(r"[^a-z0-9_-]", "", base)
         return name or "voipbin"
 
     def _upgrade_pinned(self, project_dir, check_only=False, skip_backup=False,
@@ -4791,6 +4791,8 @@ Type 'registrar <subcommand> help' for more details.
         print(f"\n{blue('==>')} Step 4/6: running database migrations (scripts/migrate.sh)...")
         if not os.path.exists(migrate_script):
             print(f"\n{red('Upgrade aborted:')} {migrate_script} not found.")
+            print("  The 'update scripts' step may have pulled an incomplete tree -")
+            print("  check 'git status' in the repo, or re-clone and retry 'update all'.")
             return
         rc = subprocess.call(["bash", migrate_script], cwd=project_dir)
         if rc != 0:
@@ -4871,6 +4873,7 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  {red('✗')} Timed out after {timeout}s. Problem containers:")
             for name, why in bad:
                 print(f"    - {name}: {why}")
+            print("  Inspect why with: docker compose logs --tail 50 <service>")
             return False
         print(f"  {green('✓')} All containers healthy (or no healthcheck defined)")
 
@@ -4991,9 +4994,16 @@ Type 'registrar <subcommand> help' for more details.
             return None
 
         try:
-            os.makedirs(backup_dir, exist_ok=True)
+            # exist_ok=False: if a backup with the same second-resolution ts
+            # already exists, refuse instead of silently reusing the directory
+            # (a later fail()/rmtree would otherwise destroy the earlier,
+            # already-reported-successful backup).
+            os.makedirs(backup_dir, exist_ok=False)
             os.chmod(backups_base, 0o700)
             os.chmod(backup_dir, 0o700)
+        except FileExistsError:
+            print(f"{red('✗')} Backup {ts} already exists - retry in 1 second.")
+            return None
         except Exception as e:
             return fail(f"Could not create backup directory: {e}")
 
@@ -5101,11 +5111,10 @@ Type 'registrar <subcommand> help' for more details.
         # directories (e.g. operator's manual copies) are never touched, and
         # the backup just taken can never be pruned.
         try:
-            import re as _re
             entries = sorted(
                 d for d in os.listdir(backups_base)
                 if os.path.isdir(os.path.join(backups_base, d))
-                and _re.fullmatch(r"\d{8}-\d{6}", d)
+                and re.fullmatch(r"\d{8}-\d{6}", d)
             )
             for old in entries[:-self.DATA_BACKUP_KEEP]:
                 if old == ts:
@@ -5148,8 +5157,7 @@ Type 'registrar <subcommand> help' for more details.
         ts = positional[0]
         # ts must be a backup timestamp - rejects path traversal
         # ('restore ../../etc') and anything not produced by _do_backup.
-        import re as _re
-        if not _re.fullmatch(r"\d{8}-\d{6}", ts):
+        if not re.fullmatch(r"\d{8}-\d{6}", ts):
             print(f"{red('Invalid backup timestamp:')} {ts}")
             print("  Expected format: YYYYmmdd-HHMMSS (as listed by 'restore' with no args).")
             return
@@ -5257,6 +5265,9 @@ Type 'registrar <subcommand> help' for more details.
             )
             if rc != 0:
                 print(f"{red('✗')} Restoring volume {volume} failed (exit {rc}). Aborting.")
+                print(f"  {yellow('Note:')} MySQL was already imported from this backup, so the stack")
+                print("  is in a PARTIALLY-restored state. Fix the volume issue and re-run")
+                print(f"  'restore {ts} --force' before starting services.")
                 return
             print(f"  {green('✓')} {volume} restored")
 
@@ -5295,6 +5306,7 @@ Type 'registrar <subcommand> help' for more details.
                 print(f"  {green('✓')} .env restored")
             except Exception as e:
                 print(f"  {red('✗')} .env restore failed: {e}")
+                print(f"  Copy it manually: cp backups/{ts}/config/.env .env")
                 return
         cfg_dir = os.path.join(backup_dir, "config")
         if os.path.isdir(cfg_dir):

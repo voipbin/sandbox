@@ -221,6 +221,9 @@ VoIPBin Sandbox orchestrates a microservices architecture with four core layers:
 sudo apt update && sudo apt install -y docker.io docker-compose-v2
 sudo usermod -aG docker $USER && newgrp docker
 
+# Docker Compose v2.24.4+ is recommended (developer test overrides use
+# `!reset`/`!override` merge tags). Check with: docker compose version
+
 # Database migrations run inside a container (scripts/migrate.sh) -
 # no host alembic/mysqlclient installation is needed.
 
