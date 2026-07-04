@@ -180,7 +180,7 @@ services:
       # preserves today's single-node behavior; operators splitting the state
       # layer onto a separate host override KAMAILIO_DB_HOST/KAMAILIO_REDIS_HOST
       # in .env instead of editing compose (Phase 1, address externalization).
-      - KAMAILIO_AUTH_DB_URL=mysql://root:${DB_ROOT_PASSWORD:-root_password}@${KAMAILIO_DB_HOST:-127.0.0.1}:3306/bin_manager
+      - KAMAILIO_AUTH_DB_URL=mysql://root:root_password@${KAMAILIO_DB_HOST:-127.0.0.1}:3306/bin_manager
       - KAMAILIO_AUTH_USER_COLUMN=username
       - KAMAILIO_AUTH_DOMAIN_COLUMN=realm
       - KAMAILIO_AUTH_PASSWORD_COLUMN=password

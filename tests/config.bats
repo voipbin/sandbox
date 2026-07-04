@@ -123,22 +123,26 @@ teardown() {
 # with dispatcher-list generation.
 
 @test "docker-compose.yml does not assign a fixed IP to admin (removed Phase 1)" {
-    run grep -A2 "^  square-admin:" "$PROJECT_ROOT/docker-compose.yml"
+    # Capture the FULL square-admin service block (from its header to the next
+    # top-level service key), not just a fixed line count — a fixed -A2/-A3
+    # window can silently stop short of the networks: block if unrelated
+    # lines are inserted above it, turning this into a false-pass guard.
+    run sed -n '/^  square-admin:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
     [[ "$output" != *"ipv4_address: 10.100.0.101"* ]]
 }
 
 @test "docker-compose.yml does not assign a fixed IP to meet (removed Phase 1)" {
-    run grep -A2 "^  square-meet:" "$PROJECT_ROOT/docker-compose.yml"
+    run sed -n '/^  square-meet:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
     [[ "$output" != *"ipv4_address: 10.100.0.102"* ]]
 }
 
 @test "docker-compose.yml does not assign a fixed IP to talk (removed Phase 1)" {
-    run grep -A2 "^  square-talk:" "$PROJECT_ROOT/docker-compose.yml"
+    run sed -n '/^  square-talk:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
     [[ "$output" != *"ipv4_address: 10.100.0.103"* ]]
 }
 
 @test "docker-compose.yml does not assign a fixed IP to api-manager (removed Phase 1)" {
-    run grep -A3 "^  api-manager:" "$PROJECT_ROOT/docker-compose.yml"
+    run sed -n '/^  api-manager:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
     [[ "$output" != *"ipv4_address: 10.100.0.100"* ]]
 }
 
