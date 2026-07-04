@@ -403,16 +403,15 @@ main() {
     create_databases
     echo ""
 
-    # Setup dbscheme files
-    setup_dbscheme
-    echo ""
-
-    # Configure alembic
-    configure_alembic
-    echo ""
-
-    # Run migrations
-    run_migrations
+    # Delegate schema migration to the containerized migrate.sh (design §3.3):
+    # runs alembic inside python:3.11-slim on the compose network - no host
+    # pip/alembic required. The legacy host-alembic functions
+    # (setup_dbscheme/configure_alembic/run_migrations) remain above for
+    # reference/fallback but are no longer on the default path.
+    if ! "$SCRIPT_DIR/migrate.sh"; then
+        log_error "Containerized migration failed (scripts/migrate.sh)."
+        exit 1
+    fi
     echo ""
 
     echo "=============================================="

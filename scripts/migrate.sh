@@ -41,8 +41,15 @@ if [ ! -f "$LOCK_FILE" ]; then
     err "versions.lock not found at $LOCK_FILE — cannot resolve dbscheme pin."
     exit 1
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+    err "python3 is required to parse versions.lock (not found in PATH)."
+    exit 1
+fi
 
-DBSCHEME_COMMIT="$(python3 -c "import json,sys;print(json.load(open('$LOCK_FILE')).get('dbscheme_monorepo_commit',''))" 2>/dev/null || true)"
+DBSCHEME_COMMIT="$(python3 -c "import json,sys;print(json.load(open('$LOCK_FILE')).get('dbscheme_monorepo_commit',''))")" || {
+    err "Failed to parse $LOCK_FILE (invalid JSON?)."
+    exit 1
+}
 if [ -z "$DBSCHEME_COMMIT" ]; then
     err "dbscheme_monorepo_commit missing/empty in versions.lock."
     exit 1
@@ -54,7 +61,7 @@ fetch_dbscheme() {
     mkdir -p "$PROJECT_DIR/tmp"
 
     # Already at the right commit?
-    if [ -d "$DBSCHEME_DIR/.pin" ] || [ -f "$DBSCHEME_DIR/.pin" ]; then
+    if [ -f "$DBSCHEME_DIR/.pin" ]; then
         if [ "$(cat "$DBSCHEME_DIR/.pin" 2>/dev/null)" = "$DBSCHEME_COMMIT" ]; then
             log "dbscheme already at pinned commit (cached)."
             return 0
@@ -74,13 +81,18 @@ fetch_dbscheme() {
             git checkout -q "$DBSCHEME_COMMIT"
         ) || { err "checkout of pinned commit failed"; rm -rf "$workdir"; return 1; }
         mv "$workdir/repo/bin-dbscheme-manager" "$DBSCHEME_DIR"
-    elif [ -d "/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager" ]; then
-        # Offline fallback: local monorepo checkout (dev machines only).
-        log "Clone failed; falling back to local monorepo copy."
+    elif [ -d "${VOIPBIN_MONOREPO_DIR:-$HOME/gitvoipbin/monorepo}/bin-dbscheme-manager" ]; then
+        # Offline fallback: local monorepo checkout (override via VOIPBIN_MONOREPO_DIR).
+        local mono_dir="${VOIPBIN_MONOREPO_DIR:-$HOME/gitvoipbin/monorepo}"
+        log "Clone failed; falling back to local monorepo copy at $mono_dir."
         (
-            cd /home/pchero/gitvoipbin/monorepo
+            cd "$mono_dir"
             git archive "$DBSCHEME_COMMIT" bin-dbscheme-manager | tar -x -C "$workdir"
-        ) || { err "local git archive at pinned commit failed"; rm -rf "$workdir"; return 1; }
+        ) || {
+            err "local git archive at pinned commit failed."
+            err "Hint: the local monorepo may be stale - run 'git fetch' in $mono_dir."
+            rm -rf "$workdir"; return 1
+        }
         mv "$workdir/bin-dbscheme-manager" "$DBSCHEME_DIR"
     else
         err "Could not fetch monorepo (network) and no local fallback exists."
@@ -99,7 +111,7 @@ if ! docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then
     exit 1
 fi
 
-NETWORK="$(docker inspect "$DB_CONTAINER" -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | head -1)"
+NETWORK="$(docker inspect "$DB_CONTAINER" -f '{{range $k,$v := .NetworkSettings.Networks}}{{println $k}}{{end}}' | head -1)"
 if [ -z "$NETWORK" ]; then
     err "Could not resolve the compose network from $DB_CONTAINER."
     exit 1
@@ -119,9 +131,12 @@ done
 #        utf8/utf8_general_ci. The MySQL 8 default utf8mb4 breaks several
 #        migrations with Error 1071 'Specified key was too long' because
 #        4-byte chars push long VARCHAR indexes past the 3072-byte limit.) ---
-docker exec "$DB_CONTAINER" mysql -u"$DB_USER" -p"$DB_PASSWORD" \
-    -e "CREATE DATABASE IF NOT EXISTS bin_manager CHARACTER SET utf8 COLLATE utf8_general_ci; CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;" \
-    >/dev/null 2>&1
+CREATE_OUT="$(docker exec "$DB_CONTAINER" mysql -u"$DB_USER" -p"$DB_PASSWORD" \
+    -e "CREATE DATABASE IF NOT EXISTS bin_manager CHARACTER SET utf8 COLLATE utf8_general_ci; CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;" 2>&1)" || {
+    err "CREATE DATABASE failed:"
+    echo "$CREATE_OUT" | grep -v "Using a password" >&2 || true
+    exit 1
+}
 
 # --- 5. Write alembic.ini for both streams (PyMySQL DSN, db service hostname) ---
 write_alembic_ini() {

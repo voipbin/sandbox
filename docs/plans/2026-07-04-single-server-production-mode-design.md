@@ -117,9 +117,13 @@ New script, replaces host-alembic usage for BOTH init and upgrade paths:
    via `git fetch origin <sha>` — GitHub allows SHA fetch).
 3. Run `python:3.11-slim` container ON THE COMPOSE NETWORK with the clone
    mounted read-only; inside: `pip install 'alembic==1.11.3'
-   'SQLAlchemy==1.4.52' 'PyMySQL==1.1.0'` (exact pins for reproducibility;
-   version floats were rejected in review) then `alembic upgrade head` for
+   'SQLAlchemy==1.4.52' 'PyMySQL==1.1.0' 'cryptography==42.0.8'` (exact pins
+   for reproducibility; version floats were rejected in review; cryptography
+   is REQUIRED by PyMySQL for MySQL 8's caching_sha2_password default auth,
+   discovered in live T6 testing) then `alembic upgrade head` for
    bin-manager and asterisk streams, sequentially, aborting on first failure.
+   Databases are created with utf8/utf8_general_ci (matching init_database.sh;
+   MySQL 8's default utf8mb4 breaks long-VARCHAR indexes with Error 1071).
    PyMySQL avoids the mysqlclient C build dependency entirely. Non-interactive
    by design (no re-run prompt).
 4. Exit non-zero on failure; caller aborts the upgrade.
@@ -291,6 +295,16 @@ next-pin commit, never the real origin).
 | T9 | pin-advance simulation: create a synthetic "next pin" fixture (edit one service's compose digest to a second known-good tag + bump versions.lock in a scratch git commit), run `update all` | backup taken first, git pull applies fixture, only that container recreated, verify passes; then `update all --check` shows no-change |
 | T9b | `voipbin rollback` on pinned repo | refuses with pinned-repo guard message |
 | T10 | log rotation: inspect effective compose config | max-size present on all services |
+
+**Execution status (Iteration 1, honest accounting):** implemented and run
+live: T1-T4 (+T4b plugin-enabled + T4c no-redownload), T6 (migrate.sh on empty
+MySQL: both streams to head, 61+27 tables), T7/T8 (backup/restore round-trip
+incl. FLUSHALL and stopped-guard firing), T10, plus B1-B6 behavioral contracts
+for the upgrade flow (test_upgrade_flow.py). NOT yet implemented as live
+tests: T5 (healthcheck rollout across the full 44-service stack — requires a
+full stack bring-up; deferred to the full-stack smoke in Iteration 2), T9/T9b
+live pin-advance with a bare-repo fixture origin (B1-B3 cover the same
+contracts at unit level; the live scratch-clone scenario is Iteration 2).
 
 ## 5. Risks & Trade-offs
 

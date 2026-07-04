@@ -206,11 +206,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *default-logging
 
   # ===========================================================================
   # Asterisk Media Servers
@@ -896,7 +892,8 @@ services:
     image: voipbin/bin-pipecat-manager@sha256:53598e8189d37a09756c7e376625f0940e0c9958d4ac1bfc39245651192c8af1
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      # python image (Debian trixie) ships NEITHER wget nor curl - use python3.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2112/metrics', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3

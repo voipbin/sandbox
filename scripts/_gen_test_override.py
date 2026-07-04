@@ -81,7 +81,6 @@ for name, idx in services:
             entry.append(f"        condition: {cond}")
         if not kept:
             entry[-1] = "    depends_on: !reset {}"
-            entry.pop(-2) if False else None
     out += entry
 
 out += [

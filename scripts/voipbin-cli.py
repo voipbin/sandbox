@@ -4648,6 +4648,16 @@ Type 'registrar <subcommand> help' for more details.
 
         pinned = os.path.exists(os.path.join(project_dir, "versions.lock"))
 
+        if resume_from == "pull" and not pinned:
+            # The pulled commit REMOVED versions.lock (unpin release). Falling
+            # through to the unpinned path silently would skip migrations -
+            # tell the operator what happened instead.
+            print(f"{yellow('!')} Resumed after git pull, but versions.lock is GONE in the new")
+            print("  commit (the release unpinned this repo). The pinned upgrade flow does")
+            print("  not apply anymore - run 'update all' again to use the standard path,")
+            print("  and run scripts/migrate.sh manually if the release requires migrations.")
+            return
+
         if subcommand == "scripts":
             self._update_scripts(project_dir, check_only)
         elif subcommand == "all":
@@ -4941,8 +4951,8 @@ Type 'registrar <subcommand> help' for more details.
         db_container = self.config.get("db_container", "voipbin-db")
         dump_cmd = (
             "set -o pipefail; "
-            f"docker exec {db_container} mysqldump --single-transaction --routines "
-            f"--all-databases -uroot -p{shlex.quote(db_password)} 2>/dev/null "
+            f"docker exec {shlex.quote(db_container)} mysqldump --single-transaction --routines "
+            f"--all-databases -uroot -p{shlex.quote(db_password)} "
             f"| gzip > {shlex.quote(dump_path)}"
         )
         rc = subprocess.call(["bash", "-c", dump_cmd])
@@ -5032,13 +5042,19 @@ Type 'registrar <subcommand> help' for more details.
         except Exception as e:
             return fail(f"Could not set backup permissions: {e}")
 
-        # 6. Retention: keep the last N backups
+        # 6. Retention: keep the last N TIMESTAMP-SHAPED backups. Non-timestamp
+        # directories (e.g. operator's manual copies) are never touched, and
+        # the backup just taken can never be pruned.
         try:
+            import re as _re
             entries = sorted(
                 d for d in os.listdir(backups_base)
                 if os.path.isdir(os.path.join(backups_base, d))
+                and _re.fullmatch(r"\d{8}-\d{6}", d)
             )
             for old in entries[:-self.DATA_BACKUP_KEEP]:
+                if old == ts:
+                    continue
                 shutil.rmtree(os.path.join(backups_base, old))
                 print(f"  Pruned old backup: {old}")
         except Exception as e:
@@ -5089,21 +5105,57 @@ Type 'registrar <subcommand> help' for more details.
             print(f"  If you are sure: restore {ts} --force")
             return
 
-        # Guard: all services must be stopped except db and redis
-        output = run_cmd("docker compose ps --format '{{.Service}}' 2>/dev/null")
-        running = set(s.strip() for s in output.split("\n") if s.strip()) if output else set()
-        allowed = {"db", "redis"}
-        extra = sorted(running - allowed)
+        # Guard: all services must be stopped except db and redis.
+        # Scope: the compose PROJECT the target db container belongs to
+        # (via the com.docker.compose.project label). This is checked against
+        # ACTUAL RUNNING CONTAINERS, so a COMPOSE_PROJECT_NAME mismatch cannot
+        # let the target stack slip past the guard (Round-1 finding M1), while
+        # unrelated stacks on the same host do not block the restore.
+        db_container = self.config.get("db_container", "voipbin-db")
+        redis_container = self.config.get("redis_container", "voipbin-redis")
+        ps_out = run_cmd("docker ps --format '{{.Names}}' 2>/dev/null") or ""
+        running_names = [n.strip() for n in ps_out.split("\n") if n.strip()]
+        if db_container not in running_names:
+            print(f"\n{red('Database is not running.')} Restore needs db (and redis) up:")
+            print("  docker compose up -d db redis")
+            return
+        project = run_cmd(
+            f"docker inspect {shlex.quote(db_container)} "
+            "-f '{{index .Config.Labels \"com.docker.compose.project\"}}' 2>/dev/null"
+        )
+        project = (project or "").strip()
+        if project:
+            stack_out = run_cmd(
+                "docker ps --format '{{.Names}}' "
+                f"--filter label=com.docker.compose.project={shlex.quote(project)} 2>/dev/null"
+            ) or ""
+            stack_names = [n.strip() for n in stack_out.split("\n") if n.strip()]
+        else:
+            # db container not compose-managed: fall back to blocking on any
+            # running voipbin-* container other than db/redis (conservative).
+            stack_names = [n for n in running_names if "voipbin" in n]
+        allowed_names = {db_container, redis_container}
+        extra = sorted(n for n in stack_names if n not in allowed_names)
         if extra:
             print(f"\n{red('Refusing to restore while services are running.')}")
-            print("  Restore requires ALL services stopped except db and redis. Still running:")
+            print("  Restore requires ALL services stopped except db and redis. Still running")
+            print(f"  in the target stack ({project or 'unlabeled'}):")
             for s in extra:
                 print(f"    - {s}")
             print("\n  Stop them first:  voipbin stop --all && docker compose up -d db redis")
             return
-        if "db" not in running:
-            print(f"\n{red('Database is not running.')} Restore needs db (and redis) up:")
-            print("  docker compose up -d db redis")
+
+        # Backup integrity gate: a partial backup (interrupted mid-write)
+        # has no manifest - refuse to restore from it (Round-1 finding M3).
+        manifest_path = os.path.join(backup_dir, "manifest.json")
+        if not os.path.exists(manifest_path):
+            print(f"{red('✗')} manifest.json missing in backups/{ts}/ - backup is incomplete")
+            print("  (probably interrupted). Refusing to restore from a partial backup.")
+            return
+        rc = subprocess.call(["gunzip", "-t", os.path.join(backup_dir, "mysql.sql.gz")]) \
+            if os.path.exists(os.path.join(backup_dir, "mysql.sql.gz")) else 1
+        if rc != 0:
+            print(f"{red('✗')} mysql.sql.gz missing or corrupt in backups/{ts}/ - aborting.")
             return
 
         print(f"\n{bold('Restoring from')} backups/{ts}/")
@@ -5119,7 +5171,7 @@ Type 'registrar <subcommand> help' for more details.
             "bash", "-c",
             "set -o pipefail; "
             f"gunzip -c {shlex.quote(dump_path)} "
-            f"| docker exec -i {self.config.get('db_container', 'voipbin-db')} mysql -uroot -p{shlex.quote(db_password)}",
+            f"| docker exec -i {shlex.quote(self.config.get('db_container', 'voipbin-db'))} mysql -uroot -p{shlex.quote(db_password)}",
         ])
         if rc != 0:
             print(f"{red('✗')} MySQL import failed (exit {rc}). Database may be in a partial state.")
@@ -5138,7 +5190,7 @@ Type 'registrar <subcommand> help' for more details.
             rc = subprocess.call(
                 f"docker run --rm -v {shlex.quote(real_vol)}:/dst "
                 f"-v {shlex.quote(os.path.abspath(backup_dir))}:/src:ro alpine "
-                f"sh -c 'rm -rf /dst/* && tar xzf /src/{shlex.quote(archive)} -C /dst'",
+                "sh -c " + shlex.quote(f"rm -rf /dst/* && tar xzf /src/{archive} -C /dst"),
                 shell=True,
             )
             if rc != 0:
@@ -5149,10 +5201,9 @@ Type 'registrar <subcommand> help' for more details.
         # 3. Flush Redis AFTER the import: bin-* services read cache-first with
         # 24h TTLs, so stale Redis rows would shadow the restored MySQL state
         # for up to a day (and Redis is AOF-persistent now).
-        if "redis" in running:
+        if redis_container in running_names:
             print(f"\n{blue('==>')} Flushing Redis cache...")
-            redis_container = self.config.get("redis_container", "voipbin-redis")
-            rc = subprocess.call(f"docker exec {redis_container} redis-cli FLUSHALL", shell=True)
+            rc = subprocess.call(f"docker exec {shlex.quote(redis_container)} redis-cli FLUSHALL", shell=True)
             if rc != 0:
                 print(f"  {yellow('!')} Redis FLUSHALL failed - flush manually before starting services:")
                 print("    docker exec voipbin-redis redis-cli FLUSHALL")
@@ -5169,8 +5220,15 @@ Type 'registrar <subcommand> help' for more details.
             current_env = os.path.join(project_dir, ".env")
             try:
                 if os.path.exists(current_env):
-                    shutil.copy2(current_env, os.path.join(project_dir, ".env.pre-restore"))
-                    print(f"  Current .env saved as .env.pre-restore")
+                    pre_path = os.path.join(project_dir, ".env.pre-restore")
+                    if os.path.exists(pre_path):
+                        # never silently clobber an earlier pre-restore copy
+                        pre_path = os.path.join(
+                            project_dir,
+                            f".env.pre-restore.{time.strftime('%Y%m%d-%H%M%S')}",
+                        )
+                    shutil.copy2(current_env, pre_path)
+                    print(f"  Current .env saved as {os.path.basename(pre_path)}")
                 shutil.copy2(backed_env, current_env)
                 print(f"  {green('✓')} .env restored")
             except Exception as e:
