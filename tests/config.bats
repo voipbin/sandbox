@@ -147,6 +147,45 @@ teardown() {
 }
 
 # =============================================================================
+# docker-compose.yml - State-layer address externalization (Phase 1)
+# =============================================================================
+# All bin-* app services must use ${DB_HOST:-db}/${REDIS_HOST:-redis}/
+# ${RABBITMQ_HOST:-rabbitmq} instead of hardcoded compose service names, so
+# an operator splitting the state layer onto a separate host only needs to
+# change .env (no compose edits). Verifies zero hardcoded stragglers remain.
+
+@test "docker-compose.yml has no hardcoded DATABASE_DSN (all externalized via DB_HOST)" {
+    run grep -c "DATABASE_DSN=root:root_password@tcp(db:3306)" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded RABBITMQ_ADDRESS (all externalized via RABBITMQ_HOST)" {
+    run grep -c "RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded REDIS_ADDRESS (all externalized via REDIS_HOST)" {
+    run grep -c "REDIS_ADDRESS=redis:6379" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded DATABASE_ASTERISK_HOST (externalized via DB_HOST)" {
+    run grep -cE "DATABASE_ASTERISK_HOST=db$" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker compose config renders identical DB/Redis/RabbitMQ addresses at defaults (no behavior change)" {
+    run bash -c "cd '$PROJECT_ROOT' && docker compose config 2>/dev/null | grep -m1 'DATABASE_DSN:'"
+    [[ "$output" == *"tcp(db:3306)/bin_manager"* ]]
+}
+
+@test ".env.template documents DB_HOST/REDIS_HOST/RABBITMQ_HOST externalization vars" {
+    assert_file_contains "$PROJECT_ROOT/.env.template" "DB_HOST=db"
+    assert_file_contains "$PROJECT_ROOT/.env.template" "REDIS_HOST=redis"
+    assert_file_contains "$PROJECT_ROOT/.env.template" "RABBITMQ_HOST=rabbitmq"
+}
+
+# =============================================================================
 # docker-compose.yml - Port Conflict Detection
 # =============================================================================
 
