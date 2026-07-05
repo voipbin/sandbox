@@ -263,11 +263,11 @@ regenerate_ip_config() {
 # =============================================================================
 # CoreDNS Configuration
 # =============================================================================
-# Fixed IPs for specific services (on default bridge network 10.100.0.0/16)
-API_MANAGER_IP="10.100.0.100"
-ADMIN_IP="10.100.0.101"
-MEET_IP="10.100.0.102"
-TALK_IP="10.100.0.103"
+# NOTE: api-manager/square-admin/square-meet/square-talk no longer have fixed
+# 10.100.0.x addresses (removed in Phase 1 of the horizontal-scale-architecture
+# design, docs/plans/2026-07-05) — DNS below resolves web-facing domains to the
+# HOST's external IP; Docker port publishing (0.0.0.0:PORT:80/443) handles the
+# routing to whichever container is currently running that service.
 
 generate_coredns_config() {
     local host_ip="$1"

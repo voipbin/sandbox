@@ -196,13 +196,9 @@ Key variables:
 | `SENDGRID_API_KEY` / `MAILGUN_API_KEY` | Email delivery |
 | `AWS_ACCESS_KEY` / `AWS_SECRET_KEY` | Transcription (AWS Transcribe) |
 | `DOMAIN_NAME_EXTENSION` | SIP domain suffix for extensions (default: `registrar.voipbin.test`) |
-| `HOST_EXTERNAL_IP` | Host's LAN IP (auto-detected) |
+| `HOST_EXTERNAL_IP` | Host's LAN IP (auto-detected); web-facing domains (api/admin/meet/talk.voipbin.test) resolve here, Docker's published host ports route to the right service |
 | `KAMAILIO_EXTERNAL_IP` | Kamailio's dedicated external IP for SIP signaling (auto-generated, MUST differ from host) |
 | `RTPENGINE_EXTERNAL_IP` | RTPEngine's dedicated external IP for RTP media (auto-generated) |
-| `API_EXTERNAL_IP` | API Manager's external IP (iptables forwards to 10.100.0.100:443) |
-| `ADMIN_EXTERNAL_IP` | Admin Console's external IP (iptables forwards to 10.100.0.101:80) |
-| `MEET_EXTERNAL_IP` | Meet's external IP (iptables forwards to 10.100.0.102:80) |
-| `TALK_EXTERNAL_IP` | Talk's external IP (iptables forwards to 10.100.0.103:80) |
 | `BASE_HOSTNAME` | Base hostname for frontend apps (default: `voipbin.test`) |
 | `API_URL` | API endpoint URL for admin/talk (default: `https://api.voipbin.test:8443/`) |
 | `WEBSOCKET_URL` | WebSocket URL for admin/talk (default: `wss://api.voipbin.test:8443/v1.0/ws`) |
@@ -229,10 +225,11 @@ The `init` script automatically finds an available IP in your subnet for Kamaili
 ```
 Docker Network:
 └── default (10.100.0.0/16)         # All services
-    ├── api-manager: 10.100.0.100
-    ├── square-admin: 10.100.0.101
-    ├── square-meet: 10.100.0.102
-    ├── square-talk: 10.100.0.103
+    ├── api-manager: service-name DNS (no fixed IP — removed Phase 1,
+    │                 see docs/plans/2026-07-05-production-grade-horizontal-scale-design.md)
+    ├── square-admin: service-name DNS (no fixed IP — removed Phase 1)
+    ├── square-meet: service-name DNS (no fixed IP — removed Phase 1)
+    ├── square-talk: service-name DNS (no fixed IP — removed Phase 1)
     ├── kamailio-int: 10.100.0.200
     ├── rtpengine-int: 10.100.0.201
     ├── ast-call: 10.100.0.210
@@ -243,25 +240,28 @@ Host Network (macvlan interfaces):
 ├── kamailio-int (10.100.0.200)     # Kamailio internal communication
 └── rtpengine-int (10.100.0.201)    # RTPEngine internal communication
 
-External (host's physical interface - SEVEN IPs):
+External (host's physical interface):
 ├── HOST_EXTERNAL_IP (e.g., 192.168.45.152)        # Host's primary IP
 ├── KAMAILIO_EXTERNAL_IP (e.g., 192.168.45.252)    # Kamailio's dedicated IP (SIP signaling)
-├── RTPENGINE_EXTERNAL_IP (e.g., 192.168.45.253)   # RTPEngine's dedicated IP (RTP media)
-├── API_EXTERNAL_IP (e.g., 192.168.45.202)         # API (iptables → 10.100.0.100:443)
-├── ADMIN_EXTERNAL_IP (e.g., 192.168.45.201)       # Admin (iptables → 10.100.0.101:80)
-├── MEET_EXTERNAL_IP (e.g., 192.168.45.203)        # Meet (iptables → 10.100.0.102:80)
-└── TALK_EXTERNAL_IP (e.g., 192.168.45.204)        # Talk (iptables → 10.100.0.103:80)
+└── RTPENGINE_EXTERNAL_IP (e.g., 192.168.45.253)   # RTPEngine's dedicated IP (RTP media)
+
+NOTE: api-manager/admin/meet/talk no longer have dedicated per-service
+EXTERNAL_IP/iptables forwarding — they are reached directly via Docker's
+published host ports (3003/3004/3005/8443) and resolve to HOST_EXTERNAL_IP
+via CoreDNS, same as before this change but without the intermediate fixed
+internal IP hop.
 ```
 
 ### DNS Resolution
 
 | Domain | Resolves To | Purpose |
 |--------|-------------|---------|
-| api.voipbin.test | API_EXTERNAL_IP | API Manager (iptables → 10.100.0.100:443) |
-| admin.voipbin.test | ADMIN_EXTERNAL_IP | Admin Console (iptables → 10.100.0.101:80) |
-| meet.voipbin.test | MEET_EXTERNAL_IP | Meet (iptables → 10.100.0.102:80) |
-| talk.voipbin.test | TALK_EXTERNAL_IP | Talk (iptables → 10.100.0.103:80) |
+| api.voipbin.test | HOST_EXTERNAL_IP | API Manager (published host port 8443 → api-manager) |
+| admin.voipbin.test | HOST_EXTERNAL_IP | Admin Console (published host port 3003 → square-admin) |
+| meet.voipbin.test | HOST_EXTERNAL_IP | Meet (published host port 3004 → square-meet) |
+| talk.voipbin.test | HOST_EXTERNAL_IP | Talk (published host port 3005 → square-talk) |
 | sip.voipbin.test | KAMAILIO_EXTERNAL_IP | SIP proxy |
+
 | pstn.voipbin.test | KAMAILIO_EXTERNAL_IP | PSTN gateway |
 | trunk.voipbin.test | KAMAILIO_EXTERNAL_IP | SIP trunking |
 | *.registrar.voipbin.test | KAMAILIO_EXTERNAL_IP | SIP registration |
@@ -363,7 +363,7 @@ sudo ./scripts/setup-dns.sh --regenerate
 |---------|-----------|-------|---------|
 | `db` | voipbin-db | 3306 | MySQL with pre-seeded schema |
 | `redis` | voipbin-redis | - | Cache and session storage |
-| `rabbitmq` | voipbin-mq | 5672, 15672 | Message broker with delayed exchange plugin |
+| `rabbitmq` | (no container_name — use `docker compose ps rabbitmq`) | 5672, 15672 | Message broker with delayed exchange plugin |
 | `coredns` | voipbin-dns | 53 | DNS server (*.voipbin.test + forwarding) |
 
 ### VoIP Stack
@@ -373,7 +373,7 @@ sudo ./scripts/setup-dns.sh --regenerate
 | `kamailio` | voipbin-kamailio | 5060/udp+tcp | SIP proxy and routing |
 | `asterisk-registrar` | voipbin-ast-registrar | 5082/udp | SIP registration (realtime DB) |
 | `asterisk-call` | voipbin-ast-call | 5080/udp+tcp, 10000-10050/udp | Call server |
-| `asterisk-call-proxy` | voipbin-ast-call-proxy | - | ARI/AMI bridge to RabbitMQ |
+| `asterisk-call-proxy` | (no container_name — use `docker compose ps asterisk-call-proxy`) | - | ARI/AMI bridge to RabbitMQ |
 
 ### Manager Services
 
@@ -396,24 +396,37 @@ Key services:
 
 ### Frontend
 
-| Service | Container | Container IP | Purpose |
-|---------|-----------|--------------|---------|
-| `square-admin` | voipbin-admin | 10.100.0.101:80 | Admin dashboard UI |
-| `square-meet` | voipbin-meet | 10.100.0.102:80 | Video conferencing |
-| `square-talk` | voipbin-talk | 10.100.0.103:80 | Voice client |
+| Service | Container | Access | Purpose |
+|---------|-----------|--------|---------|
+| `square-admin` | (no container_name — use `docker compose ps square-admin`) | published host port 3003 | Admin dashboard UI |
+| `square-meet` | (no container_name — use `docker compose ps square-meet`) | published host port 3004 | Video conferencing |
+| `square-talk` | (no container_name — use `docker compose ps square-talk`) | published host port 3005 | Voice client |
 
-Each frontend service has a dedicated external IP with iptables forwarding (see DNS Resolution section).
+**Note:** container_name pins for these 4 services and the frontend/proxy
+services above were removed in the horizontal-scale-architecture Phase 1
+change (2026-07-05) — they're only reachable via published host ports, not
+by another service's hardcoded reference, so a fixed name adds nothing.
+Use `docker compose logs -f <service>` / `docker compose ps <service>`
+(service name, not container name) for these going forward. Services that
+ARE still referenced by ops scripts (e.g. `voipbin-db`, `voipbin-customer-mgr`)
+keep their container_name unchanged.
+
+Each frontend service is reached via its published Docker host port and
+resolves through CoreDNS to HOST_EXTERNAL_IP (see DNS Resolution section).
 
 ## Web Access
 
-All web services use dedicated external IPs with iptables forwarding to containers:
+Web services resolve to HOST_EXTERNAL_IP via CoreDNS; Docker's published
+host ports route to the correct container (no per-service dedicated
+external IP or iptables forwarding — removed in Phase 1, see DNS
+Resolution section above):
 
-| Service | URL | External IP → Container |
-|---------|-----|-------------------------|
-| API Manager | https://api.voipbin.test | API_EXTERNAL_IP:443 → 10.100.0.100:443 |
-| Admin Console | http://admin.voipbin.test | ADMIN_EXTERNAL_IP:80 → 10.100.0.101:80 |
-| Meet | http://meet.voipbin.test | MEET_EXTERNAL_IP:80 → 10.100.0.102:80 |
-| Talk | http://talk.voipbin.test | TALK_EXTERNAL_IP:80 → 10.100.0.103:80 |
+| Service | URL | Published Host Port |
+|---------|-----|---------------------|
+| API Manager | https://api.voipbin.test:8443 | 8443 → api-manager:443 |
+| Admin Console | http://admin.voipbin.test:3003 | 3003 → square-admin:80 |
+| Meet | http://meet.voipbin.test:3004 | 3004 → square-meet:80 |
+| Talk | http://talk.voipbin.test:3005 | 3005 → square-talk:80 |
 
 SIP services (sip.voipbin.test, pstn.voipbin.test, etc.) resolve to KAMAILIO_EXTERNAL_IP.
 

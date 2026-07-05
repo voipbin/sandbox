@@ -626,9 +626,9 @@ sudo ./voipbin restart tts-manager
 
 | Service | Container | Purpose |
 |---------|-----------|---------|
-| `ai-manager` | voipbin-ai-mgr | LLM integration, chatbot logic |
-| `pipecat-manager` | voipbin-pipecat-mgr | Real-time voice AI pipeline orchestration |
-| `transcribe-manager` | voipbin-transcribe-mgr | Speech-to-text processing |
+| `ai-manager` | (no container_name — use `docker compose ps ai-manager`) | LLM integration, chatbot logic |
+| `pipecat-manager` | (no container_name — use `docker compose ps pipecat-manager`) | Real-time voice AI pipeline orchestration |
+| `transcribe-manager` | (no container_name — use `docker compose ps transcribe-manager`) | Speech-to-text processing |
 | `tts-manager` | voipbin-tts-mgr | Text-to-speech synthesis |
 
 ### Use Cases
@@ -757,7 +757,7 @@ MAILGUN_API_KEY=...
 |---------|-----------|-------|---------|
 | `db` | voipbin-db | 3306 | MySQL database |
 | `redis` | voipbin-redis | 6379 | Cache and sessions |
-| `rabbitmq` | voipbin-mq | 5672, 15672 | Message broker |
+| `rabbitmq` | (no container_name — use `docker compose ps rabbitmq`) | 5672, 15672 | Message broker |
 | `coredns` | voipbin-dns | 53 | DNS server for *.voipbin.test |
 
 ### SIP/VoIP Stack
@@ -765,10 +765,10 @@ MAILGUN_API_KEY=...
 | Service | Container | Network | Purpose |
 |---------|-----------|---------|---------|
 | `kamailio` | voipbin-kamailio | host (5060) | SIP proxy and routing |
-| `rtpengine` | voipbin-rtpengine | host (20000-30000) | RTP media proxy |
+| `rtpengine` | (no container_name — use `docker compose ps rtpengine`) | host (20000-30000) | RTP media proxy |
 | `asterisk-call` | voipbin-ast-call | 10.100.0.210 | Call handling |
 | `asterisk-registrar` | voipbin-ast-registrar | 10.100.0.211 | SIP registration |
-| `asterisk-conference` | voipbin-ast-conf | 10.100.0.212 | Conferencing |
+| `asterisk-conference` | (no container_name — use `docker compose ps asterisk-conference`) | 10.100.0.212 | Conferencing |
 
 ### Backend Managers
 
@@ -782,16 +782,16 @@ All managers connect to MySQL, Redis, and RabbitMQ. Key services:
 | `flow-manager` | voipbin-flow-mgr | Workflow execution engine |
 | `billing-manager` | voipbin-billing-mgr | Usage tracking and billing |
 | `registrar-manager` | voipbin-registrar-mgr | SIP registration management |
-| `ai-manager` | voipbin-ai-mgr | AI/chatbot features |
-| `transcribe-manager` | voipbin-transcribe-mgr | Speech-to-text |
+| `ai-manager` | (no container_name — use `docker compose ps ai-manager`) | AI/chatbot features |
+| `transcribe-manager` | (no container_name — use `docker compose ps transcribe-manager`) | Speech-to-text |
 | `talk-manager` | voipbin-talk-mgr | Talk app backend |
 
 ### Frontend Services
 
 | Service | Container | Port | Purpose |
 |---------|-----------|------|---------|
-| `square-admin` | voipbin-admin | 3003 | Admin dashboard |
-| `square-meet` | voipbin-meet | 3004 | Video conferencing |
+| `square-admin` | (no container_name — use `docker compose ps square-admin`) | 3003 | Admin dashboard |
+| `square-meet` | (no container_name — use `docker compose ps square-meet`) | 3004 | Video conferencing |
 | `square-talk` | voipbin-talk | 3005 | Voice client |
 
 ---

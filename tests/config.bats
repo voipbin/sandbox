@@ -114,17 +114,80 @@ teardown() {
 # =============================================================================
 # docker-compose.yml - Container Fixed IPs
 # =============================================================================
+# NOTE: admin/meet/talk/api-manager static ipv4_address pins were removed in
+# Phase 1 of the horizontal-scale-architecture design (docs/plans/2026-07-05):
+# these services are only reached via published host ports + DNS, never
+# referenced by another service's hardcoded IP, so service-name DNS is safe
+# and sufficient. Asterisk-call/registrar/conference static IPs remain (they
+# ARE referenced by Kamailio's hardcoded routing) until Phase 3 replaces them
+# with dispatcher-list generation.
 
-@test "docker-compose.yml assigns fixed IP 10.100.0.101 to admin" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: 10.100.0.101"
+@test "docker-compose.yml does not assign a fixed IP to admin (removed Phase 1)" {
+    # Capture the FULL square-admin service block (from its header to the next
+    # top-level service key), not just a fixed line count — a fixed -A2/-A3
+    # window can silently stop short of the networks: block if unrelated
+    # lines are inserted above it, turning this into a false-pass guard.
+    run sed -n '/^  square-admin:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.101"* ]]
 }
 
-@test "docker-compose.yml assigns fixed IP 10.100.0.102 to meet" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: 10.100.0.102"
+@test "docker-compose.yml does not assign a fixed IP to meet (removed Phase 1)" {
+    run sed -n '/^  square-meet:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.102"* ]]
 }
 
-@test "docker-compose.yml assigns fixed IP 10.100.0.103 to talk" {
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: 10.100.0.103"
+@test "docker-compose.yml does not assign a fixed IP to talk (removed Phase 1)" {
+    run sed -n '/^  square-talk:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.103"* ]]
+}
+
+@test "docker-compose.yml does not assign a fixed IP to api-manager (removed Phase 1)" {
+    run sed -n '/^  api-manager:/,/^  [a-zA-Z_-]\+:/p' "$PROJECT_ROOT/docker-compose.yml"
+    [[ "$output" != *"ipv4_address: 10.100.0.100"* ]]
+}
+
+# =============================================================================
+# docker-compose.yml - State-layer address externalization (Phase 1)
+# =============================================================================
+# All bin-* app services must use ${DB_HOST:-db}/${REDIS_HOST:-redis}/
+# ${RABBITMQ_HOST:-rabbitmq} instead of hardcoded compose service names, so
+# an operator splitting the state layer onto a separate host only needs to
+# change .env (no compose edits). Verifies zero hardcoded stragglers remain.
+
+@test "docker-compose.yml has no hardcoded DATABASE_DSN (all externalized via DB_HOST)" {
+    run grep -c "DATABASE_DSN=root:root_password@tcp(db:3306)" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded DATABASE_DSN_BIN/DATABASE_DSN_ASTERISK (registrar-manager, externalized via DB_HOST)" {
+    run grep -cE "DATABASE_DSN_(BIN|ASTERISK)=root:root_password@tcp\(db:3306\)" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded RABBITMQ_ADDRESS (all externalized via RABBITMQ_HOST)" {
+    run grep -c "RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded REDIS_ADDRESS (all externalized via REDIS_HOST)" {
+    run grep -c "REDIS_ADDRESS=redis:6379" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker-compose.yml has no hardcoded DATABASE_ASTERISK_HOST (externalized via DB_HOST)" {
+    run grep -cE "DATABASE_ASTERISK_HOST=db$" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
+@test "docker compose config renders identical DB/Redis/RabbitMQ addresses at defaults (no behavior change)" {
+    run bash -c "cd '$PROJECT_ROOT' && docker compose config 2>/dev/null | grep -m1 'DATABASE_DSN:'"
+    [[ "$output" == *"tcp(db:3306)/bin_manager"* ]]
+}
+
+@test ".env.template documents DB_HOST/REDIS_HOST/RABBITMQ_HOST externalization vars" {
+    assert_file_contains "$PROJECT_ROOT/.env.template" "DB_HOST=db"
+    assert_file_contains "$PROJECT_ROOT/.env.template" "REDIS_HOST=redis"
+    assert_file_contains "$PROJECT_ROOT/.env.template" "RABBITMQ_HOST=rabbitmq"
 }
 
 # =============================================================================
@@ -244,14 +307,12 @@ teardown() {
 # Script Consistency Checks
 # =============================================================================
 
-@test "common.sh defines same container IPs as docker-compose.yml" {
-    # common.sh defines these for reference
-    source "$SCRIPTS_DIR/common.sh"
-
-    # Verify they match docker-compose.yml
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: $ADMIN_IP"
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: $MEET_IP"
-    assert_file_contains "$PROJECT_ROOT/docker-compose.yml" "ipv4_address: $TALK_IP"
+@test "common.sh no longer defines removed static IP variables for admin/meet/talk/api" {
+    # Phase 1 removed ADMIN_IP/MEET_IP/TALK_IP/API_MANAGER_IP entirely (dead vars
+    # referencing addresses that no longer exist in docker-compose.yml) — assert
+    # they're gone rather than leaving a vacuous/false-passing consistency check.
+    run grep -E '^(API_MANAGER_IP|ADMIN_IP|MEET_IP|TALK_IP)=' "$SCRIPTS_DIR/common.sh"
+    [ "$status" -ne 0 ]
 }
 
 @test "setup-voip-network.sh defines same internal IPs as expected" {
