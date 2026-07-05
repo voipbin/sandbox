@@ -159,6 +159,11 @@ teardown() {
     [ "$output" -eq 0 ]
 }
 
+@test "docker-compose.yml has no hardcoded DATABASE_DSN_BIN/DATABASE_DSN_ASTERISK (registrar-manager, externalized via DB_HOST)" {
+    run grep -cE "DATABASE_DSN_(BIN|ASTERISK)=root:root_password@tcp\(db:3306\)" "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -eq 0 ]
+}
+
 @test "docker-compose.yml has no hardcoded RABBITMQ_ADDRESS (all externalized via RABBITMQ_HOST)" {
     run grep -c "RABBITMQ_ADDRESS=amqp://guest:guest@rabbitmq:5672" "$PROJECT_ROOT/docker-compose.yml"
     [ "$output" -eq 0 ]

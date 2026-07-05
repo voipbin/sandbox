@@ -991,8 +991,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN_BIN=root:root_password@tcp(db:3306)/bin_manager
-      - DATABASE_DSN_ASTERISK=root:root_password@tcp(db:3306)/asterisk
+      - DATABASE_DSN_BIN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - DATABASE_DSN_ASTERISK=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/asterisk
       - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
