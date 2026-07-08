@@ -1064,6 +1064,9 @@ services:
       - GCP_BUCKET_NAME_TMP=${GCP_BUCKET_NAME_TMP:-}
       - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-}
       - JWT_KEY=${JWT_KEY:-${STORAGE_JWT_KEY:-}}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
     command: ./storage-manager
 
   tag-manager:
@@ -1230,7 +1233,10 @@ services:
       - AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-}
       - AWS_SECRET_KEY=${AWS_SECRET_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
     command: ./tts-manager
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
 
   webhook-manager:
     image: voipbin/bin-webhook-manager@sha256:cfe75e29b7d82bc43c81883401ca545e053efbd680ca51a9e74328ae26ac7c45
