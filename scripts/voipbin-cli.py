@@ -2411,6 +2411,13 @@ Type 'help <command>' for detailed usage.
             print(result)
 
         container_id = (run_cmd(f"docker compose ps -q {owner} 2>/dev/null") or "").strip()
+        # Defensive: if a service were ever scaled to multiple replicas,
+        # `docker compose ps -q` would return multiple newline-separated
+        # IDs. That raw string is interpolated into a shell command below,
+        # so an embedded newline could be misread as a command separator.
+        # None of the three Asterisk services are scaled today, but take
+        # only the first ID to stay safe regardless.
+        container_id = container_id.split()[0] if container_id else ""
         if not container_id:
             print(
                 yellow(
@@ -2434,13 +2441,29 @@ Type 'help <command>' for detailed usage.
             status = (status or "").strip()
             if status == "healthy":
                 break
-            if status == "" or status.startswith("<no value>") or "Error" in status or "error" in status:
-                # Either no healthcheck is defined on this container, or the
-                # inspect call itself failed unexpectedly. Either way we
-                # cannot poll a real health status — fall back to a short
-                # fixed settle time instead of waiting the full timeout.
-                if status and "no value" not in status.lower():
-                    print(yellow(f"  Note: unexpected 'docker inspect' output for {owner} ({container_id}): {status!r}"))
+            # Two legitimate "no real health status" cases collapse into the
+            # same fallback: (a) older Docker versions print the literal
+            # string "<no value>" when a container has no HEALTHCHECK; (b)
+            # current Docker (verified on 29.x) instead errors out of the Go
+            # template with "template parsing error: ... map has no entry
+            # for key \"Health\"", which is a genuine inspect failure message
+            # but means the same thing here — there is no Health status to
+            # poll. Either way we cannot wait on a real health transition,
+            # so fall back to a short fixed settle time instead of spinning
+            # for the full timeout.
+            no_health_signal = (
+                status == ""
+                or status.startswith("<no value>")
+                or "no entry for key" in status.lower()
+            )
+            if no_health_signal:
+                time.sleep(5)
+                break
+            if "error" in status.lower():
+                # A different, unexpected inspect failure (e.g. the
+                # container disappeared mid-poll) — surface it rather than
+                # silently treating it as "no healthcheck defined".
+                print(yellow(f"  Note: unexpected 'docker inspect' output for {owner} ({container_id}): {status!r}"))
                 time.sleep(5)
                 break
             time.sleep(2)
