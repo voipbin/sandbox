@@ -2394,23 +2394,53 @@ Type 'help <command>' for detailed usage.
         then restarting the proxy is the ordering that actually fixes ARI
         registration (confirmed via `ari show apps` showing 'voipbin' and
         matching /proc/self/ns/net inodes on both containers).
+
+        IMPORTANT: `owner`/`proxy` here are docker-compose SERVICE names
+        (e.g. "asterisk-call"), which are not necessarily the actual
+        container name — some of these services set an explicit
+        `container_name:` (e.g. "voipbin-ast-call") that `docker inspect`
+        needs verbatim; others have no override and get Compose's default
+        `<project>-<service>-<n>` name. `docker inspect <service-name>`
+        would silently fail against either of those in most projects. Always
+        resolve the real container ID via `docker compose ps -q <service>`
+        first, which understands compose service names regardless of any
+        `container_name:` override.
         """
         result = run_cmd(f"docker compose restart {owner} 2>&1")
         if result:
             print(result)
 
+        container_id = (run_cmd(f"docker compose ps -q {owner} 2>/dev/null") or "").strip()
+        if not container_id:
+            print(
+                yellow(
+                    f"  Warning: could not resolve a container ID for service "
+                    f"'{owner}' via 'docker compose ps -q'; skipping healthcheck "
+                    f"wait and restarting {proxy} after a short settle delay."
+                )
+            )
+            time.sleep(5)
+            result = run_cmd(f"docker compose restart {proxy} 2>&1")
+            if result:
+                print(result)
+            return
+
         print(f"  Waiting for {owner} to become healthy...")
         waited = 0
         while waited < health_timeout:
             status = run_cmd(
-                f"docker inspect {owner} --format '{{{{.State.Health.Status}}}}' 2>/dev/null"
+                f"docker inspect {container_id} --format '{{{{.State.Health.Status}}}}' 2>&1"
             )
             status = (status or "").strip()
             if status == "healthy":
                 break
-            if status == "" :
-                # No healthcheck defined on this container — fall back to a
-                # short fixed settle time instead of waiting the full timeout.
+            if status == "" or status.startswith("<no value>") or "Error" in status or "error" in status:
+                # Either no healthcheck is defined on this container, or the
+                # inspect call itself failed unexpectedly. Either way we
+                # cannot poll a real health status — fall back to a short
+                # fixed settle time instead of waiting the full timeout.
+                if status and "no value" not in status.lower():
+                    print(yellow(f"  Note: unexpected 'docker inspect' output for {owner} ({container_id}): {status!r}"))
                 time.sleep(5)
                 break
             time.sleep(2)
