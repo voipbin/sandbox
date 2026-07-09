@@ -430,7 +430,7 @@ sudo ./voipbin logs -f api-manager
 |---------|-------------|
 | `start [service]` | Start all services or a specific service |
 | `stop [service] [--all]` | Stop services (keeps infrastructure by default) |
-| `restart [service]` | Restart all or specific service |
+| `restart [service]` | Restart all or specific service. Restarting `asterisk-call` / `asterisk-conference` / `asterisk-registrar` automatically restarts its paired `-proxy` sidecar too (they share a network namespace; restarting the Asterisk container alone would leave the sidecar orphaned — see docs/plans for VOIP-1237). |
 | `status` / `ps` | Display service status with endpoints |
 | `logs [-f] <service>` | View service logs (`-f` for follow mode) |
 

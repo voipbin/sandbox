@@ -1760,7 +1760,7 @@ class VoIPBinCLI:
             "ps": ("Alias for status", "ps"),
             "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (pins versions on first run)\n  start --no-pin     Start without version pinning\n  start api-manager  Start specific service"),
             "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
-            "restart": ("Restart services", "restart [service]"),
+            "restart": ("Restart services (Asterisk owner+proxy sidecars always paired)", "restart [service]"),
             "logs": ("View service logs", "logs [-f] <service>\n  logs api-manager     Last 50 lines\n  logs -f api-manager  Follow logs (Ctrl+C to stop)"),
             "ast": ("Asterisk CLI", "ast [command]\n  ast                          Enter Asterisk context\n  ast pjsip show endpoints     Run single command"),
             "kam": ("Kamailio kamcmd", "kam [command]\n  kam              Enter Kamailio context\n  kam ul.dump      Run single command"),
@@ -2369,19 +2369,169 @@ Type 'help <command>' for detailed usage.
             else:
                 print("No services running")
 
-    def cmd_restart(self, args):
-        """Restart services"""
-        service = args[0] if args else ""
-        print(f"Restarting {service or 'all services'}...")
+    # asterisk-*-proxy sidecars run with `network_mode: "service:<owner>"`,
+    # sharing the owner's kernel network namespace so ARI/AMI resolve over
+    # localhost. `docker restart <owner>` gives the owner a NEW namespace but
+    # does NOT restart the sidecar, which stays attached to the old, now-dead
+    # namespace forever (ARI connect: connection refused). See VOIP-1237.
+    # Owner and sidecar MUST always be restarted together.
+    ASTERISK_SIDECAR_PAIRS = {
+        "asterisk-call": "asterisk-call-proxy",
+        "asterisk-conference": "asterisk-conference-proxy",
+        "asterisk-registrar": "asterisk-registrar-proxy",
+    }
 
-        if service:
-            result = run_cmd(f"docker compose restart {service} 2>&1")
-        else:
-            result = run_cmd("docker compose restart 2>&1")
+    def _restart_asterisk_pair(self, owner, proxy, health_timeout=60):
+        """Restart an Asterisk owner container, wait for it to report
+        healthy, THEN restart its network-namespace-sharing proxy sidecar.
 
+        Order matters (VOIP-1237, live-verified): `docker compose restart
+        owner proxy` in one call does NOT guarantee owner-before-proxy
+        ordering — Compose can (and in testing did) restart the proxy up to
+        ~13s before the owner container finishes coming back up, so the
+        proxy re-attaches to the OLD namespace and the bug reproduces anyway.
+        Restarting the owner first, waiting for its healthcheck, and only
+        then restarting the proxy is the ordering that actually fixes ARI
+        registration (confirmed via `ari show apps` showing 'voipbin' and
+        matching /proc/self/ns/net inodes on both containers).
+
+        IMPORTANT: `owner`/`proxy` here are docker-compose SERVICE names
+        (e.g. "asterisk-call"), which are not necessarily the actual
+        container name — some of these services set an explicit
+        `container_name:` (e.g. "voipbin-ast-call") that `docker inspect`
+        needs verbatim; others have no override and get Compose's default
+        `<project>-<service>-<n>` name. `docker inspect <service-name>`
+        would silently fail against either of those in most projects. Always
+        resolve the real container ID via `docker compose ps -q <service>`
+        first, which understands compose service names regardless of any
+        `container_name:` override.
+        """
+        result = run_cmd(f"docker compose restart {owner} 2>&1")
         if result:
             print(result)
-        print(green("✓ Done"))
+
+        container_id = (run_cmd(f"docker compose ps -q {owner} 2>/dev/null") or "").strip()
+        # Defensive: if a service were ever scaled to multiple replicas,
+        # `docker compose ps -q` would return multiple newline-separated
+        # IDs. That raw string is interpolated into a shell command below,
+        # so an embedded newline could be misread as a command separator.
+        # None of the three Asterisk services are scaled today, but take
+        # only the first ID to stay safe regardless.
+        container_id = container_id.split()[0] if container_id else ""
+        if not container_id:
+            print(
+                yellow(
+                    f"  Warning: could not resolve a container ID for service "
+                    f"'{owner}' via 'docker compose ps -q'; skipping healthcheck "
+                    f"wait and restarting {proxy} after a short settle delay."
+                )
+            )
+            time.sleep(5)
+            result = run_cmd(f"docker compose restart {proxy} 2>&1")
+            if result:
+                print(result)
+            return
+
+        print(f"  Waiting for {owner} to become healthy...")
+        waited = 0
+        while waited < health_timeout:
+            status = run_cmd(
+                f"docker inspect {container_id} --format '{{{{.State.Health.Status}}}}' 2>&1"
+            )
+            status = (status or "").strip()
+            if status == "healthy":
+                break
+            # Two legitimate "no real health status" cases collapse into the
+            # same fallback: (a) older Docker versions print the literal
+            # string "<no value>" when a container has no HEALTHCHECK; (b)
+            # current Docker (verified on 29.x) instead errors out of the Go
+            # template with "template parsing error: ... map has no entry
+            # for key \"Health\"", which is a genuine inspect failure message
+            # but means the same thing here — there is no Health status to
+            # poll. Either way we cannot wait on a real health transition,
+            # so fall back to a short fixed settle time instead of spinning
+            # for the full timeout.
+            no_health_signal = (
+                status == ""
+                or status.startswith("<no value>")
+                or "no entry for key" in status.lower()
+            )
+            if no_health_signal:
+                time.sleep(5)
+                break
+            if "error" in status.lower():
+                # A different, unexpected inspect failure (e.g. the
+                # container disappeared mid-poll) — surface it rather than
+                # silently treating it as "no healthcheck defined".
+                print(yellow(f"  Note: unexpected 'docker inspect' output for {owner} ({container_id}): {status!r}"))
+                time.sleep(5)
+                break
+            time.sleep(2)
+            waited += 2
+        else:
+            print(
+                yellow(
+                    f"  Warning: {owner} did not report healthy within "
+                    f"{health_timeout}s, restarting {proxy} anyway."
+                )
+            )
+
+        result = run_cmd(f"docker compose restart {proxy} 2>&1")
+        if result:
+            print(result)
+
+    def cmd_restart(self, args):
+        """Restart services (Asterisk owner containers auto-pull in their
+        network-namespace-sharing proxy sidecar, see VOIP-1237)"""
+        service = args[0] if args else ""
+
+        if service:
+            # If the requested service is an Asterisk owner container, force
+            # its network-namespace-sharing proxy sidecar to restart AFTER it
+            # comes back healthy, so the sidecar never survives into an
+            # orphaned namespace (VOIP-1237).
+            paired_proxy = self.ASTERISK_SIDECAR_PAIRS.get(service)
+            if paired_proxy:
+                print(
+                    f"Restarting {service}, then its sidecar {paired_proxy} "
+                    f"once healthy (required: they share a network "
+                    f"namespace, see VOIP-1237)..."
+                )
+                self._restart_asterisk_pair(service, paired_proxy)
+            else:
+                print(f"Restarting {service}...")
+                result = run_cmd(f"docker compose restart {service} 2>&1")
+                if result:
+                    print(result)
+
+            print(green("✓ Done"))
+        else:
+            # Full-stack restart: `docker compose restart` (no args) does not
+            # guarantee any owner-before-sidecar ordering, so an
+            # asterisk-*-proxy can still end up restarted before (or without)
+            # its owner and be left in a dead namespace. Restart every
+            # Asterisk owner+proxy pair in the correct order first, then
+            # restart everything else in one shot.
+            print("Restarting all services...")
+
+            paired_services = set()
+            for owner, proxy in self.ASTERISK_SIDECAR_PAIRS.items():
+                paired_services.add(owner)
+                paired_services.add(proxy)
+                print(f"  -> {owner}, then {proxy} once healthy (VOIP-1237)")
+                self._restart_asterisk_pair(owner, proxy)
+
+            all_services = run_cmd("docker compose ps --services 2>/dev/null") or ""
+            remaining = [
+                svc.strip() for svc in all_services.split("\n")
+                if svc.strip() and svc.strip() not in paired_services
+            ]
+            if remaining:
+                result = run_cmd(f"docker compose restart {' '.join(remaining)} 2>&1")
+                if result:
+                    print(result)
+
+            print(green("✓ Done"))
 
     def cmd_logs(self, args):
         """View service logs"""
