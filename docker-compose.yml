@@ -250,6 +250,17 @@ services:
       - "host.docker.internal:host-gateway"
 
   # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Call server
+  #
+  # IMPORTANT (VOIP-1237): network_mode: "service:asterisk-call" attaches this
+  # container to asterisk-call's kernel network namespace ONCE, at this
+  # container's own start time. It is NOT re-resolved dynamically. If
+  # asterisk-call is restarted alone (docker compose restart asterisk-call /
+  # docker restart), Docker gives it a brand-new namespace, but this proxy
+  # stays bound to the OLD, now-orphaned one — localhost:8088 (ARI) then
+  # resolves to nothing and the proxy never recovers on its own. Always
+  # restart this service TOGETHER with asterisk-call (see scripts/voipbin-cli.py
+  # cmd_restart, which enforces this pairing automatically). Never restart
+  # asterisk-call in isolation.
   asterisk-call-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
     logging: *default-logging
@@ -315,6 +326,9 @@ services:
       - "host.docker.internal:host-gateway"
 
   # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Conference server
+  # IMPORTANT (VOIP-1237): shares asterisk-conference's network namespace via
+  # network_mode: "service:". See the identical note on asterisk-call-proxy
+  # above — always restart together with asterisk-conference, never alone.
   asterisk-conference-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
     logging: *default-logging
@@ -383,6 +397,9 @@ services:
       - "host.docker.internal:host-gateway"
 
   # Asterisk-to-RabbitMQ proxy (ARI/AMI bridge) for Registrar server
+  # IMPORTANT (VOIP-1237): shares asterisk-registrar's network namespace via
+  # network_mode: "service:". See the identical note on asterisk-call-proxy
+  # above — always restart together with asterisk-registrar, never alone.
   asterisk-registrar-proxy:
     image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
     logging: *default-logging
