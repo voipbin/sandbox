@@ -1,6 +1,6 @@
 # VoIPBin Sandbox — Full Service Parity With Monorepo (versions.lock Advance, direct/webchat Onboarding, PostgreSQL+pgvector, ClickHouse, storage-manager Fix, compose↔lock Sync)
 
-Status: DRAFT (Design Review Round 0)
+Status: DRAFT (Design Review Round 2, addressing Round 1 REQUEST_CHANGES)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-31
 Repo: sandbox (one monorepo-side fix, §2.6, lands as its own monorepo PR; everything else lands here)
@@ -88,15 +88,40 @@ supply, with the boot-versus-function distinction documented (§2.4).
 Advancing `dbscheme_monorepo_commit` past 2026-03-25 applies migration `08d686855c69`
 ("generic direct hash"), which is not additive: it creates `direct_directs`, adds
 `direct_id`/`direct_hash` columns to five existing tables (`registrar_extensions`,
-`conference_conferences`, `ai_ais`, `ai_teams`, `agent_agents`), backfills from
-`registrar_directs`, then **drops `registrar_directs`**. Plus seven webchat migrations
+`conference_conferences`, `ai_ais`, `ai_teams`, `agent_agents`), backfills
+`registrar_extensions` from `registrar_directs` (the other four tables get empty
+`direct_id`/`direct_hash` — by design, they had no prior direct records; and the backfill
+INSERT is `WHERE tm_delete IS NULL`, so soft-deleted rows are dropped rather than
+migrated), then **drops `registrar_directs`**. Plus seven webchat migrations
 (2026-07-17..22). Consequence: after the pin advance, ALL service images must move to the
 new pin together — mixing old images against the new schema (or vice versa) is not
-supported. This is acceptable for the sandbox because `versions.lock`'s single-ancestry
-model already implies all-images-move-together; §3's verification exists to prove the
-whole set works as a unit. For a customer upgrading an existing install,
-`scripts/update.sh`'s existing flow (backup → pull → migrate → up) already sequences this
-correctly; the pre-upgrade backup is the rollback for the dropped table.
+supported.
+
+**Honest accounting of the two upgrade paths (Round-1 corrected an earlier draft that
+cited a nonexistent `scripts/update.sh` and overclaimed "no mixed-schema window")**:
+
+- **Fresh install (the §3 clean-room path)**: `down -v` → migrate → up. Truly no
+  mixed-schema window; this is the path §3 proves.
+- **Existing-install upgrade**: the real flow is `voipbin update all` →
+  `VoIPBinCLI._upgrade_pinned` (`scripts/voipbin-cli.py:~4897`): backup → git pull →
+  re-exec → compose pull → **migrate → up -d**. Between `migrate` and `up -d`, the OLD
+  containers are still running against the NEW schema — for this specific migration, that
+  means every old service runs against a database where `registrar_directs` has already
+  been dropped, for the duration of that gap. Additional exposure: (a) if `up -d` fails
+  partway, the operator is left with old images on new schema and the pre-upgrade backup
+  as the only recovery; (b) MySQL DDL is not transactional, and this migration is
+  CREATE → 5×ALTER → INSERT → UPDATE → DROP — a mid-migration failure leaves a
+  half-migrated schema (the upgrade flow's existing abort-before-up behavior, verified in
+  `scripts/tests/test_upgrade_flow.py`, correctly stops before `up -d` in that case, but
+  that still leaves old containers on a half-new schema until restore).
+
+Mitigations, honestly weighted: the pre-upgrade backup (existing, automatic in
+`_upgrade_pinned`) is the real safety net for all of the above; the mixed-schema gap is
+seconds-to-minutes on a sandbox-scale DB; and the backfill logic is monorepo-authored and
+already ran in production. Considered and NOT adopted this cycle: reordering the upgrade
+flow to stop-managers → migrate → up (eliminates the gap, but changes long-standing
+upgrade semantics for every future upgrade and deserves its own change + tests, not a
+rider on this cycle — recorded as follow-up work in §4).
 
 ## 2. Scope
 
@@ -105,11 +130,17 @@ correctly; the pre-upgrade backup is the rollback for the dropped table.
 Regenerate against monorepo main HEAD via the existing `scripts/generate-versions-lock.sh`
 (already merged), **extended first** to also track the two new images
 (`voipbin/bin-direct-manager`, `voipbin/bin-webchat-manager`): the generator currently
-iterates the lock's existing `images` keys only, so it needs a small change — accept the
-two new entries (seeded into the lock with their resolved digests) or derive the tracked
-set from the compose file (§2.2 makes compose the derived artifact, so seeding the lock is
-the simpler path: add the two entries with placeholder digests, let the generator resolve
-them like any other image). `dbscheme_monorepo_commit` advances to the same target commit.
+iterates the lock's existing `images` keys only, so seeding two new entries into the lock
+is the mechanism — BUT (Round-1 blocking finding) the generator's fallback semantics
+make naive placeholder-seeding dangerous: an unresolvable image today falls back to
+"keep current pin, warn, exit 0", so a seeded placeholder that fails to resolve would be
+written back into the lock as a legitimate-looking pin, §2.2 would propagate it into
+compose, and the failure would surface only at `docker compose pull` on a customer
+machine. **Required generator change**: distinguish seeded/new entries (e.g. digest value
+`"NEW"` or a dedicated `new_images` input list) from established pins — a seeded entry
+that cannot be resolved at the target commit is a HARD ERROR (non-zero exit, lock not
+written), never a fallback. Established entries keep today's fallback behavior.
+`dbscheme_monorepo_commit` advances to the same target commit.
 
 ### 2.2 compose↔lock sync mechanism (closes F1)
 
@@ -118,8 +149,20 @@ New script `scripts/sync-compose-images.sh`: reads `versions.lock`, rewrites eve
 that image. Properties:
 - Only touches `image:` lines whose repo matches a tracked `voipbin/*` name; third-party
   images (mysql, redis, rabbitmq, coredns, postgres, clickhouse) are never rewritten.
+- **Multi-occurrence images (Round-1 required this be specified)**:
+  `voipbin/voip-asterisk-proxy` appears at three `image:` lines in compose (the three
+  `asterisk-*-proxy` services share one image) — the script rewrites ALL occurrences of a
+  tracked image to the lock's digest; a repeated image is normal, not a duplicate-key
+  error. If the same tracked image appears in compose at two DIFFERENT digests before the
+  sync (drift, as is actually the case today for voip-asterisk-proxy vs the lock), both
+  get rewritten to the single lock digest — that convergence is the point of the script.
 - Fails loudly (non-zero, names the image) if compose references a tracked image the lock
-  lacks or vice versa — the same drift-check philosophy as `check-env-template-sync.sh`.
+  lacks, or the lock tracks an image compose doesn't reference — EXCEPT images on an
+  explicit lock-only allowlist hardcoded in the script with rationale per entry.
+  Initial allowlist: `voipbin/bin-sentinel-manager` (permanently excluded from compose,
+  §4, but deliberately kept pinned in the lock per the predecessor design's commitment —
+  without this allowlist the bidirectional check would fail on every run forever,
+  Round-1's finding).
 - Idempotent; running it twice is a no-op the second time.
 - `generate-versions-lock.sh` prints a reminder to run it, and §3's verification includes
   a check that compose and lock agree (run the sync script, assert zero diff).
@@ -152,23 +195,40 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
   default (compose-internal only, same posture as redis).
 - rag-manager's compose block rewritten to HEAD's actual config surface:
   `RABBITMQ_ADDRESS`, `GCP_PROJECT_ID` (from `.env`), `GCP_REGION` (from `.env`, default
-  `us-central1` in the template), `POSTGRESQL_DSN`
+  `us-central1` in the template), `GCP_BUCKET_NAME_MEDIA` (from `.env` — Round-1 review
+  caught this was dropped: it is threaded into `raghandler.NewRagHandler`,
+  `cmd/rag-manager/main.go:192`, and listed as required in `bin-rag-manager/CLAUDE.md`;
+  not `Validate()`-gated, but omitting it yields a booting service whose GCS ingestion
+  points at an empty bucket name), `POSTGRESQL_DSN`
   (`postgres://voipbin:voipbin@postgres:5432/rag?sslmode=disable`), plus the existing
   dummy-GCP-credential mount. Old removed vars (`OPENAI_API_KEY` for rag,
   `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, etc.) deleted from the block.
+- **`GCP_PROJECT_ID` empty-value fix (Round-1 blocking finding)**: `scripts/init.sh:262`
+  currently writes `GCP_PROJECT_ID=` (empty) into the generated `.env`, while
+  `.env.template:13` documents `your-gcp-project-id` — they disagree, and rag-manager's
+  `Validate()` hard-fails on the empty string BEFORE any client construction. On this
+  design's own prescribed §3 procedure (fresh no-sudo init), rag-manager would crash-loop
+  at config validation, reproducing F3 verbatim. Fix: `init.sh` writes a non-empty
+  placeholder default (`GCP_PROJECT_ID=sandbox-placeholder`, same for
+  `GCP_BUCKET_NAME_MEDIA=sandbox-placeholder-media`), `.env.template` documents the same
+  values with a comment that they satisfy config validation without granting GCP access.
+  The earlier framing ("maybe an eager client init parses the key") was the wrong failure
+  mode — validation, not key parsing, is the first gate.
 - rag-manager runs its own golang-migrate at startup against Postgres — no sandbox-side
   migration tooling needed; the compose `depends_on: postgres: service_healthy` gate is
   sufficient.
-- **Boot vs. function, documented honestly**: with the dummy GCP credential, rag-manager
-  at HEAD passes `Validate()` (project/region are just strings) and boots; actual
-  embedding/ingestion calls fail at the Vertex AI call until the operator supplies real
-  credentials. `.env.template` and CLAUDE.md document this explicitly: "rag-manager runs,
-  but RAG ingestion/query requires a real GCP project + service-account key." If runtime
-  verification (§3) shows it does NOT boot with the dummy credential (e.g. an eager
-  Vertex/GCS client init that parses the key at startup), fallback is documented
-  degradation: keep it deployed but document the real-credential requirement as
-  boot-blocking, and have `start.sh` tolerate it being down (do not gate the install on
-  it). Which branch applies is settled by evidence in §3, not assumed here.
+- **Boot vs. function, documented honestly**: with the placeholder project/region/bucket
+  and dummy credential, rag-manager at HEAD passes `Validate()` and boots; actual
+  embedding/ingestion calls fail at the Vertex AI / GCS call until the operator supplies
+  real credentials. `.env.template` and CLAUDE.md document this explicitly: "rag-manager
+  runs, but RAG ingestion/query requires a real GCP project + service-account key." If
+  runtime verification (§3) nonetheless shows a boot failure (e.g. an eager GCS client
+  init rejecting the dummy key), fallback is documented degradation: keep it deployed and
+  document the real-credential requirement as boot-blocking. No `start.sh` change is
+  needed for that fallback (Round-1 caught the earlier wording implying one):
+  `start.sh:657` is a bare `docker compose up -d`, rag-manager is no service's
+  `depends_on`, so a crash-looping rag-manager is already tolerated and merely appears in
+  the startup warning list. Which branch applies is settled by evidence in §3.
 
 ### 2.5 ClickHouse for timeline-manager
 
@@ -191,9 +251,12 @@ signing credential non-fatal. `NewFileHandler` returns a working handler with
 `*cerrors.VoipbinError` (status `Unavailable`, reason like `SIGNING_NOT_CONFIGURED`) when
 signing is unavailable; every non-signing capability works normally. Doc-sync per monorepo
 policy (service CLAUDE.md if present, `docs/operations.md` failure modes). Additionally,
-sandbox's storage-manager compose block gains the same dummy-credential mount rag-manager
-already has (it currently sets `GCP_PROJECT_ID` but mounts no credential file at all), so
-whichever lands first, the sandbox boots.
+sandbox's storage-manager compose block (which today sets `GCP_PROJECT_ID` but has neither
+a credential env var nor a credential mount) gains BOTH pieces rag-manager already has
+(Round-1 caught the earlier wording naming only "the mount"): the
+`GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json` environment line AND the
+`${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro`
+volume entry. So whichever lands first (this or the monorepo fix), the sandbox boots.
 
 ### 2.7 .env.template additions
 
@@ -204,10 +267,12 @@ default exists" annotation (§2.5 gives them a local default) and get real defau
 
 ## 3. Verification plan
 
-Sequencing: §2.6's monorepo PR merges FIRST (its own ≥3-round review loop), CI publishes
-images, then the sandbox change regenerates the lock at a commit containing that fix —
-otherwise storage-manager needs the dummy-mount workaround alone to boot, which §2.6 makes
-belt-and-braces rather than a load-bearing hack.
+Sequencing (preferred, not a hard gate — Round-1 caught the earlier wording reading as a
+cycle-blocking dependency): §2.6's monorepo PR merges first (its own ≥3-round review
+loop), CI publishes images, then the sandbox change regenerates the lock at a commit
+containing that fix. If the monorepo PR stalls, the sandbox side still ships on R5's
+fallback path (dummy-credential mount); §2.6 is a boot-quality improvement for one
+service, not a prerequisite for the cycle.
 
 Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
 
@@ -216,9 +281,8 @@ Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
 3. Migration: `scripts/init_database.sh` at the NEW dbscheme pin — applies cleanly
    including `08d686855c69` (destructive direct-hash migration) and the seven webchat
    migrations, zero errors.
-4. Full stack up (now 47 compose services: 44 prior + direct-manager + webchat-manager +
-   postgres + clickhouse − 1... final count stated by implementation, the point is: every
-   defined service accounted for by name in the report).
+4. Full stack up — **48 compose services** (44 today + direct-manager + webchat-manager +
+   postgres + clickhouse); every defined service accounted for by name in the report.
 5. **Pass criterion**: only `kamailio` and `coredns` down (sudo-gated, unchanged
    exception). Explicitly: rag-manager, storage-manager, direct-manager, webchat-manager,
    timeline-manager all running and stable (RestartCount watched over ≥3 minutes, not a
@@ -230,13 +294,23 @@ Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
    extensions → access key. This is the single most load-bearing check in the cycle.
 7. compose↔lock agreement: run `scripts/sync-compose-images.sh`, assert zero diff.
 8. Drift checks: `check-env-template-sync.sh` clean.
-9. rag-manager §2.4 branch determination: with dummy credentials, record whether it boots
-   (expected) — if yes, confirm an ingestion attempt fails with a clear GCP error (not a
-   hang/panic); if no, document boot-blocking per §2.4's fallback and confirm `start.sh`
-   tolerates it.
+9. rag-manager §2.4 branch determination: with placeholder project/region/bucket and
+   dummy credentials, record whether it boots (expected, post-§2.4's `GCP_PROJECT_ID`
+   fix) — if yes, confirm an ingestion attempt fails with a clear GCP error (not a
+   hang/panic); if no, document boot-blocking per §2.4's fallback (no `start.sh` change
+   needed either way, §2.4).
 10. transcribe start API check (carried over, was blocked by F4 last time): with a JWT
     from step 6, a transcribe-start request returns the `STT_NOT_CONFIGURED` structured
     error.
+11. **Image-pull accounting (carried over from the predecessor design's Phase C, Round-1
+    caught it dropped)**: confirm pulls succeed for ALL tracked images at the new pin;
+    any fallback-pin exceptions the generator kept (and the two seeded entries
+    specifically, §2.1) are enumerated in the regenerated lock's warnings and called out
+    in the PR description — not buried.
+12. **call-manager ARI event check (carried over, Round-1 caught it dropped)**: beyond
+    RestartCount, confirm call-manager's log shows it consuming from the
+    asterisk-event-all queue after the 5-month image jump — same criterion as the
+    predecessor design's Phase A/C.
 
 Deferred (unchanged): sudo-gated DNS/network/SIP/browser-UI verification remains
 VOIP-1274.
@@ -257,16 +331,22 @@ VOIP-1274.
   unchanged pins this cycle.
 - No automated "did the version bump introduce a new latent subscribe/config bug" checker
   (still future work; this cycle's §3 is the manual equivalent).
+- No upgrade-flow reordering (stop-managers → migrate → up) to close the mixed-schema
+  window described in §1.6 — recorded follow-up, deliberate non-goal this cycle (§1.6
+  explains the reasoning).
 
 ## 5. Risks
 
-- **R1 — destructive migration (§1.6).** `registrar_directs` is dropped. Mitigations: the
-  migration itself backfills before dropping; `scripts/update.sh` takes a pre-upgrade
-  backup (existing behavior, verified in PR #8); §3 step 3 proves the migration on a fresh
-  DB, and the all-images-move-together model means no mixed-schema window inside the
-  sandbox. Residual risk: an existing customer install with data in `registrar_directs`
-  relies on the backfill's correctness — that backfill is monorepo-authored and already
-  runs in production; the sandbox adds no novel path.
+- **R1 — destructive migration (§1.6, which carries the full honest accounting).**
+  `registrar_directs` is dropped. Summary of §1.6's analysis: the backfill covers
+  `registrar_extensions` only and skips soft-deleted rows; fresh installs (§3's path) have
+  no mixed-schema window, but the existing-install upgrade path
+  (`voipbin update all` → `_upgrade_pinned`: backup → pull → migrate → up) runs old
+  containers against the new schema between migrate and up, and MySQL's non-transactional
+  DDL means a mid-migration failure leaves a half-migrated schema. The pre-upgrade backup
+  (automatic in `_upgrade_pinned`) is the real safety net for every one of those cases;
+  the backfill is monorepo-authored and already ran in production; the sandbox adds no
+  novel path.
 - **R2 — 5-month image jump for ~29 services, breadth of untested surface.** §3 exercises
   boot, migration, bootstrap flow, and the specific regressions found; it does not
   exercise real SIP/call flow (VOIP-1274) nor every service's business logic. Same honest
