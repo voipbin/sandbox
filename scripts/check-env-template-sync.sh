@@ -43,10 +43,14 @@ INIT_SCRIPTS=(
 # 2. dead — docker-compose.yml sets RTPENGINE_INTERFACE unconditionally from
 #    RTPENGINE_EXTERNAL_IP, so setting it in .env has no effect. Documented so a
 #    curious operator understands why, not because it is overridable.
-# 3. aspirational — a real consumer exists (bin-timeline-manager reads
-#    CLICKHOUSE_ADDRESS) but there is no local service to point it at, so there
-#    is no sensible generated default. CLICKHOUSE_DATABASE is written by init.sh
-#    today and so is not listed here.
+#
+# Category 3 ("aspirational") used to hold CLICKHOUSE_ADDRESS, on the grounds
+# that a real consumer existed (bin-timeline-manager) but no local service to
+# point it at. docker-compose.yml now runs a `clickhouse` service and init.sh
+# writes CLICKHOUSE_ADDRESS=clickhouse:9000, so that reasoning no longer holds
+# and the entry has been removed rather than left inert. The category is empty
+# today; re-add it with a fresh rationale if a genuinely aspirational variable
+# shows up again.
 TEMPLATE_ONLY_VARS=(
     # compose-internal-default
     DB_HOST
@@ -62,8 +66,6 @@ TEMPLATE_ONLY_VARS=(
     RTPENGINE_LISTEN_HTTP
     # dead
     RTPENGINE_INTERFACE
-    # aspirational
-    CLICKHOUSE_ADDRESS
 )
 
 is_excluded() {

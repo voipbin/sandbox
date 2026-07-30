@@ -36,6 +36,17 @@
 # target keep their CURRENT pinned digest, with a warning on stderr. The script
 # never pins to something newer than the target and never drops an entry.
 #
+# Seeded (new) entries: onboarding a service that the lock has never tracked is
+# done by hand-adding its image key to versions.lock's "images" map with the
+# literal digest value "NEW" (see SEEDED_DIGEST_MARKER below). Such an entry has
+# NO current pin to fall back to, so the fallback path above is a trap for it: a
+# placeholder that failed to resolve would be written back as a legitimate-looking
+# pin, propagate into docker-compose.yml via scripts/sync-compose-images.sh, and
+# only fail at `docker compose pull` on a customer machine. Therefore a seeded
+# entry that cannot be resolved at the target commit is a HARD ERROR: the script
+# exits non-zero and versions.lock is NOT written. Established entries are
+# unaffected and keep the fallback behavior described above.
+#
 # Idempotency: two runs against the same target with no new commits produce a
 # byte-identical versions.lock apart from the "generated" timestamp.
 #
@@ -56,6 +67,10 @@ MONOREPO_PATH="${MONOREPO_PATH:-$HOME/gitvoipbin/monorepo}"
 MAX_LOOKBACK="${MAX_LOOKBACK:-200}"
 OUTPUT_FILE="${OUTPUT_FILE:-$LOCK_FILE}"
 TARGET_REF="${1:-main}"
+
+# Digest placeholder marking an image as newly seeded (never pinned before).
+# See the "Seeded (new) entries" note in the header.
+SEEDED_DIGEST_MARKER="NEW"
 
 usage() {
     sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -107,18 +122,27 @@ preflight() {
     # published" — every image silently falls back to its current pin and the
     # script exits 0, looking like a successful no-op run instead of a broken
     # registry connection.
+    #
+    # Seeded entries (digest == SEEDED_DIGEST_MARKER) are SKIPPED when choosing
+    # the probe image: they have no real pin yet, so probing one would fail with
+    # a misleading "registry unreachable" message.
     local probe_image probe_digest
+    # LOCK_FILE passed via argv, not string-interpolated into the Python source,
+    # matching the safer pattern the write step below already uses.
     probe_image=$(python3 -c "
-import json
-with open('$LOCK_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     lock = json.load(f)
 images = lock.get('images', {})
-if images:
-    name = sorted(images)[0]
-    print(f'{name}@{images[name]}')
-")
+for name in sorted(images):
+    if images[name].startswith('sha256:'):
+        print(f'{name}@{images[name]}')
+        break
+" "$LOCK_FILE")
     if [[ -z "$probe_image" ]]; then
-        log_error "versions.lock has no images to probe registry access with"
+        log_error "versions.lock has no already-pinned image to probe registry access with"
+        log_error "(every entry is a seeded '$SEEDED_DIGEST_MARKER' placeholder — at least one"
+        log_error "established pin is required for the registry reachability check)"
         exit 1
     fi
     if ! probe_digest=$(resolve_digest "$probe_image"); then
@@ -128,7 +152,7 @@ if images:
         log_error "(try 'docker login'), not that the image doesn't exist."
         exit 1
     fi
-    if [[ "$probe_digest" != "$(python3 -c "print('$probe_image'.split('@', 1)[1])")" ]]; then
+    if [[ "$probe_digest" != "${probe_image##*@}" ]]; then
         log_error "Registry probe returned an unexpected digest for $probe_image — refusing to proceed"
         exit 1
     fi
@@ -193,16 +217,35 @@ main() {
 
     local images
     images=$(python3 -c "
-import json
-with open('$LOCK_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     lock = json.load(f)
 for name in sorted(lock.get('images', {})):
     print(name)
-")
+" "$LOCK_FILE")
 
     if [[ -z "$images" ]]; then
         log_error "No images tracked in $LOCK_FILE — nothing to regenerate"
         exit 1
+    fi
+
+    # Newly seeded entries: no current pin exists, so failing to resolve one is
+    # fatal rather than a fallback. See the header's "Seeded (new) entries" note.
+    local seeded
+    seeded=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    lock = json.load(f)
+for name, digest in sorted(lock.get('images', {}).items()):
+    if digest == sys.argv[2]:
+        print(name)
+" "$LOCK_FILE" "$SEEDED_DIGEST_MARKER")
+    if [[ -n "$seeded" ]]; then
+        log_info "Seeded (new) images, resolution failure is fatal for these:"
+        while IFS= read -r image; do
+            [[ -n "$image" ]] && log_info "  $image"
+        done <<< "$seeded"
+        echo ""
     fi
 
     # Resolved pins are collected as "image<TAB>tag<TAB>digest" lines. Images
@@ -215,6 +258,21 @@ for name in sorted(lock.get('images', {})):
 
     local total=0 resolved=0 fallback=0
     local image service_dir candidates sha digest
+
+    # True if $1 is a seeded (never-before-pinned) image.
+    is_seeded() {
+        [[ -n "$seeded" ]] && grep -qxF "$1" <<< "$seeded"
+    }
+
+    # Abort the whole run: a seeded entry has no pin to fall back to.
+    fail_seeded() {
+        log_error "$1: $2"
+        log_error "A seeded image has no current pin to fall back to, so this cannot be"
+        log_error "carried forward. $OUTPUT_FILE was NOT written."
+        log_error "Either pick a target commit where the image was published, or remove the"
+        log_error "seeded entry from $LOCK_FILE."
+        exit 1
+    }
 
     while IFS= read -r image; do
         [[ -n "$image" ]] || continue
@@ -231,6 +289,9 @@ for name in sorted(lock.get('images', {})):
         # built from the monorepo" and skip a service that git log could
         # actually resolve correctly.
         if ! git -C "$MONOREPO_PATH" cat-file -e "$target_commit:$service_dir" 2> /dev/null; then
+            if is_seeded "$image"; then
+                fail_seeded "$image" "no '$service_dir/' directory at $target_commit"
+            fi
             log_warn "$image: no '$service_dir/' directory at $target_commit (built from a separate repo) — keeping current pin"
             fallback=$((fallback + 1))
             continue
@@ -245,6 +306,9 @@ for name in sorted(lock.get('images', {})):
             "$target_commit" -- "$service_dir")
 
         if [[ -z "$candidates" ]]; then
+            if is_seeded "$image"; then
+                fail_seeded "$image" "no commit touching '$service_dir/' at or before $target_commit"
+            fi
             log_warn "$image: no commit touching '$service_dir/' at or before $target_commit — keeping current pin"
             fallback=$((fallback + 1))
             continue
@@ -263,6 +327,9 @@ for name in sorted(lock.get('images', {})):
         done <<< "$candidates"
 
         if [[ -z "$digest" ]]; then
+            if is_seeded "$image"; then
+                fail_seeded "$image" "no registry tag found in the last $MAX_LOOKBACK commits touching '$service_dir/'"
+            fi
             log_warn "$image: no registry tag found in the last $MAX_LOOKBACK commits touching '$service_dir/' — keeping current pin"
             fallback=$((fallback + 1))
         fi
@@ -305,6 +372,14 @@ for name in sorted(old_images):
         # Fallback: carry the current pin forward untouched (warned on stderr
         # by the caller). Never newer than the target, never dropped.
         tag, digest = old_tags.get(name, ""), old_images[name]
+    # Belt-and-braces: the bash loop already hard-errors on an unresolved seeded
+    # entry, so reaching here with a non-digest value would be a logic bug. Fail
+    # rather than write a lock that looks pinned but isn't.
+    if not digest.startswith("sha256:"):
+        sys.exit(
+            f"refusing to write {out_path}: {name} has no resolved digest "
+            f"(value {digest!r})"
+        )
     images[name] = digest
     tags[name] = tag
 
@@ -338,6 +413,11 @@ PYEOF
     if [[ $fallback -gt 0 ]]; then
         log_warn "Review the warnings above before committing $OUTPUT_FILE"
     fi
+
+    echo ""
+    log_warn "docker-compose.yml pins image digests independently of this lock."
+    log_warn "Run ./scripts/sync-compose-images.sh to propagate the new pins, or the"
+    log_warn "regenerated lock has no effect on what actually runs."
 }
 
 main "$@"

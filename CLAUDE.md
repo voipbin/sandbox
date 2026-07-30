@@ -365,6 +365,21 @@ sudo ./scripts/setup-dns.sh --regenerate
 | `redis` | voipbin-redis | - | Cache and session storage |
 | `rabbitmq` | (no container_name — use `docker compose ps rabbitmq`) | 5672, 15672 | Message broker with delayed exchange plugin |
 | `coredns` | voipbin-dns | 53 | DNS server (*.voipbin.test + forwarding) |
+| `postgres` | voipbin-postgres | - (not published) | PostgreSQL + pgvector, rag-manager's vector store |
+| `clickhouse` | voipbin-clickhouse | - (not published) | ClickHouse, timeline-manager's analytics backend |
+
+`postgres` and `clickhouse` are deliberately not published to the host: each has
+a single in-stack consumer, so keeping them internal shrinks the surface. Debug
+them with `docker exec` instead:
+
+```bash
+docker exec -it voipbin-postgres psql -U voipbin -d rag
+docker exec -it voipbin-clickhouse clickhouse-client
+```
+
+Both services run their consumer's migrations at that consumer's startup
+(rag-manager and timeline-manager each embed golang-migrate), so there is no
+sandbox-side migration step for either.
 
 ### VoIP Stack
 
@@ -391,8 +406,18 @@ Key services:
 - `billing-manager` - Usage tracking
 - `registrar-manager` - SIP registration
 - `contact-manager` - Contact management
-- `rag-manager` - RAG (Retrieval Augmented Generation) knowledge base
-- `timeline-manager` - Call timeline analytics (requires ClickHouse)
+- `direct-manager` - Direct (per-entity addressable endpoint) records; agent-manager
+  RPCs it during agent creation, so admin-agent bootstrap depends on it
+- `webchat-manager` - Webchat widgets and sessions (the user-facing websocket
+  lives in api-manager)
+- `rag-manager` - RAG (Retrieval Augmented Generation) knowledge base, backed by
+  the local `postgres` (pgvector) service. **It runs with the placeholder GCP
+  values init.sh writes, but RAG ingestion/query requires a real GCP project and
+  service-account key** — embedding calls fail at Vertex AI / GCS until you
+  replace `GCP_PROJECT_ID` / `GCP_REGION` / `GCP_BUCKET_NAME_MEDIA` and
+  `GOOGLE_APPLICATION_CREDENTIALS` in `.env`
+- `timeline-manager` - Call timeline analytics, backed by the local `clickhouse`
+  service
 
 ### Frontend
 
@@ -625,6 +650,8 @@ db, redis, rabbitmq (infrastructure)
 | Volume | Purpose |
 |--------|---------|
 | `db_data` | MySQL data persistence |
+| `postgres_data` | PostgreSQL/pgvector data persistence (rag-manager) |
+| `clickhouse_data` | ClickHouse data persistence (timeline-manager) |
 | `asterisk-call-recording` | Call recordings |
 
 ## Testing Extension-to-Extension Calls

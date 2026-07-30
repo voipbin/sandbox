@@ -85,6 +85,74 @@ services:
       retries: 5
       start_period: 30s
 
+  # PostgreSQL + pgvector - rag-manager's vector store.
+  #
+  # rag-manager runs its own golang-migrate at startup and its first migration
+  # opens with `CREATE EXTENSION IF NOT EXISTS vector`, which needs superuser —
+  # POSTGRES_USER is the initdb superuser, so connecting as `voipbin` satisfies
+  # that. No sandbox-side migration tooling is needed.
+  #
+  # Deliberately NOT published to the host, unlike db/redis/rabbitmq: those three
+  # predate this stack and operators exec/debug against them, whereas postgres is
+  # a single-consumer backing store for rag-manager and keeping it unpublished
+  # shrinks the surface. For troubleshooting use the docker exec form:
+  #   docker exec -it voipbin-postgres psql -U voipbin -d rag
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+    container_name: voipbin-postgres
+    restart: always
+    logging: *default-logging
+    environment:
+      - POSTGRES_USER=voipbin
+      - POSTGRES_PASSWORD=voipbin
+      - POSTGRES_DB=rag
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voipbin -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ClickHouse - timeline-manager's analytics backend (its only consumer).
+  #
+  # timeline-manager runs its own migrations at boot and a migration failure is
+  # fatal, so its depends_on gate on this service is required, not cosmetic.
+  # Native protocol on 9000 (clickhouse-go/v2); 8123 is the HTTP port used only
+  # by the healthcheck here. Not published to the host, same rationale as
+  # postgres above.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8@sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b
+    container_name: voipbin-clickhouse
+    restart: always
+    logging: *default-logging
+    environment:
+      # Without this, the official image's entrypoint writes a users.d override
+      # restricting the `default` user to localhost, and timeline-manager's
+      # cross-container connection is rejected with code 516 (auth failed) -
+      # fatal at its boot-time migration, so it crash-loops. timeline-manager
+      # builds its DSN from CLICKHOUSE_ADDRESS alone (no user/password config
+      # exists in that service), so a passwordless network-accessible `default`
+      # user is the only workable shape. Acceptable here: the port is not
+      # published to the host and the service is compose-network-internal,
+      # matching the sandbox's existing local-dev credential posture.
+      - CLICKHOUSE_SKIP_USER_SETUP=1
+    # ClickHouse wants a raised nofile limit; without this it warns loudly and
+    # caps its connection handling on hosts with a low default.
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   # CoreDNS - Wildcard DNS for *.voipbin.test
   # Resolves all voipbin.test domains to the host IP
   # Also forwards other queries to upstream DNS (8.8.8.8)
@@ -262,7 +330,7 @@ services:
   # cmd_restart, which enforces this pairing automatically). Never restart
   # asterisk-call in isolation.
   asterisk-call-proxy:
-    image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
+    image: voipbin/voip-asterisk-proxy@sha256:915d57bce9e239c4f7488e914e30f05acb167152f958752896d02d3425ddf67d
     logging: *default-logging
     restart: unless-stopped
     network_mode: "service:asterisk-call"
@@ -330,7 +398,7 @@ services:
   # network_mode: "service:". See the identical note on asterisk-call-proxy
   # above — always restart together with asterisk-conference, never alone.
   asterisk-conference-proxy:
-    image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
+    image: voipbin/voip-asterisk-proxy@sha256:915d57bce9e239c4f7488e914e30f05acb167152f958752896d02d3425ddf67d
     logging: *default-logging
     restart: unless-stopped
     network_mode: "service:asterisk-conference"
@@ -401,7 +469,7 @@ services:
   # network_mode: "service:". See the identical note on asterisk-call-proxy
   # above — always restart together with asterisk-registrar, never alone.
   asterisk-registrar-proxy:
-    image: voipbin/voip-asterisk-proxy@sha256:508203623d0fd29e118b62afcecbdf6e49156882c5ef7fc9b9ff38b3dd7619e0
+    image: voipbin/voip-asterisk-proxy@sha256:915d57bce9e239c4f7488e914e30f05acb167152f958752896d02d3425ddf67d
     logging: *default-logging
     restart: unless-stopped
     network_mode: "service:asterisk-registrar"
@@ -437,7 +505,7 @@ services:
   # ===========================================================================
 
   agent-manager:
-    image: voipbin/bin-agent-manager@sha256:3df69949cd56bbe4460adc83e61c21ae673342ae814c9a672dce24ce90032522
+    image: voipbin/bin-agent-manager@sha256:e8ad4a92080b9066c92cee0b37e8d6523e7eb0c0d9e91a56462daad989eb577a
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -464,7 +532,7 @@ services:
     command: ./agent-manager
 
   ai-manager:
-    image: voipbin/bin-ai-manager@sha256:cd3f8a69b3f18135e60dd2b16b3b3fd9c4b293e3b51a989f178880ab2fbb5956
+    image: voipbin/bin-ai-manager@sha256:103790280a5325cee19b03cb0a2c1e9eced7fe344aef0251c3602e4e052da788
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -491,7 +559,7 @@ services:
     command: ./ai-manager
 
   api-manager:
-    image: voipbin/bin-api-manager@sha256:587aac44bd298bc65d5c277027cf7748ffbcdd24ed9b9cd15c0e62e1db94d413
+    image: voipbin/bin-api-manager@sha256:78d7613ff7dff2d68f68ed03d61324b737457420a34c3b9c579427152e133451
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -530,7 +598,7 @@ services:
     command: ./api-manager
 
   billing-manager:
-    image: voipbin/bin-billing-manager@sha256:61d0673623ef0c8cabab13d4af76df12313f5992f8668b35d02bdc4ad115d55b
+    image: voipbin/bin-billing-manager@sha256:2a3b6beefc6dbc12ae9b8e2d6d5d8b193e63ca682b0f5de212f185a2f22e65ff
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -557,7 +625,7 @@ services:
     command: ./billing-manager
 
   call-manager:
-    image: voipbin/bin-call-manager@sha256:57aca652d1332b1aac7e0fd729c1cbf327a027f2a19e5795defffd2200ae1953
+    image: voipbin/bin-call-manager@sha256:3bd42db5afd4d731e69bee32618c192269860879f67d9ffb0c0243d3c78be662
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -586,14 +654,13 @@ services:
       # Project configuration (from common-handler/pkg/projectconfig)
       - PROJECT_BASE_DOMAIN=${BASE_DOMAIN:-voipbin.test}
       - PROJECT_BUCKET_NAME=${GCP_BUCKET_NAME_MEDIA:-voipbin-voip-media-bucket}
-      - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-}
       - HOMER_API_ADDRESS=${HOMER_API_ADDRESS:-}
       - HOMER_AUTH_TOKEN=${HOMER_AUTH_TOKEN:-}
       - HOMER_WHITELIST=${HOMER_WHITELIST:-}
     command: ./call-manager
 
   campaign-manager:
-    image: voipbin/bin-campaign-manager@sha256:199de72322350b75b71fc1d7187b2dc0974a9e45d32120ba3d8c29af136cb825
+    image: voipbin/bin-campaign-manager@sha256:04fab6f1537c91521532d5c441550904da404eae7536011f4750d363e398b2c3
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -620,7 +687,7 @@ services:
     command: ./campaign-manager
 
   contact-manager:
-    image: voipbin/bin-contact-manager@sha256:7e81275b1c5e52ee722aeb27478759c5894d7aa0ec529670da661ab16ddc5405
+    image: voipbin/bin-contact-manager@sha256:20e3db36791b230cc1ae45492c70968ffb99eab79aa63aca0a81ca0e5675ace2
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -646,7 +713,7 @@ services:
     command: ./contact-manager
 
   conference-manager:
-    image: voipbin/bin-conference-manager@sha256:2346cf885f5a3a3950c00bba35992adf48115d5052994b939a5492156297e1ac
+    image: voipbin/bin-conference-manager@sha256:55cecdaf5444411d4616fd329fdd2236bbcbe8947362a1e6d08504aa488a5f03
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -673,7 +740,7 @@ services:
     command: ./conference-manager
 
   conversation-manager:
-    image: voipbin/bin-conversation-manager@sha256:11a395970da11a563d04176ea3b7ce0005d8ee5edcff9f0d37e36d5675c6efb8
+    image: voipbin/bin-conversation-manager@sha256:dda940aff4806729d3369179efb3a231eab98235079009dba9280530d04e218a
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -700,7 +767,7 @@ services:
     command: ./conversation-manager
 
   customer-manager:
-    image: voipbin/bin-customer-manager@sha256:0f3e877b128d252280707c8c25c4d847dfcf7f36a753cf2827ce08dc874be965
+    image: voipbin/bin-customer-manager@sha256:5bb2ca86c727b8d3973961d6c0f9b48bd7c65b9797c1af6b4e55951d9648a00e
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -727,8 +794,40 @@ services:
       - EMAIL_VERIFY_BASE_URL=${EMAIL_VERIFY_BASE_URL:-https://api.voipbin.test:8443}
     command: ./customer-manager
 
+  # direct-manager: pure RabbitMQ-RPC + MySQL + Redis service, no HTTP listener.
+  # agent-manager RPCs bin-manager.direct-manager.request during agent creation,
+  # so without this the admin-agent bootstrap (setup_test_customer.sh) times out.
+  # container_name is pinned because the image ships a direct-control CLI that
+  # ops scripts docker-exec into, same precedent as voipbin-customer-mgr.
+  direct-manager:
+    image: voipbin/bin-direct-manager@sha256:0989576dc3d1b834bb28c118f7cc827bdd2c3be388466391741699e086388e18
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    container_name: voipbin-direct-mgr
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./direct-manager
+
   email-manager:
-    image: voipbin/bin-email-manager@sha256:c70969931a6ca8d456b6a9a08a7fd74d1bfb0476b6643172d55926ee2f93d65e
+    image: voipbin/bin-email-manager@sha256:78da882731a95bf67356d03aff4106eb5df815bf8d6ce4a62147b71829ae9d2c
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -756,7 +855,7 @@ services:
     command: ./email-manager
 
   flow-manager:
-    image: voipbin/bin-flow-manager@sha256:f70fdf27d19d10215058ee6614f6fb2aaf324919a7af73945891cf92e53ba132
+    image: voipbin/bin-flow-manager@sha256:5135fc17e329582d813bb9ca1a91218f51c0c8baaab5519aaebd2a8b3ff8208a
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -780,11 +879,10 @@ services:
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
-      - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-}
     command: ./flow-manager
 
   hook-manager:
-    image: voipbin/bin-hook-manager@sha256:8031714d6557a3055473a9da3087e617841d8a47272fb143077dca387b50ef7e
+    image: voipbin/bin-hook-manager@sha256:415da7a9918609931b631cf28f902dfb1fc1074e7144aca8a2d4bd35f831b581
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -813,7 +911,7 @@ services:
     command: ./hook-manager
 
   message-manager:
-    image: voipbin/bin-message-manager@sha256:e27e0458b7895f6f5144d7ff197bf6996024ed41ca42b8f8caabe99b7f5420e4
+    image: voipbin/bin-message-manager@sha256:ec71646817fef2776c25cf8ada50bd3fd075a538383c802f78c6ba9d9f81e472
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -841,7 +939,7 @@ services:
     command: ./message-manager
 
   number-manager:
-    image: voipbin/bin-number-manager@sha256:43a9767443696841c8e0b3770ebdfa253ade1eaabb449217b06492a681a59e11
+    image: voipbin/bin-number-manager@sha256:b620d8777bfe75c0533d88d1996dab5031863076c86ed7f7d5e5938c924cb7eb
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -873,7 +971,7 @@ services:
     command: ./number-manager
 
   outdial-manager:
-    image: voipbin/bin-outdial-manager@sha256:372878a9d04a86e90d8a91f343861d9b7473cf723328e524ec325e25f49edf99
+    image: voipbin/bin-outdial-manager@sha256:477996bea4b3c3eaaa385bd597c6919c987ec3cf594ccc4ce7b5eb856f32182a
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -900,7 +998,7 @@ services:
     command: ./outdial-manager
 
   pipecat-manager:
-    image: voipbin/bin-pipecat-manager@sha256:53598e8189d37a09756c7e376625f0940e0c9958d4ac1bfc39245651192c8af1
+    image: voipbin/bin-pipecat-manager@sha256:d9c63b41a95c0e04da10ee9edda47bb380e97025cb8ba4471433daaad973c673
     logging: *default-logging
     healthcheck:
       # python image (Debian trixie) ships NEITHER wget nor curl - use python3.
@@ -933,7 +1031,7 @@ services:
     command: ./pipecat-manager
 
   queue-manager:
-    image: voipbin/bin-queue-manager@sha256:b324f52e59c2de8bab298d2c4223baf681c63036bb69e5f6083a7a58ebaf44e7
+    image: voipbin/bin-queue-manager@sha256:f2947cdb33d6381c47668dcad1d9c6fe068643f2bf7fa3638cba3b47f69ef878
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -960,7 +1058,7 @@ services:
     command: ./queue-manager
 
   rag-manager:
-    image: voipbin/bin-rag-manager@sha256:55c5c189f6a5f7cb4b4afb81e8cf695d1b49a6f1045de2c55fedf7b9fe7788ae
+    image: voipbin/bin-rag-manager@sha256:3c6ef59fc40dfa116a93aec91dfcfb4c8215f43d652c3dbac04359645f024037
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -972,16 +1070,29 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # rag-manager was re-founded upstream: OpenAI embeddings + GCS .gob blobs ->
+    # Vertex AI embeddings + PostgreSQL/pgvector. Its Validate() hard-fails at
+    # boot on an empty RABBITMQ_ADDRESS, GCP_PROJECT_ID, GCP_REGION or
+    # POSTGRESQL_DSN, which is why init.sh writes non-empty placeholders for the
+    # GCP trio AND all three carry non-empty compose fallbacks below: an
+    # existing install upgrading via `voipbin update all` keeps its old .env
+    # (which has GCP_PROJECT_ID= / GCP_BUCKET_NAME_MEDIA= as empty strings and
+    # no GCP_REGION at all), and compose's :- operator substitutes the fallback
+    # for empty-or-unset either way. These fallbacks are scoped to this service
+    # block only - other consumers of the same vars keep their own semantics.
+    # Boot vs. function: with placeholder project/region/bucket and the
+    # dummy credential the service starts, but actual ingestion/query calls fail
+    # at Vertex AI / GCS until a real GCP project and service-account key are
+    # supplied.
     environment:
       - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_EMBEDDING_MODEL=${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
-      - RAG_LLM_MODEL=${RAG_LLM_MODEL:-gpt-4o}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-sandbox-placeholder}
+      - GCP_REGION=${GCP_REGION:-us-central1}
+      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-sandbox-placeholder-media}
+      - POSTGRESQL_DSN=postgres://voipbin:voipbin@postgres:5432/rag?sslmode=disable
       - RAG_TOP_K=${RAG_TOP_K:-5}
-      - RAG_CHUNK_MAX_TOKENS=${RAG_CHUNK_MAX_TOKENS:-800}
-      - GCS_BUCKET=${GCS_BUCKET:-}
-      - GCS_EMBEDDINGS_PATH=${GCS_EMBEDDINGS_PATH:-rag/embeddings.gob}
-      - RAG_DOCS_BASE_PATH=${RAG_DOCS_BASE_PATH:-/app/docs}
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
@@ -990,7 +1101,7 @@ services:
     command: ./rag-manager
 
   registrar-manager:
-    image: voipbin/bin-registrar-manager@sha256:310b19f3c0262a0f12ce4f48c07fecad3e6b598ce9604d7369823dce753fea46
+    image: voipbin/bin-registrar-manager@sha256:a7db3b1898f338b95a1a61bdcec16c7f81ac9d3859374d1f15595ef8c45fef3f
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1020,7 +1131,7 @@ services:
     command: ./registrar-manager
 
   route-manager:
-    image: voipbin/bin-route-manager@sha256:e832bb3e44de354717faa433fad0297d18451b3ed197788ce9b91b90fa90a14c
+    image: voipbin/bin-route-manager@sha256:8d0266731cec209927757e2cdd27c3ed7b840e0f294334a68f1c1ffe661e0c35
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1053,7 +1164,7 @@ services:
   # server-production-mode-design.md section 3.6.
 
   storage-manager:
-    image: voipbin/bin-storage-manager@sha256:eb7c22d70f6f6b8edf5f0ba47ae36f862c0cec0124c0b72f8da67509ebfebffb
+    image: voipbin/bin-storage-manager@sha256:e6d7eb76e09b48c7be8712b98554d75e3ad034fecf7118456e7bb462863cc6d5
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1081,10 +1192,20 @@ services:
       - GCP_BUCKET_NAME_TMP=${GCP_BUCKET_NAME_TMP:-}
       - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-}
       - JWT_KEY=${JWT_KEY:-${STORAGE_JWT_KEY:-}}
+      # storage-manager makes a missing GOOGLE_APPLICATION_CREDENTIALS fatal at
+      # boot (monorepo 1f9002953 removed the workload-identity fallback), so the
+      # credential env line AND the mount are both required for it to start here.
+      # The dummy key satisfies google.JWTConfigFromJSON (which only unmarshals
+      # and checks type == service_account); it does NOT satisfy actual signing,
+      # so signed download URLs and file Create stay non-functional until a real
+      # service-account key is supplied.
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
     command: ./storage-manager
 
   tag-manager:
-    image: voipbin/bin-tag-manager@sha256:f8815abc77a8a9b26f3a00f571a1f4ebe55d13010e9115c943992f29dababfbf
+    image: voipbin/bin-tag-manager@sha256:2bdfccf05364bffdbefde6245c9e4497e6221cb39a514f5dd34ae99d308a5186
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1111,7 +1232,7 @@ services:
     command: ./tag-manager
 
   talk-manager:
-    image: voipbin/bin-talk-manager@sha256:b0a8aec2a891856371a3c9e49880285bb41098b6ba16fd7544591a107cd7e750
+    image: voipbin/bin-talk-manager@sha256:432a81af548a707fc07611aeb90d61850cc732b174ebcf8c90de20125aef4c35
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1138,7 +1259,7 @@ services:
     command: ./talk-manager
 
   timeline-manager:
-    image: voipbin/bin-timeline-manager@sha256:262870fffefcba8e8ff930a88403fadc42d77657ea757565d5cf8bb5478461eb
+    image: voipbin/bin-timeline-manager@sha256:510a05c600325232186851eca22ed5979d323d94d92f8f2fcf8314c836ab2b4f
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1147,12 +1268,19 @@ services:
       retries: 3
       start_period: 20s
     restart: always
+    # The clickhouse gate is REQUIRED, not cosmetic: with CLICKHOUSE_ADDRESS set,
+    # timeline-manager always runs its migrations at boot and a migration failure
+    # is fatal (os.Exit(1)). Racing ClickHouse to readiness would make it exit
+    # non-zero on every fresh `up` and only recover via restart: always.
     depends_on:
       rabbitmq:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     environment:
       - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
-      - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-}
+      # 9000 is ClickHouse's native protocol port (clickhouse-go/v2), not HTTP.
+      - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}
       - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
       - HOMER_API_ADDRESS=${HOMER_API_ADDRESS:-}
       - HOMER_AUTH_TOKEN=${HOMER_AUTH_TOKEN:-}
@@ -1161,7 +1289,7 @@ services:
     command: ./timeline-manager
 
   transcribe-manager:
-    image: voipbin/bin-transcribe-manager@sha256:570d842dbcfb425a058d0ea6bab14b8171718df9b23470ef4b3a7f0b95c67f99
+    image: voipbin/bin-transcribe-manager@sha256:0b52887f5a8da61887a9b75db98a2758c3b4cf34edc3f47a2a06bcb88a31e2dc
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1193,7 +1321,7 @@ services:
       - ${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}:/tmp/google_service_account.json:ro
 
   transfer-manager:
-    image: voipbin/bin-transfer-manager@sha256:e20de2d414622bc39ded50ba5e15f6854b87469f0467ef8862dfb9f8a8435ae3
+    image: voipbin/bin-transfer-manager@sha256:431036a97e6e21d18e5f80f14cc3610e7f44e047b0c67ea5e3c443098f0a2c10
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1220,7 +1348,7 @@ services:
     command: ./transfer-manager
 
   tts-manager:
-    image: voipbin/bin-tts-manager@sha256:ba0b7c9516ac2d24a3d904341bcc2ad30cc7f8cce85c3269e817c892d8e3304e
+    image: voipbin/bin-tts-manager@sha256:2cc11f846390a1d8bbef33e499d8eb4d631e1ae77537b15d9fba6158164d9a85
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1249,8 +1377,39 @@ services:
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
     command: ./tts-manager
 
+  # webchat-manager: pure RabbitMQ-RPC + MySQL + Redis service. The user-facing
+  # webchat websocket lives in api-manager, not here, so no port is published and
+  # no container_name is pinned (it ships no CLI for ops scripts to exec into).
+  # Its widgets carry a direct_hash column, so it depends on direct-manager's
+  # schema (supplied by the dbscheme pin) rather than on the container.
+  webchat-manager:
+    image: voipbin/bin-webchat-manager@sha256:1c7c72725e285bd7e441242be411cc8e286d37faf0688ae1247e74619fa0361d
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_DATABASE=1
+      - PROMETHEUS_ENDPOINT=/metrics
+      - PROMETHEUS_LISTEN_ADDRESS=:2112
+    command: ./webchat-manager
+
   webhook-manager:
-    image: voipbin/bin-webhook-manager@sha256:cfe75e29b7d82bc43c81883401ca545e053efbd680ca51a9e74328ae26ac7c45
+    image: voipbin/bin-webhook-manager@sha256:dacb4137b0c767685a2e40ada6d5775dbbf04a2196e157262a33a53501a5aedb
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1372,6 +1531,8 @@ volumes:
   redis_data:
   rabbitmq_data:
   db_data:
+  postgres_data:
+  clickhouse_data:
   asterisk-call-recording:
   asterisk-conf-recording:
   kamailio-logs:
