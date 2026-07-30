@@ -217,12 +217,12 @@ main() {
 
     local images
     images=$(python3 -c "
-import json
-with open('$LOCK_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     lock = json.load(f)
 for name in sorted(lock.get('images', {})):
     print(name)
-")
+" "$LOCK_FILE")
 
     if [[ -z "$images" ]]; then
         log_error "No images tracked in $LOCK_FILE — nothing to regenerate"
@@ -233,13 +233,13 @@ for name in sorted(lock.get('images', {})):
     # fatal rather than a fallback. See the header's "Seeded (new) entries" note.
     local seeded
     seeded=$(python3 -c "
-import json
-with open('$LOCK_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     lock = json.load(f)
 for name, digest in sorted(lock.get('images', {}).items()):
-    if digest == '$SEEDED_DIGEST_MARKER':
+    if digest == sys.argv[2]:
         print(name)
-")
+" "$LOCK_FILE" "$SEEDED_DIGEST_MARKER")
     if [[ -n "$seeded" ]]; then
         log_info "Seeded (new) images, resolution failure is fatal for these:"
         while IFS= read -r image; do
