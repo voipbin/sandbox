@@ -1,6 +1,6 @@
 # VoIPBin Sandbox — Full Service Parity With Monorepo (versions.lock Advance, direct/webchat Onboarding, PostgreSQL+pgvector, ClickHouse, storage-manager Fix, compose↔lock Sync)
 
-Status: DRAFT (Design Review Round 5, addressing Round 4 REQUEST_CHANGES)
+Status: DRAFT (Design Review Round 6, incorporating Round 5 APPROVE non-blocking nits)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-31
 Repo: sandbox (one monorepo-side fix, §2.6, lands as its own monorepo PR; everything else lands here)
@@ -339,8 +339,12 @@ decided, not left to the implementer)**: `fileHandler.Create` currently calls
 moved (`:70`), so a naive error return both fails the primary write path and orphans the
 object. Decision: **persist with an empty `URIDownload`** — Create succeeds (upload and
 record are real), and the download URI is populated lazily by `DownloadURIRefresh` when a
-signing key becomes available; until then, download-URI reads surface the structured
-`SIGNING_NOT_CONFIGURED` error. This keeps the primary write path alive in keyless
+signing key becomes available; until then, download-URI reads surface an error — the
+structured `SIGNING_NOT_CONFIGURED` in the keyless case, or the wrapped sign-time error
+in the invalid-key case (the structured error is scoped to the nil-guard; sign-time
+failures propagate as-is on read paths). Implementation note: do NOT assert on the
+literal `p * q != n` error text anywhere — it is Go-1.24+ FIPS-module wording; older
+toolchains say `invalid modulus` for the same check. This keeps the primary write path alive in keyless
 deployments and avoids the orphaned-object failure mode. Alternative considered and
 rejected: failing Create with the structured error — cleaner contract, but it makes file
 upload unusable in every keyless-or-invalid-key deployment (including this sandbox: its
@@ -394,7 +398,7 @@ Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
    branch determination (Round-3 caught steps 5 and 9 contradicting each other on this).
    storage-manager's gate is conditional on sequencing (Round-4): if §2.6's monorepo fix
    is in the pinned images, it must be running and stable like the others; if §2.6 hasn't
-   landed (R5's fallback path), the criterion is R5's documented degraded state — boots
+   landed (Risk R5's fallback path — Risk R5 in §5, not review round 5), the criterion is R5's documented degraded state — boots
    (`JWTConfigFromJSON` passes on the dummy file), read/delete/bookkeeping RPC works,
    signing-dependent paths fail — with which branch applied recorded in the report.
    timeline-manager additionally shows NO ClickHouse ping errors in its log (its write
