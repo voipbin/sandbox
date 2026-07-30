@@ -377,10 +377,12 @@ and mis-cited several lines):
   since it is a `docker-compose.yml` edit, not a `.env.template` one — noted here so it
   isn't silently lost, candidate for the same cleanup pass as §2.1's doc-sync obligations.
 - **Drift check**: add `scripts/check-env-template-sync.sh`, run manually for now (CI
-  wiring out of scope, same as §2.4's generator) — greps **both** `init.sh` and
-  `init_no_sudo.sh` (§1 confirmed both generate the dummy GCP credential and write `.env`
-  independently, so a checker reading only one would miss drift in the other) for `.env`
-  variable names, greps `.env.template` for documented variable names, and prints any
+  wiring out of scope, same as §2.4's generator) — greps `init.sh` (the only committed
+  `.env`-generating script on `main`; `init_no_sudo.sh` was an ad-hoc, uncommitted repro
+  helper used during this cycle's investigation, not a real repo file — an earlier draft
+  of this document incorrectly treated it as one. The checker's script list is an array so
+  it silently starts covering `init_no_sudo.sh` too if that script is ever committed) for
+  `.env` variable names, greps `.env.template` for documented variable names, and prints any
   variable present in one but not the other, exit non-zero if any found (excluding the
   compose-internal-default, dead, and aspirational sets above, which are intentionally
   template-only or template-stale by design, not drift).
