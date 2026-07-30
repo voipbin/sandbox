@@ -124,9 +124,12 @@ with open(compose_path) as f:
 
 # `image: voipbin/<name>@sha256:<hex>` — the only form compose uses for
 # monorepo-built images. Third-party images never match, since the repository
-# prefix is anchored to `voipbin/`.
+# prefix is anchored to `voipbin/`. The optional trailing group tolerates an
+# inline `# comment` after the digest so such a line is rewritten (comment
+# preserved) rather than silently skipped — a skipped-but-present tracked image
+# would otherwise dodge both the rewrite and the drift check.
 LINE_RE = re.compile(
-    r"^(?P<indent>\s*)image:\s*(?P<name>voipbin/[A-Za-z0-9._-]+)@sha256:(?P<digest>[0-9a-f]+)\s*$"
+    r"^(?P<indent>\s*)image:\s*(?P<name>voipbin/[A-Za-z0-9._-]+)@sha256:(?P<digest>[0-9a-f]+)(?P<trail>\s*(?:#.*)?)$"
 )
 
 referenced = {}   # image name -> number of compose lines referencing it
@@ -155,7 +158,8 @@ for lineno, line in enumerate(original.splitlines(keepends=True), start=1):
         continue
 
     newline = "\n" if line.endswith("\n") else ""
-    out_lines.append(f"{match.group('indent')}image: {name}@{want}{newline}")
+    trail = match.group("trail").rstrip()
+    out_lines.append(f"{match.group('indent')}image: {name}@{want}{trail}{newline}")
     rewritten += 1
     print(f"  {name}: {have[:19]}... -> {want[:19]}...  (line {lineno})")
 

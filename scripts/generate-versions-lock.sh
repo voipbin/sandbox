@@ -127,16 +127,18 @@ preflight() {
     # the probe image: they have no real pin yet, so probing one would fail with
     # a misleading "registry unreachable" message.
     local probe_image probe_digest
+    # LOCK_FILE passed via argv, not string-interpolated into the Python source,
+    # matching the safer pattern the write step below already uses.
     probe_image=$(python3 -c "
-import json
-with open('$LOCK_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     lock = json.load(f)
 images = lock.get('images', {})
 for name in sorted(images):
     if images[name].startswith('sha256:'):
         print(f'{name}@{images[name]}')
         break
-")
+" "$LOCK_FILE")
     if [[ -z "$probe_image" ]]; then
         log_error "versions.lock has no already-pinned image to probe registry access with"
         log_error "(every entry is a seeded '$SEEDED_DIGEST_MARKER' placeholder — at least one"
@@ -150,7 +152,7 @@ for name in sorted(images):
         log_error "(try 'docker login'), not that the image doesn't exist."
         exit 1
     fi
-    if [[ "$probe_digest" != "$(python3 -c "print('$probe_image'.split('@', 1)[1])")" ]]; then
+    if [[ "$probe_digest" != "${probe_image##*@}" ]]; then
         log_error "Registry probe returned an unexpected digest for $probe_image — refusing to proceed"
         exit 1
     fi
