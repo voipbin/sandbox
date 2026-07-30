@@ -49,14 +49,14 @@ GCS `.gob` blob storage → **Vertex AI embeddings + PostgreSQL/pgvector** (comm
 `7f12266d3` 2026-03-17 postgresql-foundation #695, `daca8c74f` #706, `0124a0e40` #713
 which added the strict `Validate()`: `RABBITMQ_ADDRESS`, `GCP_PROJECT_ID`, `GCP_REGION`,
 `POSTGRESQL_DSN` all required, `cmd/rag-manager/main.go:86-88`). There is exactly one
-embedder implementation at HEAD (`embedder.NewGoogleEmbedder`, `main.go:181`) — no
+embedder implementation at HEAD (`embedder.NewGoogleEmbedder`, `main.go:186`) — no
 fallback exists to degrade to, so a transcribe-style monorepo softening is NOT appropriate
 here; booting without GCP would yield a service that accepts ingestion and fails 100% of
 requests. The sandbox's entire current rag-manager compose block (env vars
 `OPENAI_API_KEY`, `GCS_EMBEDDINGS_PATH`, etc.) references a config surface that no longer
 exists. rag-manager at HEAD needs: PostgreSQL with the `vector` extension (its
 `migrations/000001_create_rag_tables.up.sql` opens with `CREATE EXTENSION IF NOT EXISTS
-vector;`, applied by golang-migrate at startup, `main.go:110-146`), a GCS client, and real
+vector;`, applied by golang-migrate at startup, `main.go:114-147`), a GCS client, and real
 GCP credentials for actual embedding work. Decision (pchero, this cycle): include it —
 sandbox adds PostgreSQL+pgvector (§2.4); real GCP credentials remain the operator's to
 supply, with the boot-versus-function distinction documented (§2.4).
@@ -191,8 +191,17 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
 
 - New compose infra service `postgres` using the `pgvector/pgvector:pg16` image (official
   pgvector build; pinning to a specific digest like the other third-party images), own
-  named volume `postgres_data`, healthcheck via `pg_isready`, not published to the host by
-  default (compose-internal only, same posture as redis).
+  named volume `postgres_data`, healthcheck via `pg_isready`. Service env:
+  `POSTGRES_USER=voipbin`, `POSTGRES_PASSWORD=voipbin`, `POSTGRES_DB=rag` — the initdb
+  user must be the superuser (which `POSTGRES_USER` is, by initdb) because rag-manager's
+  first migration runs `CREATE EXTENSION IF NOT EXISTS vector`, which needs superuser.
+  NOT published to the host — a deliberate divergence from db/redis/rabbitmq, which ARE
+  host-published (Round-2 caught an earlier draft claiming "same posture as redis", which
+  was inverted): those three predate this design and operators exec/debug against them;
+  postgres is a single-consumer backing store for rag-manager, and keeping it unpublished
+  shrinks surface. `bin-rag-manager/docs/operations.md`'s host-`psql` troubleshooting
+  examples won't work against an unpublished port — sandbox docs will show the
+  `docker exec` equivalent instead.
 - rag-manager's compose block rewritten to HEAD's actual config surface:
   `RABBITMQ_ADDRESS`, `GCP_PROJECT_ID` (from `.env`), `GCP_REGION` (from `.env`, default
   `us-central1` in the template), `GCP_BUCKET_NAME_MEDIA` (from `.env` — Round-1 review
@@ -201,19 +210,27 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
   not `Validate()`-gated, but omitting it yields a booting service whose GCS ingestion
   points at an empty bucket name), `POSTGRESQL_DSN`
   (`postgres://voipbin:voipbin@postgres:5432/rag?sslmode=disable`), plus the existing
-  dummy-GCP-credential mount. Old removed vars (`OPENAI_API_KEY` for rag,
-  `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, etc.) deleted from the block.
-- **`GCP_PROJECT_ID` empty-value fix (Round-1 blocking finding)**: `scripts/init.sh:262`
-  currently writes `GCP_PROJECT_ID=` (empty) into the generated `.env`, while
-  `.env.template:13` documents `your-gcp-project-id` — they disagree, and rag-manager's
-  `Validate()` hard-fails on the empty string BEFORE any client construction. On this
-  design's own prescribed §3 procedure (fresh no-sudo init), rag-manager would crash-loop
-  at config validation, reproducing F3 verbatim. Fix: `init.sh` writes a non-empty
-  placeholder default (`GCP_PROJECT_ID=sandbox-placeholder`, same for
-  `GCP_BUCKET_NAME_MEDIA=sandbox-placeholder-media`), `.env.template` documents the same
-  values with a comment that they satisfy config validation without granting GCP access.
-  The earlier framing ("maybe an eager client init parses the key") was the wrong failure
-  mode — validation, not key parsing, is the first gate.
+  dummy-GCP-credential mount and the existing Prometheus lines
+  (`PROMETHEUS_ENDPOINT`/`PROMETHEUS_LISTEN_ADDRESS`, which the `:2112` healthcheck
+  depends on — kept, not part of the "removed vars" cleanup). Old removed vars
+  (`OPENAI_API_KEY` for rag, `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, etc.) deleted
+  from the block.
+- **Validate()-gated variable fix, all three of them (Round-1 found the empty
+  `GCP_PROJECT_ID`; Round-2 caught this design half-treating its own new `GCP_REGION`
+  the same way)**: `scripts/init.sh:262` currently writes `GCP_PROJECT_ID=` (empty),
+  while `.env.template:13` documents `your-gcp-project-id` — they disagree, and
+  rag-manager's `Validate()` hard-fails on empty strings BEFORE any client construction.
+  `GCP_REGION` is equally `Validate()`-required and is a NEW variable this cycle — adding
+  it to the template alone (as an earlier draft did) leaves a freshly init'd `.env`
+  without it, reproducing the same crash through a different variable. Fix, one mechanism
+  for all three: **`init.sh` writes non-empty placeholder defaults**
+  (`GCP_PROJECT_ID=sandbox-placeholder`, `GCP_REGION=us-central1`,
+  `GCP_BUCKET_NAME_MEDIA=sandbox-placeholder-media`), and `.env.template` documents the
+  identical values with a comment that they satisfy config validation without granting
+  GCP access. init.sh and the template stay in agreement (the R1 requirement), and
+  because init.sh writes `GCP_REGION`, no `check-env-template-sync.sh` exclusion-list
+  entry is needed for it. The earlier framing ("maybe an eager client init parses the
+  key") was the wrong failure mode — validation, not key parsing, is the first gate.
 - rag-manager runs its own golang-migrate at startup against Postgres — no sandbox-side
   migration tooling needed; the compose `depends_on: postgres: service_healthy` gate is
   sufficient.
@@ -235,11 +252,22 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
 - New compose infra service `clickhouse` using `clickhouse/clickhouse-server` (pinned
   digest), named volume `clickhouse_data`, healthcheck via its HTTP ping endpoint, not
   published to the host by default.
-- timeline-manager's block gains `CLICKHOUSE_ADDRESS=clickhouse:9000` (native protocol —
-  verify the Go client's expected port/protocol from `bin-timeline-manager` source during
-  implementation) and keeps `CLICKHOUSE_DATABASE=default`. timeline-manager runs its own
-  migrations when the address is set (`runMigrations`, skipped-if-empty behavior verified
-  last cycle) — again no sandbox-side migration tooling.
+- timeline-manager's block gains `CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}`
+  (an overridable `:-` default, keeping `.env`'s `CLICKHOUSE_ADDRESS` a live control
+  rather than dead config — Round-2 caught an earlier literal-value wording contradicting
+  §2.7) and keeps `CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}`. Port 9000/native
+  protocol confirmed against source (`bin-timeline-manager/pkg/dbhandler/main.go` uses
+  `clickhouse-go/v2` native; the DSN is built as `clickhouse://addr/db`).
+- **`depends_on: clickhouse: {condition: service_healthy}` gate is REQUIRED, not
+  optional (Round-2 blocking finding)**: once the address is set, timeline-manager's
+  `runMigrations` always runs at boot, and a migration failure is fatal
+  (`cmd/timeline-manager/main.go` returns the error → `os.Exit(1)`). Without the gate,
+  timeline-manager racing ClickHouse to readiness exits non-zero on every fresh `up`;
+  `restart: always` eventually recovers it, but §3 step 5's own ≥3-minute
+  RestartCount-stability criterion would then fail or flake on a service it explicitly
+  names. Same treatment §2.4 gives postgres, stated with the same explicitness.
+- timeline-manager runs its own migrations at startup — no sandbox-side migration
+  tooling.
 - The dead `CLICKHOUSE_ADDRESS` vars on call-manager/flow-manager are removed in the same
   change (§1.5).
 
@@ -260,10 +288,16 @@ volume entry. So whichever lands first (this or the monorepo fix), the sandbox b
 
 ### 2.7 .env.template additions
 
-`GCP_REGION` (new, default `us-central1`, consumed by rag-manager). The
-`CLICKHOUSE_ADDRESS`/`CLICKHOUSE_DATABASE` entries lose their "aspirational — no local
-default exists" annotation (§2.5 gives them a local default) and get real defaults.
-`check-env-template-sync.sh`'s exclusion list updated accordingly.
+`GCP_REGION` (new, `us-central1`, written by `init.sh` per §2.4 — no exclusion-list entry
+needed). The `CLICKHOUSE_ADDRESS`/`CLICKHOUSE_DATABASE` entries lose their "aspirational —
+no local default exists" annotation (§2.5 gives them a local default) and get real
+defaults (`clickhouse:9000` / `default`); `init.sh:357-358` already writes both (address
+currently empty — updated to the new default). `check-env-template-sync.sh` updates:
+remove `CLICKHOUSE_ADDRESS` from `TEMPLATE_ONLY_VARS` (with init.sh now writing a
+non-empty value it is no longer template-only — note its entry was already inert since
+init.sh wrote the empty-string form, and the script's category-3 comment describing it as
+having "no local service to point it at" becomes false this cycle; both the list and the
+comment get corrected in the same change).
 
 ## 3. Verification plan
 
@@ -303,10 +337,12 @@ Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
     from step 6, a transcribe-start request returns the `STT_NOT_CONFIGURED` structured
     error.
 11. **Image-pull accounting (carried over from the predecessor design's Phase C, Round-1
-    caught it dropped)**: confirm pulls succeed for ALL tracked images at the new pin;
-    any fallback-pin exceptions the generator kept (and the two seeded entries
-    specifically, §2.1) are enumerated in the regenerated lock's warnings and called out
-    in the PR description — not buried.
+    caught it dropped)**: confirm pulls succeed for ALL tracked images at the new pin.
+    Any fallback-pin exceptions the generator kept (its stderr warnings, captured in the
+    run's output — the lock file itself has no warnings field) are called out in the PR
+    description, not buried. The two seeded entries (§2.1) cannot appear here by
+    construction — under §2.1's hard-error semantics they either resolved or the
+    generator refused to write the lock at all; this step just re-confirms both pull.
 12. **call-manager ARI event check (carried over, Round-1 caught it dropped)**: beyond
     RestartCount, confirm call-manager's log shows it consuming from the
     asterisk-event-all queue after the 5-month image jump — same criterion as the
