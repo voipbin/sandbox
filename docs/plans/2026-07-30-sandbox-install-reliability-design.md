@@ -1,6 +1,6 @@
 # VoIPBin Sandbox — Install Reliability Fix (Call-Manager / Transcribe-Manager / Timeline-Manager Crash Loops, Version Pin Refresh, Env Template Sync)
 
-Status: DRAFT (Design Review Round 6, incorporating Round 5 APPROVE non-blocking nits)
+Status: APPROVED (Design Review Rounds 5-6: two consecutive APPROVE, review loop closed)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-30
 Repo: sandbox (fixes 2.1/2.2 land in monorepo, §2.3 is a sandbox-side non-goal with no code change; this doc is the sandbox-side design of record for the whole effort)
