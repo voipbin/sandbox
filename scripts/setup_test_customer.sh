@@ -163,9 +163,14 @@ ACCESSKEY_OUTPUT=$(docker exec voipbin-customer-mgr /app/bin/customer-control ac
     --detail "Auto-generated for testing" \
     --expire 87600h 2>&1 | grep -v severity || true)
 
-API_KEY=$(echo "$ACCESSKEY_OUTPUT" | grep -oP '(?<=token:\s)[^\s]+' | head -1)
+# The pinned CLI emits raw_token (full secret, shown once at create time);
+# older builds emitted token. Try new field first, fall back for old images.
+API_KEY=$(echo "$ACCESSKEY_OUTPUT" | jq -r '.raw_token // .token // empty' 2>/dev/null || true)
 if [ -z "$API_KEY" ]; then
-    API_KEY=$(echo "$ACCESSKEY_OUTPUT" | jq -r '.token' 2>/dev/null || true)
+    API_KEY=$(echo "$ACCESSKEY_OUTPUT" | grep -oP '(?<=raw_token:\s)[^\s]+' | head -1)
+fi
+if [ -z "$API_KEY" ]; then
+    API_KEY=$(echo "$ACCESSKEY_OUTPUT" | grep -oP '(?<=token:\s)[^\s]+' | head -1)
 fi
 
 if [ -z "$API_KEY" ] || [ "$API_KEY" == "null" ]; then

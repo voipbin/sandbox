@@ -127,6 +127,17 @@ services:
     container_name: voipbin-clickhouse
     restart: always
     logging: *default-logging
+    environment:
+      # Without this, the official image's entrypoint writes a users.d override
+      # restricting the `default` user to localhost, and timeline-manager's
+      # cross-container connection is rejected with code 516 (auth failed) -
+      # fatal at its boot-time migration, so it crash-loops. timeline-manager
+      # builds its DSN from CLICKHOUSE_ADDRESS alone (no user/password config
+      # exists in that service), so a passwordless network-accessible `default`
+      # user is the only workable shape. Acceptable here: the port is not
+      # published to the host and the service is compose-network-internal,
+      # matching the sandbox's existing local-dev credential posture.
+      - CLICKHOUSE_SKIP_USER_SETUP=1
     # ClickHouse wants a raised nofile limit; without this it warns loudly and
     # caps its connection handling on hosts with a low default.
     ulimits:
