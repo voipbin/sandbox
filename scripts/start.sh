@@ -11,7 +11,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Override-friendly for test isolation. Blast radius: an operator's exported
+# PROJECT_DIR redirects which tree this script operates on — deliberate.
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
@@ -96,6 +98,27 @@ check_dependencies() {
 # Setup mkcert for browser-trusted certificates
 setup_mkcert() {
     log_step "Checking SSL certificate setup..."
+
+    # TLS gate (§2.4): with BYO certificates, never install mkcert, never
+    # inspect issuers, never delete certs/. Missing/expired cert is a
+    # fail-fast error naming install-certs.sh, never an auto-regeneration.
+    local tls_mode
+    tls_mode=$(get_env_var "$PROJECT_DIR/.env" TLS_MODE)
+    if [ "$tls_mode" = "byo" ]; then
+        local byo_cert="$PROJECT_DIR/certs/api/cert.pem"
+        if [ ! -f "$byo_cert" ]; then
+            log_error "TLS_MODE=byo but $byo_cert is missing."
+            log_error "Install your certificate: ./scripts/install-certs.sh <fullchain.pem> <privkey.pem>"
+            return 1
+        fi
+        if ! openssl x509 -in "$byo_cert" -noout -checkend 0 &>/dev/null; then
+            log_error "TLS_MODE=byo and $byo_cert is expired."
+            log_error "Renew and reinstall: ./scripts/install-certs.sh <fullchain.pem> <privkey.pem>"
+            return 1
+        fi
+        log_info "Certificates: BYO (TLS_MODE=byo) - skipping mkcert management"
+        return 0
+    fi
 
     # Check if mkcert is installed
     if ! command -v mkcert &> /dev/null; then
@@ -573,6 +596,17 @@ main() {
     echo "  VoIPBin Sandbox - Startup"
     echo "=============================================="
 
+    # Stale-.env / COMPOSE_PROFILES conflict guard (§2.5/§6). Must run before
+    # validate_env's 'set -a; source .env' overwrites the shell's
+    # COMPOSE_PROFILES value and hides the conflict. Only when .env exists —
+    # a missing .env keeps the "run init first" message below.
+    if [ -f "$PROJECT_DIR/.env" ]; then
+        if ! check_compose_profiles_conflict "$PROJECT_DIR/.env"; then
+            echo "VOIPBIN_START: status=error reason=\"$COMPOSE_PROFILES_CONFLICT_REASON\""
+            exit 1
+        fi
+    fi
+
     # Check for root/sudo access
     check_root
 
@@ -645,26 +679,37 @@ main() {
         fi
     fi
 
+    # Mode gate for Steps 7-8 (§2.4): external mode never rewrites the
+    # Corefile and never invokes setup-dns.sh.
+    local domain_mode
+    domain_mode=$(get_domain_mode "$PROJECT_DIR/.env")
+
     # Step 7: Generate CoreDNS config and start all services
-    log_step "Generating CoreDNS configuration..."
-    local host_ip=$(grep '^HOST_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
-    local kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
-    [ -z "$host_ip" ] && host_ip="127.0.0.1"
-    [ -z "$kamailio_ip" ] && kamailio_ip="$host_ip"  # Fallback to host_ip if not set
-    generate_coredns_config "$host_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
-    log_info "  Web services → $host_ip (Docker port mapping)"
-    log_info "  SIP services → $kamailio_ip"
+    if [ "$domain_mode" = "internal" ]; then
+        log_step "Generating CoreDNS configuration..."
+        local host_ip=$(grep '^HOST_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        local kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        [ -z "$host_ip" ] && host_ip="127.0.0.1"
+        [ -z "$kamailio_ip" ] && kamailio_ip="$host_ip"  # Fallback to host_ip if not set
+        generate_coredns_config "$host_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
+        log_info "  Web services → $host_ip (Docker port mapping)"
+        log_info "  SIP services → $kamailio_ip"
+    else
+        log_info "DNS is operator-managed (external mode)"
+    fi
 
     log_step "Starting all services..."
     docker compose up -d
 
     # Step 8: Check DNS configuration
-    log_step "Checking DNS configuration..."
-    if grep -q "nameserver 127.0.0.1" /etc/resolv.conf 2>/dev/null; then
-        log_info "DNS is configured (resolv.conf → CoreDNS)"
-    else
-        log_warn "DNS not configured. Setting up..."
-        "$SCRIPT_DIR/setup-dns.sh" -y 2>/dev/null || log_warn "DNS setup failed. Run 'dns setup' manually."
+    if [ "$domain_mode" = "internal" ]; then
+        log_step "Checking DNS configuration..."
+        if grep -q "nameserver 127.0.0.1" /etc/resolv.conf 2>/dev/null; then
+            log_info "DNS is configured (resolv.conf → CoreDNS)"
+        else
+            log_warn "DNS not configured. Setting up..."
+            "$SCRIPT_DIR/setup-dns.sh" -y 2>/dev/null || log_warn "DNS setup failed. Run 'dns setup' manually."
+        fi
     fi
 
     # Step 9: Setup VoIP network interfaces
@@ -729,17 +774,21 @@ main() {
     echo "  Startup Complete!"
     echo "=============================================="
     echo ""
+    # Summary URLs/domains derive from .env (sourced by validate_env) — a
+    # hardcoded voipbin.test summary would misinform an external-mode operator.
+    local base_domain="${BASE_DOMAIN:-voipbin.test}"
+    local ext_domain="${DOMAIN_NAME_EXTENSION:-registrar.voipbin.test}"
     echo "-----------------------------------------------"
     echo "  Web Consoles"
     echo "-----------------------------------------------"
-    echo "  Admin UI:      http://admin.voipbin.test:3003"
-    echo "  Meet:          http://meet.voipbin.test:3004"
-    echo "  Talk:          http://talk.voipbin.test:3005"
-    echo "  API Manager:   https://api.voipbin.test:8443"
+    echo "  Admin UI:      http://admin.${base_domain}:3003"
+    echo "  Meet:          http://meet.${base_domain}:3004"
+    echo "  Talk:          http://talk.${base_domain}:3005"
+    echo "  API Manager:   https://api.${base_domain}:8443"
     echo "  RabbitMQ:      http://localhost:15672 (guest / guest)"
     echo ""
     echo "  NOTE: If you see ERR_CERT_AUTHORITY_INVALID, visit"
-    echo "        https://api.voipbin.test:8443 first and accept the certificate."
+    echo "        https://api.${base_domain}:8443 first and accept the certificate."
     echo ""
     echo "-----------------------------------------------"
     echo "  Default Admin Account (created on first run)"
@@ -755,7 +804,7 @@ main() {
         echo "-----------------------------------------------"
         echo "  Token:         $ACCESSKEY_TOKEN"
         echo ""
-        echo "  Usage: curl https://api.voipbin.test:8443/v1.0/calls?accesskey=$ACCESSKEY_TOKEN"
+        echo "  Usage: curl https://api.${base_domain}:8443/v1.0/calls?accesskey=$ACCESSKEY_TOKEN"
         echo ""
         echo "  To verify: voipbin> customer accesskey list"
         echo ""
@@ -768,7 +817,7 @@ main() {
     echo "  3000 / pass3000"
     if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
         echo ""
-        echo "  SIP Domain:    ${CUSTOMER_ID}.registrar.voipbin.test"
+        echo "  SIP Domain:    ${CUSTOMER_ID}.${ext_domain}"
         echo "  SIP Server:    $(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1):5060"
     fi
     echo ""

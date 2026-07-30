@@ -165,6 +165,9 @@ services:
     image: coredns/coredns:latest
     logging: *default-logging
     container_name: voipbin-dns
+    # Internal mode only: .env sets COMPOSE_PROFILES=internal-dns (empty in
+    # external mode, where DNS is operator-managed) — dual-mode DNS, VOIP-1275.
+    profiles: ["internal-dns"]
     restart: always
     ports:
       # Localhost - for local machine (resolv.conf points here)

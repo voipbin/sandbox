@@ -8,7 +8,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Override-friendly for test isolation. Blast radius: an operator's exported
+# PROJECT_DIR redirects which tree this script operates on — deliberate.
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
@@ -334,6 +336,25 @@ regenerate_corefile() {
 main() {
     local os=$(detect_os)
     local non_interactive=false
+
+    # External-mode gate (§2.3): DNS is operator-managed, nothing to configure.
+    # --uninstall stays mode-independent: leftover resolv.conf hijack state
+    # (e.g. clean.sh --purge then init --mode external) must remain removable,
+    # otherwise check-install.sh's external resolv.conf check fails with no
+    # remedy.
+    local want_uninstall=false
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --uninstall|-u) want_uninstall=true ;;
+        esac
+    done
+    if [[ "$want_uninstall" != "true" && -f "$PROJECT_DIR/.env" ]]; then
+        if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "external" ]]; then
+            log_info "external mode: DNS is operator-managed, skipping"
+            exit 0
+        fi
+    fi
 
     # Parse arguments
     for arg in "$@"; do

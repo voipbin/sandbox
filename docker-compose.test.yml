@@ -21,43 +21,43 @@ services:
   coredns:
     container_name: !reset null
     ports: !reset []
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   rtpengine:
     container_name: !reset null
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   kamailio:
     container_name: !reset null
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   asterisk-call:
     container_name: !reset null
     ports: !reset []
     networks:
       default:
         ipv4_address: 10.199.0.210
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   asterisk-call-proxy:
     container_name: !reset null
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   asterisk-conference:
     container_name: !reset null
     ports: !reset []
     networks:
       default:
         ipv4_address: 10.199.0.212
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   asterisk-conference-proxy:
     container_name: !reset null
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   asterisk-registrar:
     container_name: !reset null
     ports: !reset []
     networks:
       default:
         ipv4_address: 10.199.0.211
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   asterisk-registrar-proxy:
     container_name: !reset null
-    profiles: ["host-mutating"]
+    profiles: !override ["host-mutating"]
   agent-manager:
     container_name: !reset null
   ai-manager:

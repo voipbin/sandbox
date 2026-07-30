@@ -270,14 +270,23 @@ update_env_ips() {
     log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip"
     log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip"
 
-    # Update .env file
+    # Update .env file (IP vars update in both modes)
     sed -i "s|^HOST_EXTERNAL_IP=.*|HOST_EXTERNAL_IP=$new_host_ip|" "$env_file"
     sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"
     sed -i "s|^RTPENGINE_EXTERNAL_IP=.*|RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip|" "$env_file"
 
-    # Also update frontend URLs that use the host IP
-    sed -i "s|^API_URL=.*|API_URL=https://api.voipbin.test:8443/|" "$env_file"
-    sed -i "s|^WEBSOCKET_URL=.*|WEBSOCKET_URL=wss://api.voipbin.test:8443/v1.0/ws|" "$env_file"
+    # Also update frontend URLs that use the host IP — composed from BASE_DOMAIN
+    # (never a hardcoded literal), and skipped entirely in external mode:
+    # external URLs never embed IPs, so an IP change must not clobber them.
+    if [[ "$(get_domain_mode "$env_file")" == "external" ]]; then
+        log_info "External mode: skipping API_URL/WEBSOCKET_URL rewrite (operator-managed domain)" >&2
+    else
+        local base_domain
+        base_domain=$(get_env_var "$env_file" BASE_DOMAIN)
+        [[ -z "$base_domain" ]] && base_domain="voipbin.test"
+        sed -i "s|^API_URL=.*|API_URL=https://api.${base_domain}:8443/|" "$env_file"
+        sed -i "s|^WEBSOCKET_URL=.*|WEBSOCKET_URL=wss://api.${base_domain}:8443/v1.0/ws|" "$env_file"
+    fi
 
     echo "$new_kamailio_ip"
 }
@@ -287,6 +296,15 @@ regenerate_ssl_certs() {
     local new_host_ip="$1"
     local env_file="${PROJECT_DIR}/.env"
     local cert_dir="${PROJECT_DIR}/certs/api"
+
+    # BYO certificates (TLS_MODE=byo) must never be overwritten by mkcert
+    # regeneration. return 0, NOT 1: all call sites invoke this bare under
+    # set -e, so a non-zero return would abort the caller mid-run on every
+    # external-mode IP change. Same rule for every gate at a shared choke point.
+    if [[ "$(get_env_var "$env_file" TLS_MODE)" == "byo" ]]; then
+        log_info "TLS_MODE=byo: skipping certificate regeneration (manage certs with install-certs.sh)"
+        return 0
+    fi
 
     # Check if mkcert is available
     if ! command -v mkcert &> /dev/null; then
@@ -341,9 +359,14 @@ regenerate_ip_config() {
     # Update .env and get new Kamailio IP
     local new_kamailio_ip=$(update_env_ips "$current_ip")
 
-    # Regenerate CoreDNS config
-    generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$new_kamailio_ip"
-    log_info "CoreDNS configuration regenerated"
+    # Regenerate CoreDNS config (internal mode only — external mode deploys no
+    # coredns, and writing .test zones onto an external tree is confusing residue)
+    if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
+        generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$new_kamailio_ip"
+        log_info "CoreDNS configuration regenerated"
+    else
+        log_info "External mode: operator DNS may need updating (HOST_EXTERNAL_IP changed)"
+    fi
 
     # Regenerate SSL certificates
     regenerate_ssl_certs "$current_ip"

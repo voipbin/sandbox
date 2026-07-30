@@ -4559,6 +4559,13 @@ Type 'registrar <subcommand> help' for more details.
         if clean_volumes:
             print("Stopping all services and removing volumes...")
             run_cmd("docker compose down -v 2>&1")
+            # The test-data marker mirrors DB state (which lives in the
+            # volumes), so it is removed with --volumes — aligned with
+            # clean.sh --volumes (VOIP-1275 §2.10).
+            marker_path = os.path.join(project_dir, ".test_data_initialized")
+            if os.path.exists(marker_path):
+                os.remove(marker_path)
+                print("  Removed test data marker")
             print(green("✓ All containers and volumes removed"))
         elif clean_containers:
             # Remove only app containers, keep infrastructure
@@ -4641,7 +4648,8 @@ Type 'registrar <subcommand> help' for more details.
             files_to_remove = [
                 ("certs", "certificates directory"),
                 (".env", ".env file"),
-                (".test_data_initialized", "test data marker"),
+                # .test_data_initialized moved to the --volumes branch: the
+                # marker mirrors DB state, which lives in the volumes.
                 ("config/coredns", "CoreDNS config"),
                 ("config/dummy-gcp-credentials.json", "dummy GCP credentials"),
                 ("tmp", "tmp directory"),
