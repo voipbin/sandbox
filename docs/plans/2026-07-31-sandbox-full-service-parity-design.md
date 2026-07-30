@@ -35,12 +35,27 @@ Commit `1f9002953` (2026-07-08, VOIP-1229, #1060) removed the GKE workload-ident
 signing fallback and, in the same change, made a missing `GOOGLE_APPLICATION_CREDENTIALS`
 fatal at boot (`bin-storage-manager/pkg/filehandler/main.go:93-100`, constructor now
 returns an error that kills startup). Before that commit there was a three-tier fallback
-(env key file → ADC/metadata → env service-account email) and no fatal path. The signing
-key is genuinely needed **only** for GCS signed download URLs (`downloadURIGet`); the
-service's remaining surface (file Create/Get/List/Delete RPC, account bookkeeping,
-customer-deleted cascade) does not need it. Killing the whole service for one degraded
-capability is the same fail-fast-on-optional-infra overshoot as the transcribe-manager STT
-case fixed last cycle, and gets the same shape of fix (§2.6).
+(env key file → ADC/metadata → env service-account email) and no fatal path.
+
+**Signing-dependent surface, corrected (Round-3 review caught an earlier draft claiming
+"only signed download URLs" — the real set is wider)**: `h.privateKey` has one consumer,
+`bucketfileGenerateDownloadURI` (`pkg/filehandler/bucketfile.go:141`, existing nil-guard
+at `:158-160` returning a bare unstructured error), but that helper has THREE call sites:
+`DownloadURIGet` (`downloaduri.go:29`), `DownloadURIRefresh` (`download.go:32`), and —
+critically — **inside `fileHandler.Create` itself** (`file.go:81`, error returned at
+`:84`, and by that point `bucketfileMove` at `:70` has already relocated the GCS object,
+so an aborted Create also orphans it; `URIDownload` is a required field of the persisted
+record, `file.go:108`). Two more paths inherit the dependency through `DownloadURIGet`:
+`pkg/storagehandler/compressfile.go:52` and `pkg/storagehandler/recording.go:40`. So
+without a usable signing key, the degraded set is at least: signed URL get/refresh,
+compress-file download, recording fetch, AND file Create (the primary write path) — not
+"one capability". What genuinely does NOT need the key: file Get/List/Delete, account
+bookkeeping, customer-deleted cascade.
+
+Even so, the boot-kill remains an overshoot — read-side RPC, deletion, and account
+bookkeeping all work keyless, and a service that can serve those while clearly erroring
+on the signing-dependent paths beats a crash loop. Same shape as the transcribe-manager
+STT fix, with the Create-path behavior now explicitly specified (§2.6).
 
 ### 1.3 rag-manager — not a regression; the service was rewritten (sandbox must catch up, §2.4)
 
@@ -139,8 +154,14 @@ compose, and the failure would surface only at `docker compose pull` on a custom
 machine. **Required generator change**: distinguish seeded/new entries (e.g. digest value
 `"NEW"` or a dedicated `new_images` input list) from established pins — a seeded entry
 that cannot be resolved at the target commit is a HARD ERROR (non-zero exit, lock not
-written), never a fallback. Established entries keep today's fallback behavior.
-`dbscheme_monorepo_commit` advances to the same target commit.
+written), never a fallback. Established entries keep today's fallback behavior. The
+preflight registry probe must also SKIP seeded entries when choosing its probe image
+(it currently probes `sorted(images)[0]` at its current pinned digest — a seeded
+placeholder digest sorting first would fail the probe with a misleading
+"registry unreachable" message; latent today since `bin-agent-manager` sorts first, but
+the generator change closes it). `dbscheme_monorepo_commit` advances to the same target
+commit (the generator already does this unconditionally — noted for completeness, not
+new work).
 
 ### 2.2 compose↔lock sync mechanism (closes F1)
 
@@ -153,9 +174,11 @@ that image. Properties:
   `voipbin/voip-asterisk-proxy` appears at three `image:` lines in compose (the three
   `asterisk-*-proxy` services share one image) — the script rewrites ALL occurrences of a
   tracked image to the lock's digest; a repeated image is normal, not a duplicate-key
-  error. If the same tracked image appears in compose at two DIFFERENT digests before the
-  sync (drift, as is actually the case today for voip-asterisk-proxy vs the lock), both
-  get rewritten to the single lock digest — that convergence is the point of the script.
+  error. Two distinct drift cases, one behavior: (a) compose-vs-lock drift — the actual
+  current state: all three voip-asterisk-proxy compose lines agree with EACH OTHER but
+  differ from the lock's digest; (b) within-compose divergence — hypothetical today, the
+  same tracked image at two different digests across compose lines. In both cases every
+  occurrence is rewritten to the single lock digest — that convergence is the point.
 - Fails loudly (non-zero, names the image) if compose references a tracked image the lock
   lacks, or the lock tracks an image compose doesn't reference — EXCEPT images on an
   explicit lock-only allowlist hardcoded in the script with rationale per entry.
@@ -210,11 +233,19 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
   not `Validate()`-gated, but omitting it yields a booting service whose GCS ingestion
   points at an empty bucket name), `POSTGRESQL_DSN`
   (`postgres://voipbin:voipbin@postgres:5432/rag?sslmode=disable`), plus the existing
-  dummy-GCP-credential mount and the existing Prometheus lines
+  dummy-GCP-credential pieces — BOTH the
+  `GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_account.json` env line and the
+  volume mount, same both-pieces phrasing as §2.6 (Round-3 caught this list naming only
+  "the mount") — and the existing Prometheus lines
   (`PROMETHEUS_ENDPOINT`/`PROMETHEUS_LISTEN_ADDRESS`, which the `:2112` healthcheck
   depends on — kept, not part of the "removed vars" cleanup). Old removed vars
   (`OPENAI_API_KEY` for rag, `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, etc.) deleted
-  from the block.
+  from the compose block AND from their `init.sh`/`.env.template` counterparts
+  (`init.sh:370-376`, `.env.template:188-194` — the rag-specific set: `GCS_BUCKET`,
+  `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, `OPENAI_EMBEDDING_MODEL`, `RAG_LLM_MODEL`,
+  `RAG_CHUNK_MAX_TOKENS`; a cycle whose mandate is ending drift shouldn't leave dead
+  config in the very files it's syncing. `OPENAI_API_KEY` itself stays — other services
+  still use it).
 - **Validate()-gated variable fix, all three of them (Round-1 found the empty
   `GCP_PROJECT_ID`; Round-2 caught this design half-treating its own new `GCP_REGION`
   the same way)**: `scripts/init.sh:262` currently writes `GCP_PROJECT_ID=` (empty),
@@ -275,10 +306,29 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
 
 Mirror of last cycle's transcribe-manager fix, same review loop: make the missing/invalid
 signing credential non-fatal. `NewFileHandler` returns a working handler with
-`privateKey == nil`; the signed-URL path (`downloadURIGet`) returns a structured
-`*cerrors.VoipbinError` (status `Unavailable`, reason like `SIGNING_NOT_CONFIGURED`) when
-signing is unavailable; every non-signing capability works normally. Doc-sync per monorepo
-policy (service CLAUDE.md if present, `docs/operations.md` failure modes). Additionally,
+`privateKey == nil`. All signing-dependent paths enumerated in §1.2 return a structured
+`*cerrors.VoipbinError` (status `Unavailable`, reason `SIGNING_NOT_CONFIGURED`) instead
+of today's bare `errors.New` in `bucketfileGenerateDownloadURI`'s nil-guard — that means
+`DownloadURIGet`, `DownloadURIRefresh`, and the storagehandler consumers all surface the
+structured error (Round-3 caught an earlier draft that named only `DownloadURIGet` and
+falsely claimed "every non-signing capability works normally", which would have left the
+Create path returning the legacy unstructured error).
+
+**`Create`-path behavior when signing is unavailable (Round-3 required this be explicitly
+decided, not left to the implementer)**: `fileHandler.Create` currently calls
+`bucketfileGenerateDownloadURI` at `file.go:81` AFTER the GCS object has already been
+moved (`:70`), so a naive error return both fails the primary write path and orphans the
+object. Decision: **persist with an empty `URIDownload`** — Create succeeds (upload and
+record are real), and the download URI is populated lazily by `DownloadURIRefresh` when a
+signing key becomes available; until then, download-URI reads surface the structured
+`SIGNING_NOT_CONFIGURED` error. This keeps the primary write path alive in keyless
+deployments and avoids the orphaned-object failure mode. Alternative considered and
+rejected: failing Create with the structured error — cleaner contract, but it makes file
+upload unusable in every keyless deployment (including this sandbox with its dummy key,
+where `storage.SignedURL` fails at sign time even though a key file exists), which is
+most of what §1.2 argues against. Doc-sync per monorepo policy (service CLAUDE.md if
+present, `docs/operations.md` failure modes, including the new empty-`URIDownload`
+semantics). Additionally,
 sandbox's storage-manager compose block (which today sets `GCP_PROJECT_ID` but has neither
 a credential env var nor a credential mount) gains BOTH pieces rag-manager already has
 (Round-1 caught the earlier wording naming only "the mount"): the
@@ -318,11 +368,13 @@ Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
 4. Full stack up — **48 compose services** (44 today + direct-manager + webchat-manager +
    postgres + clickhouse); every defined service accounted for by name in the report.
 5. **Pass criterion**: only `kamailio` and `coredns` down (sudo-gated, unchanged
-   exception). Explicitly: rag-manager, storage-manager, direct-manager, webchat-manager,
+   exception). Explicitly: storage-manager, direct-manager, webchat-manager,
    timeline-manager all running and stable (RestartCount watched over ≥3 minutes, not a
-   single sample). timeline-manager additionally shows NO ClickHouse ping errors in its
-   log (its write path is now genuinely alive, not silently dead) and its migrations
-   applied.
+   single sample). rag-manager is deliberately NOT part of this step's gate — its
+   pass/fail is governed by step 9's branch determination (Round-3 caught steps 5 and 9
+   contradicting each other on this). timeline-manager additionally shows NO ClickHouse
+   ping errors in its log (its write path is now genuinely alive, not silently dead) and
+   its migrations applied.
 6. `setup_test_customer.sh` end-to-end — the F4 regression check: customer → **admin agent
    auto-created (direct-manager RPC succeeds)** → password → JWT login → billing → 3
    extensions → access key. This is the single most load-bearing check in the cycle.
@@ -396,8 +448,12 @@ VOIP-1274.
 - **R4 — rag-manager's §2.4 boot-with-dummy-credentials assumption is unverified until
   §3 step 9 runs.** The design carries both branches explicitly; neither branch blocks
   the rest of the cycle.
-- **R5 — storage-manager sequencing.** If §2.6's monorepo PR stalls, the sandbox side can
-  still ship: the dummy-credential mount lets the CURRENT (post-1f9002953) image boot only
-  if the dummy key parses as valid PEM (unverified). If it doesn't parse, storage-manager
-  is a documented known-degraded service until §2.6 lands. Stated so the dependency is
-  visible, not hidden.
+- **R5 — storage-manager sequencing, boot AND function.** If §2.6's monorepo PR stalls,
+  the sandbox side can still ship: the dummy-credential mount lets the CURRENT
+  (post-1f9002953) image boot only if the dummy key parses as valid PEM (unverified). But
+  boot is not the only exposure (Round-3 corrected an earlier draft implying it was):
+  even booted with the dummy key, `storage.SignedURL` fails at actual sign time, so the
+  §1.2 signing-dependent set — including file Create until §2.6's empty-`URIDownload`
+  change lands — is non-functional in the sandbox regardless of which side ships first.
+  Until §2.6 merges, storage-manager in the sandbox is "boots, read/delete/bookkeeping
+  work, uploads and signed downloads fail" — documented as such, not hidden.
