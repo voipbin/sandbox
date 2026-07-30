@@ -1,6 +1,6 @@
 # VoIPBin Sandbox — Full Service Parity With Monorepo (versions.lock Advance, direct/webchat Onboarding, PostgreSQL+pgvector, ClickHouse, storage-manager Fix, compose↔lock Sync)
 
-Status: DRAFT (Design Review Round 2, addressing Round 1 REQUEST_CHANGES)
+Status: DRAFT (Design Review Round 5, addressing Round 4 REQUEST_CHANGES)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-31
 Repo: sandbox (one monorepo-side fix, §2.6, lands as its own monorepo PR; everything else lands here)
@@ -63,7 +63,7 @@ Between the old pin (2026-02-21) and HEAD, rag-manager was re-founded: OpenAI em
 GCS `.gob` blob storage → **Vertex AI embeddings + PostgreSQL/pgvector** (commits
 `7f12266d3` 2026-03-17 postgresql-foundation #695, `daca8c74f` #706, `0124a0e40` #713
 which added the strict `Validate()`: `RABBITMQ_ADDRESS`, `GCP_PROJECT_ID`, `GCP_REGION`,
-`POSTGRESQL_DSN` all required, `cmd/rag-manager/main.go:86-88`). There is exactly one
+`POSTGRESQL_DSN` all required — list at `internal/config/config.go:101-115`, call site `cmd/rag-manager/main.go:86-88`). There is exactly one
 embedder implementation at HEAD (`embedder.NewGoogleEmbedder`, `main.go:186`) — no
 fallback exists to degrade to, so a transcribe-style monorepo softening is NOT appropriate
 here; booting without GCP would yield a service that accepts ingestion and fails 100% of
@@ -108,7 +108,7 @@ Advancing `dbscheme_monorepo_commit` past 2026-03-25 applies migration `08d68685
 `direct_id`/`direct_hash` — by design, they had no prior direct records; and the backfill
 INSERT is `WHERE tm_delete IS NULL`, so soft-deleted rows are dropped rather than
 migrated), then **drops `registrar_directs`**. Plus seven webchat migrations
-(2026-07-17..22). Consequence: after the pin advance, ALL service images must move to the
+(2026-07-16..22). Consequence: after the pin advance, ALL service images must move to the
 new pin together — mixing old images against the new schema (or vice versa) is not
 supported.
 
@@ -241,7 +241,9 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
   depends on — kept, not part of the "removed vars" cleanup). Old removed vars
   (`OPENAI_API_KEY` for rag, `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, etc.) deleted
   from the compose block AND from their `init.sh`/`.env.template` counterparts
-  (`init.sh:370-376`, `.env.template:188-194` — the rag-specific set: `GCS_BUCKET`,
+  (the rag-specific set within `init.sh:370-376` / `.env.template:188-194`, EXCLUDING
+  `RAG_TOP_K` at `init.sh:375`/`.env.template:193`, which is still live at HEAD
+  (`bin-rag-manager/internal/config/config.go:29,54,65`) and stays: `GCS_BUCKET`,
   `GCS_EMBEDDINGS_PATH`, `RAG_DOCS_BASE_PATH`, `OPENAI_EMBEDDING_MODEL`, `RAG_LLM_MODEL`,
   `RAG_CHUNK_MAX_TOKENS`; a cycle whose mandate is ending drift shouldn't leave dead
   config in the very files it's syncing. `OPENAI_API_KEY` itself stays — other services
@@ -283,7 +285,7 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
 - New compose infra service `clickhouse` using `clickhouse/clickhouse-server` (pinned
   digest), named volume `clickhouse_data`, healthcheck via its HTTP ping endpoint, not
   published to the host by default.
-- timeline-manager's block gains `CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}`
+- timeline-manager's existing `CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-}` line (docker-compose.yml:1155) changes its default: `CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}`
   (an overridable `:-` default, keeping `.env`'s `CLICKHOUSE_ADDRESS` a live control
   rather than dead config — Round-2 caught an earlier literal-value wording contradicting
   §2.7) and keeps `CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}`. Port 9000/native
@@ -306,13 +308,30 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
 
 Mirror of last cycle's transcribe-manager fix, same review loop: make the missing/invalid
 signing credential non-fatal. `NewFileHandler` returns a working handler with
-`privateKey == nil`. All signing-dependent paths enumerated in §1.2 return a structured
-`*cerrors.VoipbinError` (status `Unavailable`, reason `SIGNING_NOT_CONFIGURED`) instead
-of today's bare `errors.New` in `bucketfileGenerateDownloadURI`'s nil-guard — that means
-`DownloadURIGet`, `DownloadURIRefresh`, and the storagehandler consumers all surface the
-structured error (Round-3 caught an earlier draft that named only `DownloadURIGet` and
-falsely claimed "every non-signing capability works normally", which would have left the
-Create path returning the legacy unstructured error).
+`privateKey == nil`. All signing-dependent READ paths enumerated in §1.2 return a
+structured `*cerrors.VoipbinError` (status `Unavailable`, reason `SIGNING_NOT_CONFIGURED`)
+instead of today's bare `errors.New` in `bucketfileGenerateDownloadURI`'s nil-guard —
+that means `DownloadURIGet`, `DownloadURIRefresh`, and the storagehandler consumers all
+surface the structured error (Round-3 caught an earlier draft that named only
+`DownloadURIGet` and falsely claimed "every non-signing capability works normally", which
+would have left the Create path returning the legacy unstructured error; Create itself is
+handled separately below, hence "read paths" here).
+
+**The degradation covers BOTH keyless and invalid-key deployments (Round-4 caught the
+remedy being scoped to `privateKey == nil` only, while the rationale invoked a sandbox
+failure mode where the key is non-nil but unusable)**: Create's tolerance (below) applies
+to ANY `bucketfileGenerateDownloadURI` failure — the nil-key guard AND a sign-time
+failure from `storage.SignedURL`. This matters because the sandbox's dummy key is
+present-but-invalid, not absent: **empirically verified this cycle** — the dummy
+credential's RSA key is structurally well-formed PEM but mathematically invalid, and Go's
+`x509.ParsePKCS1PrivateKey` (which validates primality, unlike a raw openssl sign
+operation) rejects it with `crypto/rsa: p * q != n`, so `storage.SignedURL` fails at its
+parse step. Round-4 review speculated the dummy key would probably sign; the empirical
+test settles it the other way, confirming the original rationale. Widening Create's
+tolerance to sign-time failures does swallow transient/genuine signing errors on that one
+path — accepted: the alternative is Create failing (and orphaning the moved GCS object)
+on any signing blip, which is strictly worse, and the swallowed error is logged plus
+recoverable via `DownloadURIRefresh`.
 
 **`Create`-path behavior when signing is unavailable (Round-3 required this be explicitly
 decided, not left to the implementer)**: `fileHandler.Create` currently calls
@@ -324,9 +343,10 @@ signing key becomes available; until then, download-URI reads surface the struct
 `SIGNING_NOT_CONFIGURED` error. This keeps the primary write path alive in keyless
 deployments and avoids the orphaned-object failure mode. Alternative considered and
 rejected: failing Create with the structured error — cleaner contract, but it makes file
-upload unusable in every keyless deployment (including this sandbox with its dummy key,
-where `storage.SignedURL` fails at sign time even though a key file exists), which is
-most of what §1.2 argues against. Doc-sync per monorepo policy (service CLAUDE.md if
+upload unusable in every keyless-or-invalid-key deployment (including this sandbox: its
+dummy key is present but rejected by Go's `x509.ParsePKCS1PrivateKey` with
+`crypto/rsa: p * q != n`, empirically verified this cycle — see the both-cases paragraph
+above), which is most of what §1.2 argues against. Doc-sync per monorepo policy (service CLAUDE.md if
 present, `docs/operations.md` failure modes, including the new empty-`URIDownload`
 semantics). Additionally,
 sandbox's storage-manager compose block (which today sets `GCP_PROJECT_ID` but has neither
@@ -368,13 +388,17 @@ Clean-room, same procedure as prior cycles (no sudo, all checks scriptable):
 4. Full stack up — **48 compose services** (44 today + direct-manager + webchat-manager +
    postgres + clickhouse); every defined service accounted for by name in the report.
 5. **Pass criterion**: only `kamailio` and `coredns` down (sudo-gated, unchanged
-   exception). Explicitly: storage-manager, direct-manager, webchat-manager,
-   timeline-manager all running and stable (RestartCount watched over ≥3 minutes, not a
-   single sample). rag-manager is deliberately NOT part of this step's gate — its
-   pass/fail is governed by step 9's branch determination (Round-3 caught steps 5 and 9
-   contradicting each other on this). timeline-manager additionally shows NO ClickHouse
-   ping errors in its log (its write path is now genuinely alive, not silently dead) and
-   its migrations applied.
+   exception). Explicitly: direct-manager, webchat-manager, timeline-manager all running
+   and stable (RestartCount watched over ≥3 minutes, not a single sample). rag-manager is
+   deliberately NOT part of this step's gate — its pass/fail is governed by step 9's
+   branch determination (Round-3 caught steps 5 and 9 contradicting each other on this).
+   storage-manager's gate is conditional on sequencing (Round-4): if §2.6's monorepo fix
+   is in the pinned images, it must be running and stable like the others; if §2.6 hasn't
+   landed (R5's fallback path), the criterion is R5's documented degraded state — boots
+   (`JWTConfigFromJSON` passes on the dummy file), read/delete/bookkeeping RPC works,
+   signing-dependent paths fail — with which branch applied recorded in the report.
+   timeline-manager additionally shows NO ClickHouse ping errors in its log (its write
+   path is now genuinely alive, not silently dead) and its migrations applied.
 6. `setup_test_customer.sh` end-to-end — the F4 regression check: customer → **admin agent
    auto-created (direct-manager RPC succeeds)** → password → JWT login → billing → 3
    extensions → access key. This is the single most load-bearing check in the cycle.
@@ -450,7 +474,11 @@ VOIP-1274.
   the rest of the cycle.
 - **R5 — storage-manager sequencing, boot AND function.** If §2.6's monorepo PR stalls,
   the sandbox side can still ship: the dummy-credential mount lets the CURRENT
-  (post-1f9002953) image boot only if the dummy key parses as valid PEM (unverified). But
+  (post-1f9002953) image boot — the boot gate is only `GOOGLE_APPLICATION_CREDENTIALS`
+  being set plus `google.JWTConfigFromJSON` succeeding, which merely json-unmarshals and
+  checks `type == "service_account"` (it does NOT parse the PEM); the dummy file
+  satisfies both. If boot fails at all it would be `storage.NewClient` at
+  `filehandler/main.go:116`, not key parsing. But
   boot is not the only exposure (Round-3 corrected an earlier draft implying it was):
   even booted with the dummy key, `storage.SignedURL` fails at actual sign time, so the
   §1.2 signing-dependent set — including file Create until §2.6's empty-`URIDownload`
