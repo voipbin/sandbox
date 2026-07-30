@@ -1,6 +1,6 @@
 # VoIPBin Sandbox — Install Reliability Fix (Call-Manager / Transcribe-Manager / Timeline-Manager Crash Loops, Version Pin Refresh, Env Template Sync)
 
-Status: DRAFT (Design Review Round 5, addressing Round 4 REQUEST_CHANGES)
+Status: DRAFT (Design Review Round 6, incorporating Round 5 APPROVE non-blocking nits)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-30
 Repo: sandbox (fixes 2.1/2.2 land in monorepo, §2.3 is a sandbox-side non-goal with no code change; this doc is the sandbox-side design of record for the whole effort)
@@ -47,8 +47,9 @@ latent today and will only surface after this cycle's own version-pin refresh (�
 `bin-timeline-manager/pkg/subscribehandler/main.go:47` includes
 `commonoutline.QueueNameSentinelEvent` in a package-level `subscribeTargets
 []commonoutline.QueueName` (line 27), and its `Run(ctx context.Context) (<-chan struct{},
-error)` (`main.go:112-134` for the queue-create-then-subscribe-loop portion; the full
-function spans to 162) has the fix-relevant structure in common with call-manager's
+error)` (`main.go:112-130` for the queue-create-then-subscribe-loop portion; the full
+function spans to 162, with a separate, deliberately non-fatal 27th bind — the
+`QueueNameWebhookEventTopic` `#`-wildcard cutover — at 131-144) has the fix-relevant structure in common with call-manager's
 `Run() error` — `QueueCreate`, then a loop that returns the first `QueueSubscribe` failure
 — even though the signature, target-list type, and surrounding scaffolding differ. That
 error is fatal via the call site at `cmd/timeline-manager/main.go:221-224` (inside
@@ -101,8 +102,10 @@ for call-manager/transcribe-manager applies here too. Out of scope to fix this c
 wrong: `docker-compose.yml:589` and `:783` are actually `call-manager` and `flow-manager`,
 and neither reads `CLICKHOUSE_ADDRESS` in Go code at all per `grep -rl CLICKHOUSE_ADDRESS
 --include=*.go`, which matches only `bin-timeline-manager`. Those two compose lines are
-leftover, dead per-service ClickHouse config from before the 2026-03-15 centralization —
-see §2.5's dead-var handling.)
+leftover per-service ClickHouse config, dead at HEAD (the 2026-03-15 design doc confirms
+`notifyhandler` took a `clickhouseAddress` parameter directly before that change, so these
+were live-but-unused at the Feb-21 pin and only became fully dead once that parameter was
+removed) — see §2.5's dead-var handling.)
 
 **Version drift is not implicated in the two bugs found and shipped-today.** `versions.lock`
 pins the Feb-21 monorepo commit while monorepo HEAD is now Jul-30 (~5 months). Migrations
@@ -193,10 +196,14 @@ principle, hit the identical AMQP-404-on-`QueueBind` fatal path this document is
 the sentinel target specifically, if timeline-manager's `QueueSubscribe` loop reaches that
 target before the owning service has declared its exchange. This is not a new bug
 introduced by this design — it is a pre-existing characteristic of an unordered
-service-mesh boot with `restart: always`, and it has evidently not been an observed problem
-in practice for the other 25 targets to date (timeline-manager was not on the list of
-customer/repro-observed crash loops before the sentinel target was added in March). This
-document's fix does not extend the same guard to all 26 targets (§2.1 above explains why a
+service-mesh boot with `restart: always`. This document's own reproduction cannot speak to
+whether the other 25 targets are, in practice, an observed problem: the currently-deployed
+timeline-manager build predates the `subscribehandler` package entirely (§1), so it has
+never attempted any of the 26 binds, sentinel or otherwise, in production either. This
+paragraph is a disclosed, accepted risk based on the boot-order/`restart: always` mechanics
+themselves, not on an absence-of-evidence argument — it should be watched for during Phase
+C and beyond, not treated as pre-validated. This document's fix does not extend the same
+guard to all 26 targets (§2.1 above explains why a
 blanket declare would be the wrong general-purpose fix); instead this cycle accepts that
 timeline-manager may still experience **transient**, self-resolving restarts from ordinary
 compose boot-order races, distinct from the **sustained** sentinel-caused crash loop this
