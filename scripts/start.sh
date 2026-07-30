@@ -14,9 +14,43 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Override-friendly for test isolation. Blast radius: an operator's exported
 # PROJECT_DIR redirects which tree this script operates on — deliberate.
 PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
+# resolv.conf path (overridable so tests can stub host probes)
+RESOLV_CONF="${RESOLV_CONF:-/etc/resolv.conf}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
+
+# =============================================================================
+# Result line + exit helpers (design §2.2 pattern, shared with init.sh)
+# Every exit path — including set -e aborts — must end with a
+# VOIPBIN_START: status=ok|error line on stdout.
+# =============================================================================
+
+# emit_result <status> [detail...]
+emit_result() {
+    local status="$1"
+    shift
+    if [ $# -gt 0 ]; then
+        echo "VOIPBIN_START: status=$status $*"
+    else
+        echo "VOIPBIN_START: status=$status"
+    fi
+    START_RESULT_EMITTED="true"
+}
+
+# EXIT trap: registered inside main() (NOT at top level — the bats helper
+# sources this file minus 'main "$@"', so a top-level trap would fire at
+# every test-shell exit). The already-emitted flag prevents double printing.
+start_exit_trap() {
+    local code=$?
+    if [ "${START_RESULT_EMITTED:-false}" != "true" ]; then
+        if [ $code -eq 0 ]; then
+            echo "VOIPBIN_START: status=ok"
+        else
+            echo "VOIPBIN_START: status=error reason=\"start aborted (exit $code)\""
+        fi
+    fi
+}
 
 # Check if a command exists
 check_command() {
@@ -120,36 +154,17 @@ setup_mkcert() {
         return 0
     fi
 
-    # Check if mkcert is installed
+    # Presence check only (design §2.5): package install and CA trust install
+    # live exclusively in setup-host.sh — the two inline escalation sites
+    # (apt install, mkcert -install) were removed from here. Missing mkcert in
+    # internal mode is a fail-fast, never an inline escalation.
     if ! command -v mkcert &> /dev/null; then
-        log_warn "mkcert not installed - installing for browser-trusted certificates..."
-
-        # Detect OS and install mkcert
-        if command -v apt &> /dev/null; then
-            sudo apt update && sudo apt install -y mkcert libnss3-tools
-        elif command -v brew &> /dev/null; then
-            brew install mkcert
-        else
-            log_error "Could not install mkcert automatically."
-            log_error "Please install manually: https://github.com/FiloSottile/mkcert"
-            return 1
-        fi
-    fi
-
-    if ! command -v mkcert &> /dev/null; then
-        log_error "mkcert installation failed"
+        log_error "mkcert is not installed."
+        log_error "Run host setup first: sudo ./scripts/setup-host.sh"
         return 1
     fi
 
     log_info "mkcert: installed"
-
-    # Install local CA if not already done
-    if ! mkcert -check 2>/dev/null; then
-        log_info "Installing mkcert local CA (may require sudo)..."
-        mkcert -install
-    else
-        log_info "mkcert CA: already installed"
-    fi
 
     # Check if certificates were generated with mkcert (mkcert certs are larger)
     local api_cert="$PROJECT_DIR/certs/api/cert.pem"
@@ -329,6 +344,37 @@ check_voip_interfaces() {
         return 0
     fi
     return 1
+}
+
+# Host prerequisite check (design §2.5) — replaces check_root. Reuses
+# check_voip_interfaces, which probes BOTH kamailio-int and rtpengine-int,
+# making the Step-9 sudo below provably unreachable on the unprivileged path
+# (a narrower probe would reintroduce a sudo prompt into the AI flow).
+# Internal mode additionally requires resolv.conf → 127.0.0.1 (or a CoreDNS
+# that answers). Returns 0 when satisfied; else sets HOST_PREREQS_MISSING
+# and returns 1 (the caller decides root-inline-setup vs fail-fast).
+check_host_prereqs() {
+    HOST_PREREQS_MISSING=""
+
+    if ! check_voip_interfaces; then
+        HOST_PREREQS_MISSING="VoIP network interfaces (kamailio-int/rtpengine-int) not configured"
+        return 1
+    fi
+
+    if [ "$(get_domain_mode "$PROJECT_DIR/.env")" = "internal" ]; then
+        if grep -q "nameserver 127.0.0.1" "$RESOLV_CONF" 2>/dev/null; then
+            return 0
+        fi
+        # resolv.conf not pointing at CoreDNS — accept a CoreDNS that answers
+        if command -v dig &> /dev/null && \
+           [ -n "$(dig +short +time=1 +tries=1 @127.0.0.1 voipbin.test 2>/dev/null)" ]; then
+            return 0
+        fi
+        HOST_PREREQS_MISSING="internal-mode DNS not configured (resolv.conf does not point at 127.0.0.1 and CoreDNS is not answering)"
+        return 1
+    fi
+
+    return 0
 }
 
 # Check if database is initialized
@@ -587,6 +633,9 @@ setup_test_customer() {
 }
 
 main() {
+    # Result-line guarantee: registered here, not at top level (§2.2 pattern).
+    trap start_exit_trap EXIT
+
     # Global variables (set by setup_test_customer or fetch_customer_id)
     CUSTOMER_ID=""
     ACCESSKEY_TOKEN=""
@@ -602,13 +651,32 @@ main() {
     # a missing .env keeps the "run init first" message below.
     if [ -f "$PROJECT_DIR/.env" ]; then
         if ! check_compose_profiles_conflict "$PROJECT_DIR/.env"; then
-            echo "VOIPBIN_START: status=error reason=\"$COMPOSE_PROFILES_CONFLICT_REASON\""
+            emit_result error "reason=\"$COMPOSE_PROFILES_CONFLICT_REASON\""
             exit 1
         fi
     fi
 
-    # Check for root/sudo access
-    check_root
+    # Host prerequisites (replaces check_root, design §2.5). Root + missing →
+    # host setup inline via the setup-host.sh subprocess (single
+    # implementation, no sourcing). Unprivileged + missing → fail fast with
+    # next=. A missing .env skips the check in both cases so the
+    # "run init first" message below stays authoritative.
+    if [ -f "$PROJECT_DIR/.env" ] && ! check_host_prereqs; then
+        if [ "$EUID" -eq 0 ]; then
+            log_warn "Host prerequisites missing: $HOST_PREREQS_MISSING"
+            log_info "Running host setup (setup-host.sh)..."
+            # Tolerate failure here: on a fresh install the compose network
+            # does not exist yet, so the interface step can only complete at
+            # Step 9 below (after docker compose up) — today's root behavior.
+            "$SCRIPT_DIR/setup-host.sh" || \
+                log_warn "Host setup incomplete; Steps 7-9 below will retry after services start"
+        else
+            log_error "Host prerequisites missing: $HOST_PREREQS_MISSING"
+            log_error "Run host setup first: sudo ./scripts/setup-host.sh"
+            emit_result error "reason=\"host setup missing\" next=\"sudo ./scripts/setup-host.sh\""
+            exit 1
+        fi
+    fi
 
     cd "$PROJECT_DIR"
 
@@ -713,6 +781,9 @@ main() {
     fi
 
     # Step 9: Setup VoIP network interfaces
+    # Only reachable on the root path: the check_host_prereqs gate at the top
+    # of main() fails fast unprivileged unless both interfaces already exist,
+    # so this sudo can never prompt in the unprivileged (AI) flow (§2.5).
     log_step "Checking VoIP network interfaces..."
     if check_voip_interfaces; then
         log_info "VoIP network interfaces already configured"
@@ -830,6 +901,9 @@ main() {
     echo "  Stop:          voipbin> stop"
     echo "  Full reset:    voipbin> clean --all"
     echo ""
+
+    # Machine-parseable result line (§2.2)
+    emit_result ok "services=$running/$total"
 }
 
 main "$@"

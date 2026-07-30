@@ -460,8 +460,10 @@ main() {
     echo "=============================================="
     echo ""
 
-    # Check for root/sudo access
-    check_root
+    # No root check (design §2.5): unprivileged init performs every
+    # unprivileged step (.env, certs, config) and defers host mutation to
+    # sudo ./scripts/setup-host.sh; the root convenience path keeps today's
+    # inline behavior (mkcert CA install + DNS setup at the end).
 
     # Environment prerequisites
     if ! command -v openssl &> /dev/null; then
@@ -490,7 +492,14 @@ main() {
             if ! check_mkcert; then
                 die 2 "--tls mkcert requested but mkcert is not installed (sudo apt install mkcert)"
             fi
-            setup_mkcert_ca
+            # CA trust install is a host mutation: root path only (§2.5).
+            # Unprivileged, mkcert creates the CA implicitly on first cert
+            # generation; trust is installed later by setup-host.sh.
+            if [[ $EUID -eq 0 ]]; then
+                setup_mkcert_ca
+            else
+                log_info "  Unprivileged run: CA trust will be installed by sudo ./scripts/setup-host.sh"
+            fi
             USE_MKCERT="true"
             ;;
         *)
@@ -498,7 +507,11 @@ main() {
             # selfsigned — current behavior.
             if check_mkcert; then
                 log_info "  mkcert found - will generate browser-trusted certificates"
-                setup_mkcert_ca
+                if [[ $EUID -eq 0 ]]; then
+                    setup_mkcert_ca
+                else
+                    log_info "  Unprivileged run: CA trust will be installed by sudo ./scripts/setup-host.sh"
+                fi
                 USE_MKCERT="true"
                 INIT_TLS_MODE="mkcert"
             else
@@ -717,9 +730,25 @@ EOF
     log_info "  Created $ENV_FILE"
     echo ""
 
-    # Step 8: Setup DNS for SIP domains
-    setup_dns "$HOST_IP" "$KAMAILIO_EXTERNAL_IP" "$API_EXTERNAL_IP" "$ADMIN_EXTERNAL_IP" "$MEET_EXTERNAL_IP" "$TALK_EXTERNAL_IP"
+    # Step 8: Setup DNS for SIP domains (root path only, §2.5 — the
+    # unprivileged path defers every host mutation to setup-host.sh)
+    if [[ $EUID -eq 0 ]]; then
+        setup_dns "$HOST_IP" "$KAMAILIO_EXTERNAL_IP" "$API_EXTERNAL_IP" "$ADMIN_EXTERNAL_IP" "$MEET_EXTERNAL_IP" "$TALK_EXTERNAL_IP"
+    else
+        log_info "Unprivileged run: skipping DNS setup (handled by sudo ./scripts/setup-host.sh)"
+    fi
     echo ""
+
+    # Ownership (§2.5): on the root convenience path (sudo ./scripts/init.sh),
+    # hand the generated files back to the invoking user so a later
+    # unprivileged start.sh/install-certs.sh doesn't hit root-owned files.
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+        local sudo_group
+        sudo_group="$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")"
+        chown "$SUDO_USER:$sudo_group" "$ENV_FILE" 2>/dev/null || true
+        chown -R "$SUDO_USER:$sudo_group" "$CERTS_DIR" "$PROJECT_DIR/config" 2>/dev/null || true
+        log_info "Ownership of .env, certs/, config/ set to $SUDO_USER"
+    fi
 
     # Summary
     echo "=============================================="

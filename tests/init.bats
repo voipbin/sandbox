@@ -593,17 +593,45 @@ teardown() {
     [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=error ]]
 }
 
-@test "init.sh emits a result line even when aborted by check_root" {
-    # Unprivileged run with valid flags reaches check_root (Phase 1 still
-    # requires root) — the EXIT trap must still close with a result line.
+# =============================================================================
+# Unprivileged path (design §2.5, Phase 3): no root check; host mutations
+# (mkcert CA trust, DNS) are deferred to setup-host.sh.
+# =============================================================================
+
+@test "init.sh unprivileged run generates .env and certs, defers CA trust and DNS to setup-host" {
     if [[ $EUID -eq 0 ]]; then
         skip "test requires an unprivileged user"
     fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    # mkcert stub: creates cert files, never touches a real CAROOT
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) echo "MKCERT_INSTALL_CALLED"; exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    # Canary stubs: the unprivileged path must never call these
+    setup_mkcert_ca() { echo "STUB_CA_CALLED"; }
+    setup_dns() { echo "STUB_DNS_CALLED"; }
 
-    run bash "$SCRIPTS_DIR/init.sh" --yes
+    run main --yes
 
-    [[ "$status" -ne 0 ]]
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/.env" ]]
+    [[ -f "$TEST_TEMP_DIR/certs/sip.voipbin.test/fullchain.pem" ]]
+    [[ -f "$TEST_TEMP_DIR/certs/api/cert.pem" ]]
+    [[ "$output" != *'STUB_CA_CALLED'* ]]
+    [[ "$output" != *'STUB_DNS_CALLED'* ]]
+    [[ "$output" != *'MKCERT_INSTALL_CALLED'* ]]
     local last_line
     last_line=$(echo "$output" | tail -1)
-    [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=error ]]
+    [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=ok ]]
+    [[ "$last_line" == *'next="sudo ./scripts/setup-host.sh"'* ]]
 }

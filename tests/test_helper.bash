@@ -368,6 +368,28 @@ load_start_functions() {
     PROJECT_DIR="$TEST_TEMP_DIR"
 }
 
+# Load setup-host.sh functions without running main()
+# Same pattern as load_start_functions: strip the trailing main "$@" call,
+# skip re-sourcing common.sh, and disable set -e.
+load_setup_host_functions() {
+    source "$SCRIPTS_DIR/common.sh"
+
+    local temp_setup_host="$TEST_TEMP_DIR/setup_host_functions.sh"
+
+    sed -e '/^main "\$@"$/d' \
+        -e 's|source "\$SCRIPT_DIR/common.sh"|# common.sh already sourced|' \
+        -e 's/^set -e$/# set -e  # disabled for testing/' \
+        "$SCRIPTS_DIR/setup-host.sh" > "$temp_setup_host"
+
+    SCRIPT_DIR="$SCRIPTS_DIR"
+
+    source "$temp_setup_host"
+
+    # Re-assert test isolation
+    PROJECT_DIR="$TEST_TEMP_DIR"
+    ENV_FILE="$TEST_TEMP_DIR/.env"
+}
+
 # Load setup-voip-network.sh functions
 # This script has inline code, so we need to be careful
 load_network_functions() {
