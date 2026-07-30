@@ -425,6 +425,31 @@ load_install_certs_functions() {
     CERTS_DIR="$TEST_TEMP_DIR/certs"
 }
 
+# Load check-install.sh functions without running main()
+# Same pattern as load_start_functions: strip the trailing main "$@" call and
+# skip re-sourcing common.sh (check-install.sh has no set -e by design).
+load_check_install_functions() {
+    source "$SCRIPTS_DIR/common.sh"
+
+    local temp_check_install="$TEST_TEMP_DIR/check_install_functions.sh"
+
+    sed -e '/^main "\$@"$/d' \
+        -e 's|source "\$SCRIPT_DIR/common.sh"|# common.sh already sourced|' \
+        "$SCRIPTS_DIR/check-install.sh" > "$temp_check_install"
+
+    source "$temp_check_install"
+
+    # Re-assert AFTER sourcing: the extracted snippet's own top-level
+    # SCRIPT_DIR=$(dirname BASH_SOURCE) resolves to the temp dir, which would
+    # break "$SCRIPT_DIR/<sub-script>" subprocess calls under test.
+    SCRIPT_DIR="$SCRIPTS_DIR"
+
+    # Re-assert test isolation
+    PROJECT_DIR="$TEST_TEMP_DIR"
+    ENV_FILE="$TEST_TEMP_DIR/.env"
+    CERTS_DIR="$TEST_TEMP_DIR/certs"
+}
+
 # Load setup-voip-network.sh functions
 # This script has inline code, so we need to be careful
 load_network_functions() {
