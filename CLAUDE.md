@@ -80,6 +80,101 @@ The `init_database.sh` script:
 **Note:** Migrations run inside a container (`scripts/migrate.sh`, python:3.11-slim
 on the compose network). No host `alembic`/`mysqlclient` installation is needed.
 
+## Install Modes and AI-Install Contract (VOIP-1275)
+
+The sandbox has two install modes, selected at init time and recorded in
+`.env` as `DOMAIN_MODE`:
+
+- **internal (default):** base domain `voipbin.test`, CoreDNS + resolv.conf
+  managed by the sandbox, mkcert/self-signed TLS. Byte-for-byte the classic
+  behavior.
+- **external:** a real operator-owned domain, operator-managed DNS records,
+  bring-your-own certificate (`install-certs.sh`). The sandbox never
+  touches DNS or the trust store in this mode.
+
+**Mode detection:** read `DOMAIN_MODE` from `.env`. A missing key (or a
+missing `.env`) means internal; that is the legacy rule every mode gate
+follows (`get_domain_mode` in `scripts/common.sh`).
+
+### The 4-command unprivileged flow
+
+An AI agent installs the sandbox with exactly one sudo command:
+
+```bash
+# internal mode
+./scripts/init.sh --yes
+sudo ./scripts/setup-host.sh     # the single sudo command
+./scripts/start.sh
+./scripts/check-install.sh
+
+# external mode (real domain + BYO certificate)
+./scripts/init.sh --mode external --domain example.com --tls byo \
+  --cert fullchain.pem --key privkey.pem --yes
+sudo ./scripts/setup-host.sh
+./scripts/start.sh
+./scripts/check-install.sh
+```
+
+`setup-host.sh` owns every host mutation: mkcert package + CA trust
+(internal only, with the two-pass CAROOT handoff), Corefile + DNS setup
+(internal only), the compose default docker network on fresh hosts, and
+the VoIP macvlan interfaces (both modes). It is idempotent; each step
+probes current state and logs a skip.
+
+### Result-line grammar
+
+Every entry-point script ends with a machine-parseable result line, the
+last line on stdout, on success and on failure (including `set -e` aborts):
+
+| Script | Prefix | Success shape |
+|--------|--------|---------------|
+| `init.sh` | `VOIPBIN_INIT:` | `status=ok mode=<m> domain=<d> tls=<t> next="<command>"` |
+| `setup-host.sh` | `VOIPBIN_SETUP_HOST:` | `status=ok mode=<m> steps=<name:done\|skipped,...>` |
+| `start.sh` | `VOIPBIN_START:` | `status=ok services=<running>/<total>` |
+| `check-install.sh` | `VOIPBIN_CHECK:` | `status=pass\|fail passed=N failed=M mode=<m>` |
+| `install-certs.sh` | `VOIPBIN_CERTS:` | `status=ok domain=<d> expires=<date>` |
+
+Failure shape for the first, second, third and fifth:
+`status=error reason="..."` (plus `next="..."` where a remedy exists).
+`check-install.sh` uses `status=fail` with per-check
+`CHECK <name>: pass|fail|skip <detail>` lines above it.
+
+Exit codes: `0` success; `1` validation/user error; `2` environment error.
+`check-install.sh` exits `0` only when every check passes.
+
+### Caveat: mode/domain switching
+
+The base domain is baked into database state (extension SIP realms are
+`{customer_id}.registrar.<domain>`), so `init.sh` refuses a mode or domain
+switch on an existing `.env`. Escape hatches: full reset
+(`./scripts/clean.sh --volumes --purge`, always the combined form) or
+`init.sh --force-reinit` (rewrites `.env`/certs/Corefile, never the
+database, and prints the live-state follow-up: recreate extensions via the
+API and recreate `registrar-manager`, `api-manager`, `hook-manager`,
+`customer-manager`, `square-*`). An internal-to-external `--force-reinit`
+first requires a clean host (stack down under the old `.env`, then
+`sudo ./scripts/setup-dns.sh --uninstall`).
+
+### External-mode DNS records (operator runbook)
+
+Mirrored from README.md "External Mode (Real Domain)". `<d>` is the base
+domain; `voipbin dns` prints this table with actual values substituted:
+
+| Record | Type | Target | Purpose |
+|---|---|---|---|
+| `api.<d>` | A | Host IP | REST API + WebSocket (:8443) |
+| `admin.<d>` / `meet.<d>` / `talk.<d>` | A | Host IP | Web UIs (:3003/:3004/:3005) |
+| `sip.<d>` | A | Kamailio external IP | SIP signaling / WSS (:5060/:5066) |
+| `sip-service.<d>`, `conference.<d>`, `trunk.<d>`, `pstn.<d>` | A | Kamailio external IP | SIP surfaces |
+| `registrar.<d>` | A | Kamailio external IP | Apex registrar name, **not** covered by the wildcard below |
+| `*.registrar.<d>` | A | Kamailio external IP | Per-customer SIP realm resolution |
+
+Host IP and Kamailio IP are two distinct addresses on the same subnet;
+external mode targets directly-routable hosts (single-public-IP NAT
+environments are a documented limitation). The `admin`/`meet`/`talk` UIs
+are plain HTTP on :3003-:3005; on a routable domain front them with a TLS
+reverse proxy or restrict them to trusted networks.
+
 ## Environment Setup
 
 **Prerequisites:**
@@ -93,6 +188,10 @@ on the compose network). No host `alembic`/`mysqlclient` installation is needed.
 The `./scripts/init.sh` script auto-generates `.env` with detected values. If `mkcert` is installed, it creates browser-trusted certificates. Otherwise, it falls back to self-signed certificates (browser will show warnings).
 
 ## DNS Configuration
+
+> **Scope: internal mode (default).** This section describes the automatic
+> `.voipbin.test` DNS the sandbox manages itself. In external mode DNS is
+> operator-managed; see "Install Modes and AI-Install Contract" above.
 
 VoIPBin uses the `.voipbin.test` domain (IANA reserved TLD per RFC 2606) for SIP routing. The setup scripts automatically configure DNS forwarding.
 
@@ -188,6 +287,10 @@ Key variables:
 
 | Variable | Purpose |
 |----------|---------|
+| `DOMAIN_MODE` | Install mode: `internal` (default) or `external`. Written by init.sh; a missing key means internal (legacy rule) |
+| `COMPOSE_PROFILES` | Docker compose profile set read from `.env`: `internal-dns` in internal mode (enables coredns), empty in external mode. Always present; a shell-exported value that contradicts `.env` fails fast |
+| `TLS_MODE` | `mkcert`, `selfsigned` or `byo`. Set by init.sh (`--tls`); `byo` certificates are managed only by `install-certs.sh` and never auto-regenerated |
+| `BASE_DOMAIN` | The base domain all 11 derived domain values are composed from. Edit it and re-run init; do not edit the derived vars individually |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON |
 | `API_SSL_CERT_BASE64` / `API_SSL_PRIVKEY_BASE64` | Base64-encoded TLS certs for API |
 | `OPENAI_API_KEY` | AI/chatbot features |

@@ -30,6 +30,8 @@
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Install Modes](#install-modes)
+- [External Mode (Real Domain)](#external-mode-real-domain)
 - [Web Applications](#web-applications)
 - [Technical Architecture](#technical-architecture)
 - [Prerequisites](#prerequisites)
@@ -109,6 +111,201 @@ voipbin> api                        # Enter API context
 voipbin(api)> login admin@localhost
 voipbin(api)> get /v1.0/extensions
 ```
+
+---
+
+## Install Modes
+
+The sandbox installs in one of two modes, chosen at init time and recorded
+in `.env` as `DOMAIN_MODE`:
+
+| | Internal mode (default) | External mode |
+|---|---|---|
+| Base domain | `voipbin.test` (IANA reserved TLD, RFC 2606) | Your real domain (e.g. `example.com`) |
+| DNS | Automatic. CoreDNS container plus `/etc/resolv.conf` forwarding | Operator-managed A records at your DNS provider |
+| TLS | Automatic. mkcert (browser-trusted) or self-signed | Bring your own certificate (Let's Encrypt recipe below) |
+| Reachable from | This machine and your LAN | Any host that can route to your IPs |
+| Best for | Local development, demos, evaluation | A sandbox shared under a real domain |
+
+**Decision guidance:** use internal mode unless you specifically need the
+sandbox reachable under a real domain from machines you do not control.
+Internal mode requires nothing from you (no domain, no certificate, no DNS
+provider) and stays byte-for-byte the behavior this sandbox always had.
+External mode is for directly-routable hosts (on-prem, corporate LAN with
+internal DNS, cloud with multiple routable IPs); see the prerequisites in
+the next section.
+
+**Mode selection is an init-time decision.** Extension SIP realms embed the
+base domain in the database, so `init.sh` refuses to switch mode or domain
+on an existing install. See
+[Changing mode or domain later](#changing-mode-or-domain-later) for the two
+supported escape hatches.
+
+### Unprivileged install flow (both modes)
+
+Besides the classic `sudo ./voipbin` flow, the sandbox supports a
+4-command unprivileged flow with exactly one sudo command, designed so an
+AI agent (or a human without standing root) can drive the install:
+
+```bash
+./scripts/init.sh --yes          # 1. Generate .env and certificates (unprivileged)
+sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
+./scripts/start.sh               # 3. Start all services (unprivileged)
+./scripts/check-install.sh       # 4. Self-verify the install (unprivileged)
+```
+
+Every entry-point script ends with a machine-parseable result line
+(`VOIPBIN_INIT:`, `VOIPBIN_SETUP_HOST:`, `VOIPBIN_START:`,
+`VOIPBIN_CHECK:`, `VOIPBIN_CERTS:`). The full contract is documented in
+[CLAUDE.md](CLAUDE.md).
+
+---
+
+## External Mode (Real Domain)
+
+External mode runs the sandbox under a real domain with a real certificate.
+The sandbox never touches DNS or the trust store in this mode; you own both.
+
+### Prerequisites
+
+- **A directly-routable host.** The sandbox binds two distinct IP addresses
+  on the same subnet: `HOST_EXTERNAL_IP` (web/API) and
+  `KAMAILIO_EXTERNAL_IP` (SIP signaling, a macvlan secondary address), plus
+  `RTPENGINE_EXTERNAL_IP` for media. The deployment environment must route
+  all of them. Supported targets: on-prem servers, corporate LANs with
+  internal DNS, cloud environments with multiple routable IPs.
+- **Known limitation:** single-public-IP NAT environments (a typical cloud
+  VM) are not supported this cycle. Kamailio runs with host networking and
+  binds its dedicated address directly, so there is no port mapping to
+  remap behind a NAT. This is tracked as a follow-up.
+- **A real domain** you control at a DNS provider.
+- **A certificate** covering the required names (a wildcard is the easy
+  path; see the recipe below).
+
+### Step 1: Create DNS records
+
+Create these records at your DNS provider (replace `example.com` with your
+domain, and the targets with your actual IPs):
+
+| Record | Type | Target | Purpose |
+|---|---|---|---|
+| `api.example.com` | A | Host IP | REST API + WebSocket (:8443) |
+| `admin.example.com` | A | Host IP | Admin Console (:3003) |
+| `meet.example.com` | A | Host IP | Meet (:3004) |
+| `talk.example.com` | A | Host IP | Talk (:3005) |
+| `sip.example.com` | A | Kamailio external IP | SIP signaling / WSS (:5060/:5066) |
+| `sip-service.example.com` | A | Kamailio external IP | SIP surface |
+| `conference.example.com` | A | Kamailio external IP | SIP surface |
+| `trunk.example.com` | A | Kamailio external IP | SIP trunking |
+| `pstn.example.com` | A | Kamailio external IP | PSTN gateway |
+| `registrar.example.com` | A | Kamailio external IP | Apex registrar name. Passed to the web clients as `REGISTRAR_DOMAIN` and **not** covered by the wildcard below |
+| `*.registrar.example.com` | A | Kamailio external IP | Per-customer SIP realm resolution (devices resolving the realm domain directly) |
+
+TTL guidance: a short TTL (300s or less) while setting up makes mistakes
+cheap to fix; raise it once `check-install.sh` passes.
+
+Remember that Host IP and Kamailio IP are **two different addresses**. The
+`voipbin dns` CLI subcommands print this exact table with your configured
+domain and IPs substituted.
+
+> **Warning: the web UIs are plain HTTP.** The `admin`/`meet`/`talk` UIs
+> are served over cleartext HTTP on ports 3003 to 3005 in both modes. On a
+> routable domain this means login credentials and JWTs travel in the
+> clear. Front them with a TLS-terminating reverse proxy (nginx, Caddy,
+> Traefik) or restrict those ports to trusted networks. UI TLS termination
+> inside the sandbox is a tracked follow-up.
+
+### Step 2: Obtain a certificate (Let's Encrypt recipe)
+
+The sandbox installs whatever certificate you bring (`--tls byo`). The
+certificate must cover `api.`, `sip.`, `sip-service.`, `conference.`,
+`trunk.`, and `registrar.` of your domain; a wildcard covers all six.
+`*.registrar.example.com` is additionally recommended for SIP devices that
+resolve the realm domain directly.
+
+A wildcard requires the DNS-01 challenge (HTTP-01 cannot issue wildcards):
+
+```bash
+certbot certonly --preferred-challenges dns --manual \
+  -d example.com -d '*.example.com' -d '*.registrar.example.com'
+```
+
+DNS-provider certbot plugins (for example `certbot-dns-cloudflare` and
+friends) make this non-interactive; the `--manual` form asks you to create
+TXT records by hand.
+
+### Step 3: Initialize (unprivileged)
+
+```bash
+./scripts/init.sh --mode external --domain example.com --tls byo \
+  --cert /etc/letsencrypt/live/example.com/fullchain.pem \
+  --key  /etc/letsencrypt/live/example.com/privkey.pem \
+  --yes
+```
+
+The certificate is validated (key match, SAN coverage, expiry) before
+`.env` is written; a bad certificate aborts cleanly. In external mode init
+generates no Corefile and no self-signed certificates.
+
+### Step 4: Host setup (the single sudo command)
+
+```bash
+sudo ./scripts/setup-host.sh
+```
+
+In external mode this only ensures the compose docker network exists
+(fresh hosts have none until the first `docker compose up`) and creates
+the VoIP macvlan interfaces. mkcert and DNS steps are skipped; TLS and DNS
+are operator-managed.
+
+### Step 5: Start and verify (unprivileged)
+
+```bash
+./scripts/start.sh
+./scripts/check-install.sh
+```
+
+`check-install.sh` verifies service counts, the TLS chain (strictly
+without `-k`), DNS resolution against the system resolver, API liveness,
+realm configuration, and that resolv.conf was left untouched. It prints
+one `CHECK` line per check and a final `VOIPBIN_CHECK:` result line, and
+exits 0 only when everything passes.
+
+### Certificate renewal
+
+`install-certs.sh` is idempotent and usable as a certbot deploy hook, so
+renewal reinstalls the certificate and recreates the consuming services
+automatically:
+
+```bash
+certbot renew --deploy-hook \
+  '/path/to/sandbox/scripts/install-certs.sh /etc/letsencrypt/live/example.com/fullchain.pem /etc/letsencrypt/live/example.com/privkey.pem'
+```
+
+The deploy hook runs as root; the script preserves the ownership and mode
+of `.env` and everything under `certs/`, so later unprivileged runs do not
+hit root-owned files.
+
+### Changing mode or domain later
+
+The base domain is baked into database state (extension SIP realms are
+`{customer_id}.registrar.<domain>`), so `init.sh` refuses a mode or domain
+switch on an existing install. Two supported escape hatches:
+
+1. **Full reset** (demo installs): `./scripts/clean.sh --volumes --purge`
+   then re-run init. Always use the combined form; `--purge` alone keeps
+   the database volume with the old-domain realms, which is the worst
+   state.
+2. **`init.sh --force-reinit`**: rewrites `.env`, certificates and (in
+   internal mode) the Corefile for the new domain without touching the
+   database, then prints the exact follow-up needed for live state: delete
+   and recreate extensions via the API (or `setup_test_customer.sh` for
+   the test customer) and recreate the `registrar-manager`, `api-manager`,
+   `hook-manager`, `customer-manager` and `square-*` containers. Switching
+   from internal to external additionally requires a clean host first
+   (stack down under the old `.env`, then
+   `sudo ./scripts/setup-dns.sh --uninstall`); the flag refuses and prints
+   the exact commands while any internal-mode host state remains.
 
 ---
 
@@ -267,6 +464,10 @@ mkcert -install
 
 ## Networking & DNS
 
+> **Scope: internal mode (default).** This section describes the automatic
+> `.voipbin.test` DNS the sandbox manages itself. In external mode DNS is
+> operator-managed; see [External Mode (Real Domain)](#external-mode-real-domain).
+
 ### Why `.voipbin.test`?
 
 VoIPBin uses the `.voipbin.test` domain (based on IANA reserved `.test` TLD per RFC 2606) instead of `localhost` for several critical reasons:
@@ -367,6 +568,12 @@ SIP phones and softphones on your network can use the sandbox's DNS:
 ---
 
 ## SSL Certificate Trust
+
+> **Scope: internal mode (default).** This section covers the mkcert and
+> self-signed certificates the sandbox generates itself. In external mode
+> certificates are bring-your-own via `./scripts/install-certs.sh`; never
+> delete `certs/` on a BYO install. See
+> [External Mode (Real Domain)](#external-mode-real-domain).
 
 ### Browser-Trusted Certificates (Recommended)
 
