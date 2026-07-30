@@ -7,15 +7,17 @@ This script simulates extension 2000 calling extension 3000.
 import socket
 import hashlib
 import random
+import os
 import time
 import sys
 import re
 
 # Configuration
-SIP_SERVER = "192.168.45.152"
+SIP_SERVER = os.environ.get("VOIPBIN_SIP_SERVER", "sip.voipbin.test")
 SIP_PORT = 5060
-CUSTOMER_ID = "904a4f3b-d72e-48d4-9d9f-1e06968917c5"
-DOMAIN = f"{CUSTOMER_ID}.registrar.voipbin.net"
+# Set VOIPBIN_CUSTOMER_ID to the customer created by setup_test_customer.sh
+CUSTOMER_ID = os.environ.get("VOIPBIN_CUSTOMER_ID", "904a4f3b-d72e-48d4-9d9f-1e06968917c5")
+DOMAIN = f"{CUSTOMER_ID}.registrar.voipbin.test"
 
 # Caller (User A)
 CALLER_EXT = "2000"
@@ -85,7 +87,20 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(15)
     sock.bind(('0.0.0.0', 0))
-    local_ip = SIP_SERVER
+    # Derive our own IP from the route to the SIP server. The previous code
+    # reused SIP_SERVER as local_ip, which only worked by coincidence while
+    # both were hardcoded host-local IPs - and breaks outright (400 Bad
+    # Request) once SIP_SERVER is a hostname, since SDP c=/o= lines require a
+    # numeric IP.
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect((SIP_SERVER, SIP_PORT))
+        local_ip = probe.getsockname()[0]
+        probe.close()
+    except OSError as e:
+        print(f"Could not resolve/reach SIP server {SIP_SERVER}:{SIP_PORT}: {e}")
+        sock.close()
+        return False
     local_port = sock.getsockname()[1]
     print(f"Local endpoint: {local_ip}:{local_port}")
 
