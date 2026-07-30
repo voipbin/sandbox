@@ -2,7 +2,8 @@
 # VoIPBin Sandbox - Host Setup Script (design §2.5, VOIP-1275)
 # The single sudo command in the AI-driven install flow. Owns every host
 # mutation: mkcert package install, mkcert CA trust-store install (two-pass
-# CAROOT handoff), DNS hijack (Corefile + setup-dns.sh), and the VoIP macvlan
+# CAROOT handoff), DNS hijack (Corefile + setup-dns.sh), the compose default
+# docker network (fresh hosts, before any compose up), and the VoIP macvlan
 # interfaces (setup-voip-network.sh).
 #
 # Usage: sudo ./scripts/setup-host.sh
@@ -25,6 +26,12 @@ RESOLV_CONF="${RESOLV_CONF:-/etc/resolv.conf}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
+
+# Compose default network identity (must mirror setup-voip-network.sh's
+# NETWORK_NAME and the docker-compose.yml networks.default definition).
+NETWORK_NAME="sandbox_default"
+NETWORK_SUBNET="10.100.0.0/16"
+COMPOSE_PROJECT_LABEL="sandbox"
 
 # =============================================================================
 # Result line + exit helpers (design §2.2 pattern, shared with init.sh)
@@ -183,6 +190,35 @@ step_setup_dns() {
     record_step "dns:done"
 }
 
+# Step: ensure the compose default network exists (both modes, probe-and-skip).
+# setup-voip-network.sh derives its bridge interface from the sandbox_default
+# network, which on a fresh host does not exist until the first
+# `docker compose up`. Internal mode usually creates it via the DNS step
+# (setup-dns.sh runs `docker compose up -d coredns`), but external mode
+# deploys no coredns and would reach the interfaces step with no network.
+# The network is created exactly as compose would (name, bridge driver, the
+# compose file's subnet, and the com.docker.compose.network/project labels),
+# which a later `docker compose up -d` adopts cleanly — verified: without
+# these labels compose hard-errors ("was found but has incorrect label"),
+# with them it adopts silently and even owns the network on `compose down`.
+step_ensure_docker_network() {
+    if docker network inspect "$NETWORK_NAME" &> /dev/null; then
+        log_info "  Docker network $NETWORK_NAME already exists, skipping"
+        record_step "docker-network:skipped"
+        return 0
+    fi
+
+    log_info "  Creating docker network $NETWORK_NAME (compose-compatible)..."
+    if ! docker network create "$NETWORK_NAME" \
+        --driver bridge \
+        --subnet "$NETWORK_SUBNET" \
+        --label "com.docker.compose.network=default" \
+        --label "com.docker.compose.project=$COMPOSE_PROJECT_LABEL" > /dev/null; then
+        die 2 "failed to create docker network $NETWORK_NAME"
+    fi
+    record_step "docker-network:done"
+}
+
 # Step: VoIP macvlan interfaces (both modes).
 step_setup_network() {
     if ip link show kamailio-int &> /dev/null && ip link show rtpengine-int &> /dev/null; then
@@ -214,6 +250,9 @@ run_host_setup() {
     else
         log_info "External mode: TLS and DNS are operator-managed — skipping mkcert and DNS steps"
     fi
+
+    log_step "Checking docker network..."
+    step_ensure_docker_network
 
     log_step "Checking VoIP network interfaces..."
     step_setup_network

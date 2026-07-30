@@ -27,7 +27,7 @@ teardown() {
 }
 
 # Common stub set: mkcert present with CA already trusted, interfaces absent,
-# resolv.conf not pointing at CoreDNS.
+# resolv.conf not pointing at CoreDNS, docker network absent (fresh host).
 stub_default_host_state() {
     mock_command_script "mkcert" '
 if [[ "$1" == "-check" ]]; then exit 0; fi
@@ -35,6 +35,15 @@ if [[ "$1" == "-CAROOT" ]]; then echo "/stub/caroot"; exit 0; fi
 echo "MKCERT-INSTALL CAROOT=$CAROOT"
 exit 0'
     mock_command_script "ip" 'exit 1'
+    mock_command_script "docker" '
+if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 1; fi
+if [[ "$1" == "network" && "$2" == "create" ]]; then
+    shift 2
+    echo "DOCKER-NETWORK-CREATE $*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+    echo "stub-network-id"
+    exit 0
+fi
+exit 1'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 8.8.8.8" > "$RESOLV_CONF"
 }
@@ -52,7 +61,7 @@ exit 0'
     SETUP_HOST_STEPS=""
     run_host_setup internal > "$TEST_TEMP_DIR/out.log"
 
-    assert_equal "$SETUP_HOST_STEPS" "mkcert:skipped,ca-trust:skipped,dns:done,voip-network:done"
+    assert_equal "$SETUP_HOST_STEPS" "mkcert:skipped,ca-trust:skipped,dns:done,docker-network:done,voip-network:done"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_DNS -y"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_NETWORK"
     # Corefile generation lives here (plan Phase 3 traceability note)
@@ -60,7 +69,7 @@ exit 0'
     assert_file_contains "$TEST_TEMP_DIR/config/coredns/Corefile" "192.168.1.108"
 }
 
-@test "run_host_setup external runs only the network step" {
+@test "run_host_setup external runs only the network steps (docker network + interfaces)" {
     load_setup_host_functions
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES="
     stub_default_host_state
@@ -69,12 +78,15 @@ exit 0'
     SETUP_HOST_STEPS=""
     run_host_setup external > "$TEST_TEMP_DIR/out.log"
 
-    assert_equal "$SETUP_HOST_STEPS" "voip-network:done"
+    assert_equal "$SETUP_HOST_STEPS" "docker-network:done,voip-network:done"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_NETWORK"
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_DNS"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "operator-managed"
     # No Corefile is ever generated in external mode
     [[ ! -f "$TEST_TEMP_DIR/config/coredns/Corefile" ]]
+    # Fresh-host fix: the compose default network is created BEFORE the
+    # interfaces step (setup-voip-network.sh needs its bridge interface).
+    assert_file_contains "$TEST_TEMP_DIR/docker.log" "DOCKER-NETWORK-CREATE sandbox_default"
 }
 
 # =============================================================================
@@ -137,6 +149,9 @@ if [[ "$1" == "-check" ]]; then exit 0; fi
 echo "MKCERT-INSTALL CAROOT=$CAROOT"
 exit 0'
     mock_command_script "ip" 'exit 0'
+    mock_command_script "docker" '
+if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 0; fi
+exit 1'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 127.0.0.1" > "$RESOLV_CONF"
     SCRIPT_DIR="$STUB_SCRIPTS"
@@ -144,13 +159,63 @@ exit 0'
     SETUP_HOST_STEPS=""
     run_host_setup internal > "$TEST_TEMP_DIR/out.log"
 
-    assert_equal "$SETUP_HOST_STEPS" "mkcert:skipped,ca-trust:skipped,dns:skipped,voip-network:skipped"
+    assert_equal "$SETUP_HOST_STEPS" "mkcert:skipped,ca-trust:skipped,dns:skipped,docker-network:skipped,voip-network:skipped"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "mkcert already installed, skipping"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "mkcert CA already installed, skipping"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "resolv.conf already points at CoreDNS (127.0.0.1), skipping"
+    assert_file_contains "$TEST_TEMP_DIR/out.log" "Docker network sandbox_default already exists, skipping"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "VoIP network interfaces already configured, skipping"
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_DNS"
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_NETWORK"
+}
+
+# =============================================================================
+# Compose default network ensure (fresh-host fix, VOIP-1275)
+# =============================================================================
+
+@test "step_ensure_docker_network creates the network with compose-compatible labels" {
+    load_setup_host_functions
+    mock_command_script "docker" '
+if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 1; fi
+if [[ "$1" == "network" && "$2" == "create" ]]; then
+    shift 2
+    echo "DOCKER-NETWORK-CREATE $*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+    echo "stub-network-id"
+    exit 0
+fi
+exit 1'
+
+    SETUP_HOST_STEPS=""
+    run step_ensure_docker_network
+
+    [[ "$status" -eq 0 ]]
+    # Exactly what compose would create: name, bridge driver, the compose
+    # file subnet, and the two labels compose validates on adoption.
+    local created
+    created=$(cat "$TEST_TEMP_DIR/docker.log")
+    [[ "$created" == *'sandbox_default'* ]]
+    [[ "$created" == *'--driver bridge'* ]]
+    [[ "$created" == *'--subnet 10.100.0.0/16'* ]]
+    [[ "$created" == *'--label com.docker.compose.network=default'* ]]
+    [[ "$created" == *'--label com.docker.compose.project=sandbox'* ]]
+}
+
+@test "step_ensure_docker_network skips when the network already exists" {
+    load_setup_host_functions
+    mock_command_script "docker" '
+if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 0; fi
+if [[ "$1" == "network" && "$2" == "create" ]]; then
+    echo "DOCKER-NETWORK-CREATE $*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+    exit 0
+fi
+exit 1'
+
+    SETUP_HOST_STEPS=""
+    run step_ensure_docker_network
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'already exists, skipping'* ]]
+    [[ ! -f "$TEST_TEMP_DIR/docker.log" ]]
 }
 
 # =============================================================================
