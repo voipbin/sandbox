@@ -399,7 +399,9 @@ wait_for_admin_agent() {
     local max_wait=30
     local waited=0
 
-    log_info "  Waiting for admin agent to be created..."
+    # This function's stdout is captured by the caller (AGENT_ID=$(...)), so
+    # progress logging must go to stderr or it corrupts the returned agent ID.
+    log_info "  Waiting for admin agent to be created..." >&2
     while [ $waited -lt $max_wait ]; do
         local agent_list
         agent_list=$(docker exec voipbin-agent-mgr /app/bin/agent-control agent list \

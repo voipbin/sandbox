@@ -20,7 +20,7 @@ class SIPSoftphone:
         self.customer_id = customer_id
         self.extension = extension
         self.password = password
-        self.domain = f"{customer_id}.registrar.localhost"
+        self.domain = f"{customer_id}.registrar.voipbin.test"
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(5)
@@ -29,7 +29,18 @@ class SIPSoftphone:
         else:
             self.sock.bind(('0.0.0.0', 0))
 
-        self.local_ip = server
+        # Derive our own IP from the route to the SIP server instead of
+        # reusing the server value: with a hostname server (the default),
+        # reusing it would embed a non-numeric address into Via/Contact and
+        # the auto-answer SDP c=/o= lines, which require numeric IPs.
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.connect((server, port))
+            self.local_ip = probe.getsockname()[0]
+            probe.close()
+        except OSError as e:
+            self.sock.close()
+            raise SystemExit(f"Could not resolve/reach SIP server {server}:{port}: {e}")
         self.local_port = self.sock.getsockname()[1]
         self.tag = self._generate_tag()
         self.call_id_counter = 0
@@ -346,7 +357,7 @@ def main():
     parser = argparse.ArgumentParser(description='SIP Softphone')
     parser.add_argument('extension', help='Extension number (e.g., 2000)')
     parser.add_argument('password', help='SIP password')
-    parser.add_argument('--server', default='192.168.45.152', help='SIP server address')
+    parser.add_argument('--server', default='sip.voipbin.test', help='SIP server address')
     parser.add_argument('--port', type=int, default=5060, help='SIP server port')
     parser.add_argument('--customer-id', default='904a4f3b-d72e-48d4-9d9f-1e06968917c5', help='Customer ID')
     parser.add_argument('--local-port', type=int, help='Local port to bind')
