@@ -484,6 +484,15 @@ main() {
     case "$INIT_TLS_MODE" in
         byo)
             log_info "  TLS mode: byo (bring-your-own certificates)"
+            # Pre-flight (§2.6): validate the certificate against --domain
+            # BEFORE .env is written, so a bad cert aborts init cleanly with
+            # no half-written .env. Full install runs after .env exists.
+            if [[ "$INIT_MODE" == "external" ]]; then
+                log_info "  Pre-flight certificate validation..."
+                if ! "$SCRIPT_DIR/install-certs.sh" --check-only --domain "$INIT_DOMAIN" "$INIT_CERT_FILE" "$INIT_KEY_FILE"; then
+                    die 1 "certificate pre-flight failed for $INIT_CERT_FILE (see install-certs.sh output above)"
+                fi
+            fi
             ;;
         selfsigned)
             log_info "  TLS mode: selfsigned (browser will show warnings)"
@@ -535,17 +544,28 @@ main() {
     log_info "  (VoIP services need different IPs than host to avoid SIP loop detection)"
     echo ""
 
-    # Step 3: Generate SSL certificates for SIP/TLS
-    log_step "Generating SIP TLS certificates..."
-    for domain in registrar.voipbin.test conference.voipbin.test sip.voipbin.test sip-service.voipbin.test trunk.voipbin.test; do
-        generate_cert "$domain"
-    done
-    echo ""
+    # Steps 3-4 are internal-mode only (§2.6): in external mode the BYO
+    # certificate is installed by install-certs.sh after .env exists, so no
+    # stale certs/*.voipbin.test/ directories are created and the BYO base64
+    # values are never overwritten by a self-signed cert.
+    if [[ "$INIT_MODE" == "external" ]]; then
+        log_step "Skipping certificate generation (external mode: BYO certificates)"
+        API_SSL_CERT_BASE64=""
+        API_SSL_PRIVKEY_BASE64=""
+        echo ""
+    else
+        # Step 3: Generate SSL certificates for SIP/TLS
+        log_step "Generating SIP TLS certificates..."
+        for domain in registrar.voipbin.test conference.voipbin.test sip.voipbin.test sip-service.voipbin.test trunk.voipbin.test; do
+            generate_cert "$domain"
+        done
+        echo ""
 
-    # Step 4: Generate API certificates
-    log_step "Generating API SSL certificates..."
-    generate_api_cert "$HOST_IP"
-    echo ""
+        # Step 4: Generate API certificates
+        log_step "Generating API SSL certificates..."
+        generate_api_cert "$HOST_IP"
+        echo ""
+    fi
 
     # Step 5: Generate random keys
     log_step "Generating security keys..."
@@ -729,6 +749,16 @@ EOF
 
     log_info "  Created $ENV_FILE"
     echo ""
+
+    # Step 7.5 (external mode only, §2.6): full BYO certificate install now
+    # that .env exists — layout under certs/ plus the .env base64 rewrite.
+    if [[ "$INIT_MODE" == "external" ]]; then
+        log_step "Installing BYO certificates..."
+        if ! "$SCRIPT_DIR/install-certs.sh" --domain "$INIT_DOMAIN" "$INIT_CERT_FILE" "$INIT_KEY_FILE"; then
+            die 1 "certificate installation failed for $INIT_CERT_FILE (see install-certs.sh output above)"
+        fi
+        echo ""
+    fi
 
     # Step 8: Setup DNS for SIP domains (root path only, §2.5 — the
     # unprivileged path defers every host mutation to setup-host.sh)

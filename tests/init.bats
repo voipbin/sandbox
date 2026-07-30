@@ -571,6 +571,61 @@ teardown() {
 }
 
 # =============================================================================
+# External mode + BYO certificates (design §2.6, Phase 4)
+# =============================================================================
+
+@test "init.sh external mode aborts on failed cert pre-flight with no half-written .env" {
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command "docker" ""
+
+    run main --mode external --domain example.com --tls byo \
+        --cert "$TEST_TEMP_DIR/nonexistent.pem" --key "$TEST_TEMP_DIR/nonexistent.key" --yes
+
+    [[ "$status" -eq 1 ]]
+    [[ ! -f "$TEST_TEMP_DIR/.env" ]]
+    [[ "$output" == *'Pre-flight certificate validation'* ]]
+    [[ "$output" == *'VOIPBIN_INIT: status=error'* ]]
+}
+
+@test "init.sh external mode installs BYO certs and skips internal cert generation" {
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user"
+    fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command "docker" ""
+    # Wildcard fixture covering all required names
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$TEST_TEMP_DIR/byo.key" -out "$TEST_TEMP_DIR/byo.pem" \
+        -days 90 -subj "/CN=example.com" \
+        -addext "subjectAltName=DNS:example.com,DNS:*.example.com,DNS:*.registrar.example.com" 2>/dev/null
+
+    run main --mode external --domain example.com --tls byo \
+        --cert "$TEST_TEMP_DIR/byo.pem" --key "$TEST_TEMP_DIR/byo.key" --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/.env" ]]
+    # BYO base64 values installed by install-certs.sh, never a generated cert
+    local cert_b64
+    cert_b64=$(base64 -w0 < "$TEST_TEMP_DIR/byo.pem")
+    assert_file_contains "$TEST_TEMP_DIR/.env" "API_SSL_CERT_BASE64=$cert_b64"
+    assert_file_contains "$TEST_TEMP_DIR/.env" "DOMAIN_MODE=external"
+    assert_file_contains "$TEST_TEMP_DIR/.env" "TLS_MODE=byo"
+    # generate_cert loop and generate_api_cert did not run: no .voipbin.test
+    # cert directories; the BYO layout for the external domain exists instead
+    [[ ! -d "$TEST_TEMP_DIR/certs/registrar.voipbin.test" ]]
+    [[ -f "$TEST_TEMP_DIR/certs/sip.example.com/fullchain.pem" ]]
+    [[ -f "$TEST_TEMP_DIR/certs/api/cert.pem" ]]
+    local last_line
+    last_line=$(echo "$output" | tail -1)
+    [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=ok ]]
+    [[ "$last_line" == *'mode=external'* ]]
+    [[ "$last_line" == *'domain=example.com'* ]]
+    [[ "$last_line" == *'tls=byo'* ]]
+}
+
+# =============================================================================
 # Result-line grammar (design §2.2)
 # =============================================================================
 

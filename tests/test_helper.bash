@@ -334,9 +334,12 @@ load_init_functions() {
         "$SCRIPTS_DIR/init.sh" > "$temp_init"
 
     # Set SCRIPT_DIR for the extracted functions
-    SCRIPT_DIR="$SCRIPTS_DIR"
-
     source "$temp_init"
+
+    # Re-assert AFTER sourcing: the extracted snippet's own top-level
+    # SCRIPT_DIR=$(dirname BASH_SOURCE) resolves to the temp dir, which would
+    # break "$SCRIPT_DIR/<sub-script>" subprocess calls under test.
+    SCRIPT_DIR="$SCRIPTS_DIR"
 
     # Re-assert test isolation: init.sh recomputes these from SCRIPT_DIR when
     # not already set, and a stale value here would make generate_cert & co.
@@ -360,9 +363,12 @@ load_start_functions() {
         -e 's/^set -e$/# set -e  # disabled for testing/' \
         "$SCRIPTS_DIR/start.sh" > "$temp_start"
 
-    SCRIPT_DIR="$SCRIPTS_DIR"
-
     source "$temp_start"
+
+    # Re-assert AFTER sourcing: the extracted snippet's own top-level
+    # SCRIPT_DIR=$(dirname BASH_SOURCE) resolves to the temp dir, which would
+    # break "$SCRIPT_DIR/<sub-script>" subprocess calls under test.
+    SCRIPT_DIR="$SCRIPTS_DIR"
 
     # Re-assert test isolation
     PROJECT_DIR="$TEST_TEMP_DIR"
@@ -381,13 +387,42 @@ load_setup_host_functions() {
         -e 's/^set -e$/# set -e  # disabled for testing/' \
         "$SCRIPTS_DIR/setup-host.sh" > "$temp_setup_host"
 
-    SCRIPT_DIR="$SCRIPTS_DIR"
-
     source "$temp_setup_host"
+
+    # Re-assert AFTER sourcing: the extracted snippet's own top-level
+    # SCRIPT_DIR=$(dirname BASH_SOURCE) resolves to the temp dir, which would
+    # break "$SCRIPT_DIR/<sub-script>" subprocess calls under test.
+    SCRIPT_DIR="$SCRIPTS_DIR"
 
     # Re-assert test isolation
     PROJECT_DIR="$TEST_TEMP_DIR"
     ENV_FILE="$TEST_TEMP_DIR/.env"
+}
+
+# Load install-certs.sh functions without running main()
+# Same pattern as load_start_functions: strip the trailing main "$@" call,
+# skip re-sourcing common.sh, and disable set -e.
+load_install_certs_functions() {
+    source "$SCRIPTS_DIR/common.sh"
+
+    local temp_install_certs="$TEST_TEMP_DIR/install_certs_functions.sh"
+
+    sed -e '/^main "\$@"$/d' \
+        -e 's|source "\$SCRIPT_DIR/common.sh"|# common.sh already sourced|' \
+        -e 's/^set -e$/# set -e  # disabled for testing/' \
+        "$SCRIPTS_DIR/install-certs.sh" > "$temp_install_certs"
+
+    source "$temp_install_certs"
+
+    # Re-assert AFTER sourcing: the extracted snippet's own top-level
+    # SCRIPT_DIR=$(dirname BASH_SOURCE) resolves to the temp dir, which would
+    # break "$SCRIPT_DIR/<sub-script>" subprocess calls under test.
+    SCRIPT_DIR="$SCRIPTS_DIR"
+
+    # Re-assert test isolation
+    PROJECT_DIR="$TEST_TEMP_DIR"
+    ENV_FILE="$TEST_TEMP_DIR/.env"
+    CERTS_DIR="$TEST_TEMP_DIR/certs"
 }
 
 # Load setup-voip-network.sh functions
