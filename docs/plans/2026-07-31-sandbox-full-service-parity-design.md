@@ -1,6 +1,6 @@
 # VoIPBin Sandbox — Full Service Parity With Monorepo (versions.lock Advance, direct/webchat Onboarding, PostgreSQL+pgvector, ClickHouse, storage-manager Fix, compose↔lock Sync)
 
-Status: DRAFT (Design Review Round 6, incorporating Round 5 APPROVE non-blocking nits)
+Status: APPROVED (Design Review Rounds 5-6: two consecutive APPROVE, review loop closed)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-31
 Repo: sandbox (one monorepo-side fix, §2.6, lands as its own monorepo PR; everything else lands here)
@@ -260,7 +260,13 @@ pin advance (§2.1) — no special sequencing beyond what `start.sh` already doe
   (`GCP_PROJECT_ID=sandbox-placeholder`, `GCP_REGION=us-central1`,
   `GCP_BUCKET_NAME_MEDIA=sandbox-placeholder-media`), and `.env.template` documents the
   identical values with a comment that they satisfy config validation without granting
-  GCP access. init.sh and the template stay in agreement (the R1 requirement), and
+  GCP access. Side effect worth naming: with `GCP_BUCKET_NAME_MEDIA` now non-empty,
+  `RECORDING_BUCKET_NAME` on the two asterisk proxies (compose:291,359) and
+  `PROJECT_BUCKET_NAME` on call-manager (:588) stop falling back to
+  `voipbin-voip-media-bucket`, and storage-manager's own `GCP_BUCKET_NAME_MEDIA` (:1082)
+  goes empty-to-placeholder — harmless (no sandbox deployment can reach either bucket),
+  but no longer the production-looking default. init.sh and the template stay in
+  agreement (the Round-1 requirement), and
   because init.sh writes `GCP_REGION`, no `check-env-template-sync.sh` exclusion-list
   entry is needed for it. The earlier framing ("maybe an eager client init parses the
   key") was the wrong failure mode — validation, not key parsing, is the first gate.
