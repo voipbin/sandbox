@@ -1065,15 +1065,21 @@ services:
     # Vertex AI embeddings + PostgreSQL/pgvector. Its Validate() hard-fails at
     # boot on an empty RABBITMQ_ADDRESS, GCP_PROJECT_ID, GCP_REGION or
     # POSTGRESQL_DSN, which is why init.sh writes non-empty placeholders for the
-    # GCP trio. Boot vs. function: with placeholder project/region/bucket and the
+    # GCP trio AND all three carry non-empty compose fallbacks below: an
+    # existing install upgrading via `voipbin update all` keeps its old .env
+    # (which has GCP_PROJECT_ID= / GCP_BUCKET_NAME_MEDIA= as empty strings and
+    # no GCP_REGION at all), and compose's :- operator substitutes the fallback
+    # for empty-or-unset either way. These fallbacks are scoped to this service
+    # block only - other consumers of the same vars keep their own semantics.
+    # Boot vs. function: with placeholder project/region/bucket and the
     # dummy credential the service starts, but actual ingestion/query calls fail
     # at Vertex AI / GCS until a real GCP project and service-account key are
     # supplied.
     environment:
       - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-sandbox-placeholder}
       - GCP_REGION=${GCP_REGION:-us-central1}
-      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-}
+      - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-sandbox-placeholder-media}
       - POSTGRESQL_DSN=postgres://voipbin:voipbin@postgres:5432/rag?sslmode=disable
       - RAG_TOP_K=${RAG_TOP_K:-5}
       - PROMETHEUS_ENDPOINT=/metrics
