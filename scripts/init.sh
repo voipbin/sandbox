@@ -257,11 +257,18 @@ GCPEOF
 # Google Cloud Platform (Optional - for TTS, storage, and AI features)
 # Set to your service account JSON path for full functionality
 # Default uses a dummy file that allows services to start without GCP
+#
+# The project/region/bucket placeholders below are deliberately non-empty:
+# rag-manager's Validate() hard-fails at boot on an empty GCP_PROJECT_ID or
+# GCP_REGION, before any GCP client is constructed. These values satisfy that
+# validation without granting any GCP access — replace them with your real
+# project to actually use RAG ingestion/query, TTS, or storage.
 # ==============================================================================
 GOOGLE_APPLICATION_CREDENTIALS=./config/dummy-gcp-credentials.json
-GCP_PROJECT_ID=
+GCP_PROJECT_ID=sandbox-placeholder
+GCP_REGION=us-central1
 GCP_BUCKET_NAME_TMP=
-GCP_BUCKET_NAME_MEDIA=
+GCP_BUCKET_NAME_MEDIA=sandbox-placeholder-media
 
 # ==============================================================================
 # API SSL Certificates (Auto-generated)
@@ -354,7 +361,7 @@ EMAIL_VERIFY_BASE_URL=https://api.voipbin.test:8443
 # ==============================================================================
 # Analytics & Monitoring (OPTIONAL)
 # ==============================================================================
-CLICKHOUSE_ADDRESS=
+CLICKHOUSE_ADDRESS=clickhouse:9000
 CLICKHOUSE_DATABASE=default
 HOMER_URI=
 HOMER_API_ADDRESS=
@@ -367,13 +374,10 @@ PSTN_WHITELIST_IPS=
 # ==============================================================================
 # RAG (OPTIONAL - for knowledge base features)
 # ==============================================================================
-GCS_BUCKET=
-GCS_EMBEDDINGS_PATH=rag/embeddings.gob
-RAG_DOCS_BASE_PATH=/app/docs
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-RAG_LLM_MODEL=gpt-4o
+# rag-manager now uses Vertex AI embeddings + PostgreSQL/pgvector. It reads its
+# project/region/bucket from the GCP block above and its DSN from
+# docker-compose.yml; RAG_TOP_K is the only rag-specific knob left here.
 RAG_TOP_K=5
-RAG_CHUNK_MAX_TOKENS=800
 EOF
 
     log_info "  Created $ENV_FILE"
