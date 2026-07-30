@@ -261,3 +261,349 @@ teardown() {
     assert_valid_base64 "$API_SSL_CERT_BASE64"
     assert_valid_base64 "$API_SSL_PRIVKEY_BASE64"
 }
+
+# =============================================================================
+# parse_args() rejection tests (design §2.2)
+# =============================================================================
+
+@test "parse_args rejects --mode external without --domain" {
+    load_init_functions
+
+    run parse_args --mode external --tls byo --cert c.pem --key k.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--mode external requires --domain'* ]]
+    [[ "$output" == *'VOIPBIN_INIT: status=error'* ]]
+}
+
+@test "parse_args rejects --mode external without --tls (no auto-default fallthrough)" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'external mode requires --tls byo --cert ... --key ...'* ]]
+}
+
+@test "parse_args rejects --domain with --mode internal" {
+    load_init_functions
+
+    run parse_args --domain example.com
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--domain is only valid with --mode external'* ]]
+}
+
+@test "parse_args rejects --tls mkcert with --mode external" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls mkcert
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'external mode requires --tls byo'* ]]
+}
+
+@test "parse_args rejects --tls selfsigned with --mode external" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls selfsigned
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'external mode requires --tls byo'* ]]
+}
+
+@test "parse_args rejects --tls byo without --cert and --key" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--tls byo requires both --cert and --key'* ]]
+}
+
+@test "parse_args rejects --tls byo with --cert but no --key" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com --tls byo --cert c.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--tls byo requires both --cert and --key'* ]]
+}
+
+@test "parse_args rejects unknown flag" {
+    load_init_functions
+
+    run parse_args --bogus-flag
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'unknown flag: --bogus-flag'* ]]
+}
+
+@test "parse_args rejects invalid --mode value" {
+    load_init_functions
+
+    run parse_args --mode sideways
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid --mode: sideways'* ]]
+}
+
+@test "parse_args rejects single-label domain" {
+    load_init_functions
+
+    run parse_args --mode external --domain example --tls byo --cert c.pem --key k.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid domain: example'* ]]
+}
+
+@test "parse_args rejects uppercase domain" {
+    load_init_functions
+
+    run parse_args --mode external --domain Example.Com --tls byo --cert c.pem --key k.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid domain'* ]]
+}
+
+@test "parse_args rejects domain with scheme" {
+    load_init_functions
+
+    run parse_args --mode external --domain https://example.com --tls byo --cert c.pem --key k.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid domain'* ]]
+}
+
+@test "parse_args rejects domain with port" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com:8443 --tls byo --cert c.pem --key k.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid domain'* ]]
+}
+
+@test "parse_args rejects domain with trailing dot" {
+    load_init_functions
+
+    run parse_args --mode external --domain example.com. --tls byo --cert c.pem --key k.pem
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid domain'* ]]
+}
+
+@test "parse_args accepts a valid external invocation" {
+    load_init_functions
+
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --yes
+
+    assert_equal "$INIT_MODE" "external"
+    assert_equal "$TARGET_DOMAIN" "example.com"
+    assert_equal "$INIT_TLS_MODE" "byo"
+    assert_equal "$INIT_COMPOSE_PROFILES" ""
+    assert_equal "$INIT_YES" "true"
+}
+
+@test "parse_args defaults: internal mode, internal-dns profile, voipbin.test" {
+    load_init_functions
+
+    parse_args
+
+    assert_equal "$INIT_MODE" "internal"
+    assert_equal "$TARGET_DOMAIN" "voipbin.test"
+    assert_equal "$INIT_COMPOSE_PROFILES" "internal-dns"
+    assert_equal "$INIT_TLS_MODE" ""
+    assert_equal "$INIT_FORCE_REINIT" "false"
+}
+
+# =============================================================================
+# check_existing_env_compat() matrix (design §2.7)
+# =============================================================================
+
+@test "check_existing_env_compat proceeds with --yes on same mode+domain" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    parse_args --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'Overwriting existing .env (--yes)'* ]]
+}
+
+@test "check_existing_env_compat treats legacy .env (no DOMAIN_MODE) as internal" {
+    load_init_functions
+    create_env_file "BASE_DOMAIN=voipbin.test"
+    parse_args --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "check_existing_env_compat refuses internal -> external switch" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'Refusing to switch mode/domain'* ]]
+    [[ "$output" == *'clean.sh --volumes --purge'* ]]
+    [[ "$output" == *'--force-reinit'* ]]
+    [[ "$output" == *'VOIPBIN_INIT: status=error'* ]]
+}
+
+@test "check_existing_env_compat refuses same-mode domain change (external)" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=old.example.com"
+    parse_args --mode external --domain new.example.com --tls byo --cert c.pem --key k.pem --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'Refusing to switch mode/domain'* ]]
+}
+
+@test "check_existing_env_compat refuses external -> internal switch" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com"
+    parse_args --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'Refusing to switch mode/domain'* ]]
+}
+
+@test "check_existing_env_compat returns 0 when no .env exists" {
+    load_init_functions
+    rm -f "$ENV_FILE"
+    parse_args --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+}
+
+# =============================================================================
+# check_force_reinit_preconditions() (design §2.7)
+# =============================================================================
+
+@test "check_force_reinit_preconditions refuses while coredns container exists" {
+    load_init_functions
+    # Stub docker: report a live voipbin-dns container
+    mock_command "docker" "voipbin-dns"
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+
+    run check_force_reinit_preconditions
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'coredns container (voipbin-dns) still exists'* ]]
+    [[ "$output" == *'docker compose down'* ]]
+    [[ "$output" == *'sudo ./scripts/setup-dns.sh --uninstall'* ]]
+}
+
+@test "check_force_reinit_preconditions refuses while resolv.conf backup remains" {
+    load_init_functions
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/resolv.conf.voipbin-backup"
+    touch "$RESOLV_BACKUP"
+
+    run check_force_reinit_preconditions
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'resolv.conf hijack backup'* ]]
+    [[ "$output" == *'sudo ./scripts/setup-dns.sh --uninstall'* ]]
+}
+
+@test "check_force_reinit_preconditions passes on a clean host" {
+    load_init_functions
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+
+    run check_force_reinit_preconditions
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "check_existing_env_compat with --force-reinit gates internal->external on preconditions" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    mock_command "docker" "voipbin-dns"
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'coredns container (voipbin-dns) still exists'* ]]
+}
+
+@test "check_existing_env_compat with --force-reinit proceeds on a clean host" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    mock_command "docker" ""
+    RESOLV_BACKUP="$TEST_TEMP_DIR/no-such-backup"
+    parse_args --mode external --domain example.com --tls byo --cert c.pem --key k.pem --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'--force-reinit: rewriting .env/certs/Corefile'* ]]
+}
+
+# =============================================================================
+# --force-reinit follow-up message (design §2.7)
+# =============================================================================
+
+@test "print_force_reinit_followup names extension recreation and service recreates" {
+    load_init_functions
+
+    run print_force_reinit_followup
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'The database was NOT touched'* ]]
+    [[ "$output" == *'setup_test_customer.sh'* ]]
+    [[ "$output" == *'registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk'* ]]
+}
+
+# =============================================================================
+# Result-line grammar (design §2.2)
+# =============================================================================
+
+@test "init.sh emits VOIPBIN_INIT error result line on parse failure" {
+    run bash "$SCRIPTS_DIR/init.sh" --mode external
+
+    [[ "$status" -eq 1 ]]
+    local last_line
+    last_line=$(echo "$output" | tail -1)
+    [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=(ok|error) ]]
+    [[ "$last_line" == *'status=error'* ]]
+}
+
+@test "init.sh emits VOIPBIN_INIT error result line on unknown flag" {
+    run bash "$SCRIPTS_DIR/init.sh" --definitely-not-a-flag
+
+    [[ "$status" -eq 1 ]]
+    local last_line
+    last_line=$(echo "$output" | tail -1)
+    [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=error ]]
+}
+
+@test "init.sh emits a result line even when aborted by check_root" {
+    # Unprivileged run with valid flags reaches check_root (Phase 1 still
+    # requires root) — the EXIT trap must still close with a result line.
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user"
+    fi
+
+    run bash "$SCRIPTS_DIR/init.sh" --yes
+
+    [[ "$status" -ne 0 ]]
+    local last_line
+    last_line=$(echo "$output" | tail -1)
+    [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=error ]]
+}

@@ -9,13 +9,303 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-ENV_FILE="$PROJECT_DIR/.env"
-ENV_TEMPLATE="$PROJECT_DIR/.env.template"
-CERTS_DIR="$PROJECT_DIR/certs"
+# Override-friendly for test isolation. Blast radius: an operator's exported
+# PROJECT_DIR redirects where .env/certs are written — deliberate, documented.
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
+ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
+ENV_TEMPLATE="${ENV_TEMPLATE:-$PROJECT_DIR/.env.template}"
+CERTS_DIR="${CERTS_DIR:-$PROJECT_DIR/certs}"
+# resolv.conf hijack backup marker (overridable so tests can stub host probes)
+RESOLV_BACKUP="${RESOLV_BACKUP:-/etc/resolv.conf.voipbin-backup}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
+
+# =============================================================================
+# Result line + exit helpers (design §2.2)
+# Every exit path — including set -e aborts — must end with a
+# VOIPBIN_INIT: status=ok|error line on stdout.
+# Exit codes: 0 success; 1 validation/user error; 2 environment error.
+# =============================================================================
+
+# emit_result <status> [detail...]
+emit_result() {
+    local status="$1"
+    shift
+    if [[ $# -gt 0 ]]; then
+        echo "VOIPBIN_INIT: status=$status $*"
+    else
+        echo "VOIPBIN_INIT: status=$status"
+    fi
+    INIT_RESULT_EMITTED="true"
+}
+
+# die <exit-code> <reason>
+die() {
+    local code="$1"
+    shift
+    log_error "$*"
+    emit_result error "reason=\"$*\""
+    exit "$code"
+}
+
+# EXIT trap: registered inside main() (NOT at top level — the bats helper
+# sources this file minus 'main "$@"', so a top-level trap would fire at
+# every test-shell exit). The already-emitted flag prevents double printing.
+init_exit_trap() {
+    local code=$?
+    if [[ "${INIT_RESULT_EMITTED:-false}" != "true" ]]; then
+        if [[ $code -eq 0 ]]; then
+            echo "VOIPBIN_INIT: status=ok"
+        else
+            echo "VOIPBIN_INIT: status=error reason=\"init aborted (exit $code)\""
+        fi
+    fi
+}
+
+# =============================================================================
+# CLI parsing + validation (design §2.2)
+# =============================================================================
+
+show_usage() {
+    cat << 'USAGE'
+Usage: ./scripts/init.sh [OPTIONS]
+
+Options:
+  --mode internal|external    Install mode (default: internal)
+  --domain <base-domain>      Base domain for external mode (e.g. example.com)
+  --tls mkcert|selfsigned|byo TLS mode. Internal default: auto (mkcert if
+                              available, else selfsigned). External mode
+                              requires --tls byo --cert ... --key ...
+  --cert <fullchain.pem>      Certificate file (required with --tls byo)
+  --key <privkey.pem>         Private key file (required with --tls byo)
+  --yes, -y                   Answer yes to all prompts (non-interactive)
+  --force-reinit              Rewrite .env/certs/Corefile for a new mode or
+                              domain (never touches the database; prints the
+                              live-state follow-up steps on completion)
+  -h, --help                  Show this help
+USAGE
+}
+
+# Domain validation: lowercase RFC-1123 labels, at least two labels,
+# no scheme, no port, no trailing dot.
+validate_domain() {
+    local d="$1"
+
+    [[ -n "$d" ]] || return 1
+    [[ "$d" == *.* ]] || return 1
+    [[ "$d" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+    return 0
+}
+
+parse_args() {
+    INIT_MODE="internal"
+    INIT_DOMAIN=""
+    INIT_TLS_MODE=""
+    INIT_CERT_FILE=""
+    INIT_KEY_FILE=""
+    INIT_YES="false"
+    INIT_FORCE_REINIT="false"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --mode)
+                [[ $# -ge 2 ]] || die 1 "--mode requires a value"
+                INIT_MODE="$2"
+                shift 2
+                ;;
+            --domain)
+                [[ $# -ge 2 ]] || die 1 "--domain requires a value"
+                INIT_DOMAIN="$2"
+                shift 2
+                ;;
+            --tls)
+                [[ $# -ge 2 ]] || die 1 "--tls requires a value"
+                INIT_TLS_MODE="$2"
+                shift 2
+                ;;
+            --cert)
+                [[ $# -ge 2 ]] || die 1 "--cert requires a value"
+                INIT_CERT_FILE="$2"
+                shift 2
+                ;;
+            --key)
+                [[ $# -ge 2 ]] || die 1 "--key requires a value"
+                INIT_KEY_FILE="$2"
+                shift 2
+                ;;
+            --yes|-y)
+                INIT_YES="true"
+                shift
+                ;;
+            --force-reinit)
+                INIT_FORCE_REINIT="true"
+                shift
+                ;;
+            --help|-h)
+                show_usage
+                exit 0
+                ;;
+            *)
+                die 1 "unknown flag: $1"
+                ;;
+        esac
+    done
+
+    case "$INIT_MODE" in
+        internal|external) ;;
+        *) die 1 "invalid --mode: $INIT_MODE (expected internal|external)" ;;
+    esac
+
+    if [[ -n "$INIT_TLS_MODE" ]]; then
+        case "$INIT_TLS_MODE" in
+            mkcert|selfsigned|byo) ;;
+            *) die 1 "invalid --tls: $INIT_TLS_MODE (expected mkcert|selfsigned|byo)" ;;
+        esac
+    fi
+
+    if [[ "$INIT_MODE" == "external" ]]; then
+        [[ -n "$INIT_DOMAIN" ]] || die 1 "--mode external requires --domain"
+        # The internal-mode auto-default (mkcert/selfsigned) must NOT fall
+        # through here: external mode with no --tls is rejected outright.
+        if [[ -z "$INIT_TLS_MODE" ]]; then
+            die 1 "external mode requires --tls byo --cert ... --key ..."
+        fi
+        if [[ "$INIT_TLS_MODE" != "byo" ]]; then
+            die 1 "--tls $INIT_TLS_MODE is not supported in external mode; external mode requires --tls byo --cert ... --key ... (see the external-mode runbook)"
+        fi
+    else
+        if [[ -n "$INIT_DOMAIN" ]]; then
+            die 1 "--domain is only valid with --mode external (internal mode is always voipbin.test)"
+        fi
+    fi
+
+    if [[ "$INIT_TLS_MODE" == "byo" ]]; then
+        if [[ -z "$INIT_CERT_FILE" || -z "$INIT_KEY_FILE" ]]; then
+            die 1 "--tls byo requires both --cert and --key"
+        fi
+    fi
+
+    if [[ -n "$INIT_DOMAIN" ]] && ! validate_domain "$INIT_DOMAIN"; then
+        die 1 "invalid domain: $INIT_DOMAIN (expected lowercase RFC-1123 labels, at least two labels, no scheme/port/trailing dot)"
+    fi
+
+    TARGET_DOMAIN="voipbin.test"
+    [[ "$INIT_MODE" == "external" ]] && TARGET_DOMAIN="$INIT_DOMAIN"
+
+    INIT_COMPOSE_PROFILES="internal-dns"
+    [[ "$INIT_MODE" == "external" ]] && INIT_COMPOSE_PROFILES=""
+
+    return 0
+}
+
+# =============================================================================
+# Existing-.env compatibility (design §2.7)
+# =============================================================================
+
+# Refuse an internal->external --force-reinit while internal-mode host state
+# remains: the coredns container would be orphaned (holding port 53) and
+# resolv.conf would stay hijacked.
+check_force_reinit_preconditions() {
+    local leftover=()
+
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^voipbin-dns$'; then
+        leftover+=("coredns container (voipbin-dns) still exists")
+    fi
+    if [[ -f "$RESOLV_BACKUP" ]]; then
+        leftover+=("resolv.conf hijack backup ($RESOLV_BACKUP) still present")
+    fi
+
+    if [[ ${#leftover[@]} -gt 0 ]]; then
+        log_error "Cannot --force-reinit from internal to external mode while internal-mode host state remains:"
+        local item
+        for item in "${leftover[@]}"; do
+            log_error "  - $item"
+        done
+        echo ""
+        echo "Tear down the internal-mode host state first:"
+        echo "  docker compose down"
+        echo "  sudo ./scripts/setup-dns.sh --uninstall"
+        echo ""
+        die 1 "internal-mode host state must be torn down before --force-reinit to external"
+    fi
+
+    return 0
+}
+
+# Printed on --force-reinit completion: the database is never touched, so the
+# live state carrying the old domain needs explicit operator follow-up.
+print_force_reinit_followup() {
+    echo ""
+    echo "=============================================="
+    echo "  --force-reinit: live-state follow-up"
+    echo "=============================================="
+    echo ""
+    log_warn "The database was NOT touched. Extension SIP realms still embed the old domain."
+    echo ""
+    echo "To finish switching the live state to the new domain:"
+    echo "  1. Delete the old extensions and recreate them via the API"
+    echo "     (for the test customer: ./scripts/setup_test_customer.sh)"
+    echo "  2. Recreate the services that cache domain configuration:"
+    echo "     docker compose rm -fsv registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk"
+    echo "     docker compose up -d registrar-manager api-manager hook-manager customer-manager square-admin square-meet square-talk"
+    echo ""
+}
+
+# Compare the requested (mode, domain) against an existing .env. Same
+# mode+domain keeps today's overwrite-prompt semantics (--yes auto-confirms);
+# a switch is refused (SIP realms embed the domain in the database, §2.7)
+# unless --force-reinit was given.
+check_existing_env_compat() {
+    [[ -f "$ENV_FILE" ]] || return 0
+
+    local existing_mode existing_domain
+    existing_mode=$(get_domain_mode "$ENV_FILE")
+    existing_domain=$(get_env_var "$ENV_FILE" BASE_DOMAIN)
+    [[ -z "$existing_domain" ]] && existing_domain="voipbin.test"
+
+    if [[ "$INIT_FORCE_REINIT" == "true" ]]; then
+        if [[ "$existing_mode" == "internal" && "$INIT_MODE" == "external" ]]; then
+            check_force_reinit_preconditions
+        fi
+        log_warn "--force-reinit: rewriting .env/certs/Corefile for mode=$INIT_MODE domain=$TARGET_DOMAIN"
+        return 0
+    fi
+
+    if [[ "$existing_mode" == "$INIT_MODE" && "$existing_domain" == "$TARGET_DOMAIN" ]]; then
+        log_warn ".env file already exists at $ENV_FILE"
+        if [[ "$INIT_YES" == "true" ]]; then
+            log_info "Overwriting existing .env (--yes)"
+            return 0
+        fi
+        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing .env file"
+            echo ""
+            emit_result ok "mode=$existing_mode domain=$existing_domain action=kept-existing"
+            exit 0
+        fi
+        return 0
+    fi
+
+    log_error "Refusing to switch mode/domain on an existing install."
+    log_error "  existing:  mode=$existing_mode domain=$existing_domain"
+    log_error "  requested: mode=$INIT_MODE domain=$TARGET_DOMAIN"
+    echo ""
+    echo "Extension SIP realms embed the domain in the database; switching"
+    echo "requires wiping or regenerating that state. Two supported paths:"
+    echo ""
+    echo "  1. Full reset (demo installs):"
+    echo "       ./scripts/clean.sh --volumes --purge"
+    echo "     then re-run init for the new mode/domain."
+    echo ""
+    echo "  2. Keep the database, rewrite config only:"
+    echo "       ./scripts/init.sh --force-reinit ..."
+    echo "     (prints the required live-state follow-up; never touches the DB)"
+    echo ""
+    die 1 "mode/domain switch requires clean.sh --volumes --purge or --force-reinit"
+}
 
 # Setup DNS by calling the setup-dns.sh script
 setup_dns() {
@@ -25,6 +315,14 @@ setup_dns() {
     local admin_ip="$4"
     local meet_ip="$5"
     local talk_ip="$6"
+
+    # External-mode gate (design §2.3/§2.4): external init never generates a
+    # Corefile and never calls setup-dns.sh — effective on both the root and
+    # unprivileged paths because it lives inside the function itself.
+    if [[ "${INIT_MODE:-internal}" != "internal" ]]; then
+        log_info "External mode: DNS is operator-managed, skipping Corefile generation and setup-dns.sh"
+        return 0
+    fi
 
     log_step "Setting up DNS..."
 
@@ -151,6 +449,11 @@ generate_service_ips() {
 
 # Main initialization
 main() {
+    # Result-line guarantee: registered here, not at top level (§2.2).
+    trap init_exit_trap EXIT
+
+    parse_args "$@"
+
     echo ""
     echo "=============================================="
     echo "  VoIPBin Sandbox Initialization"
@@ -160,35 +463,51 @@ main() {
     # Check for root/sudo access
     check_root
 
-    # Check if .env already exists
-    if [[ -f "$ENV_FILE" ]]; then
-        log_warn ".env file already exists at $ENV_FILE"
-        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing .env file"
-            echo ""
-            exit 0
-        fi
+    # Environment prerequisites
+    if ! command -v openssl &> /dev/null; then
+        die 2 "openssl is required but not installed"
     fi
 
     # Check template exists
     if [[ ! -f "$ENV_TEMPLATE" ]]; then
-        log_error ".env.template not found at $ENV_TEMPLATE"
-        exit 1
+        die 2 ".env.template not found at $ENV_TEMPLATE"
     fi
 
-    # Step 1: Check for mkcert
+    # Existing-.env compatibility: refuse mode/domain switches (§2.7)
+    check_existing_env_compat
+
+    # Step 1: Resolve TLS mode / check certificate tools
     log_step "Checking certificate tools..."
     USE_MKCERT="false"
-    if check_mkcert; then
-        log_info "  mkcert found - will generate browser-trusted certificates"
-        setup_mkcert_ca
-        USE_MKCERT="true"
-    else
-        log_warn "  mkcert not found - will use self-signed certificates"
-        log_warn "  Install mkcert for browser-trusted certs: sudo apt install mkcert && mkcert -install"
-    fi
+    case "$INIT_TLS_MODE" in
+        byo)
+            log_info "  TLS mode: byo (bring-your-own certificates)"
+            ;;
+        selfsigned)
+            log_info "  TLS mode: selfsigned (browser will show warnings)"
+            ;;
+        mkcert)
+            if ! check_mkcert; then
+                die 2 "--tls mkcert requested but mkcert is not installed (sudo apt install mkcert)"
+            fi
+            setup_mkcert_ca
+            USE_MKCERT="true"
+            ;;
+        *)
+            # Auto-default (internal mode only): mkcert if available, else
+            # selfsigned — current behavior.
+            if check_mkcert; then
+                log_info "  mkcert found - will generate browser-trusted certificates"
+                setup_mkcert_ca
+                USE_MKCERT="true"
+                INIT_TLS_MODE="mkcert"
+            else
+                log_warn "  mkcert not found - will use self-signed certificates"
+                log_warn "  Install mkcert for browser-trusted certs: sudo apt install mkcert && mkcert -install"
+                INIT_TLS_MODE="selfsigned"
+            fi
+            ;;
+    esac
     echo ""
 
     # Step 2: Detect host IP and find external IPs for services
@@ -246,6 +565,11 @@ GCPEOF
     # Step 7: Create .env file
     log_step "Creating .env file..."
 
+    # Single source of truth for the 11 domain-dependent values (§2.1):
+    # for voipbin.test the derived values are byte-identical to the historic
+    # literals, which is how internal mode stays unchanged.
+    derive_domain_env "$TARGET_DOMAIN"
+
     cat > "$ENV_FILE" << EOF
 # ==============================================================================
 # VoIPBin Sandbox - Environment Configuration
@@ -280,10 +604,20 @@ HOOK_SSL_CERT_BASE64=$API_SSL_CERT_BASE64
 HOOK_SSL_PRIVKEY_BASE64=$API_SSL_PRIVKEY_BASE64
 
 # ==============================================================================
+# Install Mode (written by init.sh - re-run init to change; see docs)
+# ==============================================================================
+# DOMAIN_MODE: internal (CoreDNS serves *.voipbin.test) | external (operator DNS)
+DOMAIN_MODE=$INIT_MODE
+# COMPOSE_PROFILES: internal-dns enables the coredns service; empty in external mode
+COMPOSE_PROFILES=$INIT_COMPOSE_PROFILES
+# TLS_MODE: mkcert | selfsigned | byo
+TLS_MODE=$INIT_TLS_MODE
+
+# ==============================================================================
 # SIP/VoIP Network Configuration
 # ==============================================================================
 # Base domain for SIP routing
-BASE_DOMAIN=voipbin.test
+BASE_DOMAIN=$DERIVED_BASE_DOMAIN
 
 # Host's external IP (your machine's LAN IP)
 HOST_EXTERNAL_IP=$HOST_IP
@@ -300,21 +634,21 @@ RTPENGINE_EXTERNAL_IP=$RTPENGINE_EXTERNAL_IP
 # Frontend Configuration
 # ==============================================================================
 # Base hostname (used as fallback if per-service URLs not set)
-BASE_HOSTNAME=voipbin.test
+BASE_HOSTNAME=$DERIVED_BASE_HOSTNAME
 
 # Admin Console (square-admin) and Talk (square-talk) URLs
-API_URL=https://api.voipbin.test:8443/
-WEBSOCKET_URL=wss://api.voipbin.test:8443/v1.0/ws
-REGISTRAR_URL=wss://sip.voipbin.test:5066
-REGISTRAR_DOMAIN=registrar.voipbin.test
+API_URL=$DERIVED_API_URL
+WEBSOCKET_URL=$DERIVED_WEBSOCKET_URL
+REGISTRAR_URL=$DERIVED_REGISTRAR_URL
+REGISTRAR_DOMAIN=$DERIVED_REGISTRAR_DOMAIN
 
 # Meet (square-meet) URLs
-CONFERENCE_URL=wss://conference.voipbin.test
-CONFERENCE_DOMAIN=conference.voipbin.test
+CONFERENCE_URL=$DERIVED_CONFERENCE_URL
+CONFERENCE_DOMAIN=$DERIVED_CONFERENCE_DOMAIN
 
 # Domain names for extension and trunk registration
-DOMAIN_NAME_EXTENSION=registrar.voipbin.test
-DOMAIN_NAME_TRUNK=trunk.voipbin.test
+DOMAIN_NAME_EXTENSION=$DERIVED_DOMAIN_NAME_EXTENSION
+DOMAIN_NAME_TRUNK=$DERIVED_DOMAIN_NAME_TRUNK
 
 # SIP TLS certificates path
 CERTS_PATH=./certs
@@ -356,7 +690,7 @@ AWS_SECRET_KEY=
 # Security & Storage
 # ==============================================================================
 JWT_KEY=$JWT_KEY
-EMAIL_VERIFY_BASE_URL=https://api.voipbin.test:8443
+EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
 
 # ==============================================================================
 # Analytics & Monitoring (OPTIONAL)
@@ -396,7 +730,7 @@ EOF
     log_info "  Host IP:            $HOST_IP (web services)"
     log_info "  Kamailio IP:        $KAMAILIO_EXTERNAL_IP (SIP signaling)"
     log_info "  RTPEngine IP:       $RTPENGINE_EXTERNAL_IP (RTP media)"
-    log_info "  Base Domain:        voipbin.test"
+    log_info "  Base Domain:        $TARGET_DOMAIN"
     log_info "  Certificates:       $CERTS_DIR"
     log_info "  Environment:        $ENV_FILE"
     echo ""
@@ -424,6 +758,17 @@ EOF
     echo "  1. (Optional) Edit .env to add your API keys (GCP, OpenAI, etc.)"
     echo "  2. Run: voipbin> start"
     echo ""
+
+    if [[ "$INIT_FORCE_REINIT" == "true" ]]; then
+        print_force_reinit_followup
+    fi
+
+    # Machine-parseable result line (§2.2). next= depends on privilege:
+    # unprivileged init hands off to setup-host.sh (Phase 3 activates the path;
+    # the line format lands here).
+    local next_cmd="./scripts/start.sh"
+    [[ $EUID -ne 0 ]] && next_cmd="sudo ./scripts/setup-host.sh"
+    emit_result ok "mode=$INIT_MODE domain=$TARGET_DOMAIN tls=$INIT_TLS_MODE next=\"$next_cmd\""
 }
 
 main "$@"

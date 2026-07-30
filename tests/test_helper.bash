@@ -337,11 +337,44 @@ load_init_functions() {
     SCRIPT_DIR="$SCRIPTS_DIR"
 
     source "$temp_init"
+
+    # Re-assert test isolation: init.sh recomputes these from SCRIPT_DIR when
+    # not already set, and a stale value here would make generate_cert & co.
+    # write into the REAL repository tree instead of the test sandbox.
+    PROJECT_DIR="$TEST_TEMP_DIR"
+    ENV_FILE="$TEST_TEMP_DIR/.env"
+    ENV_TEMPLATE="$TEST_TEMP_DIR/.env.template"
+    CERTS_DIR="$TEST_TEMP_DIR/certs"
+}
+
+# Load start.sh functions without running main()
+# Same pattern as load_init_functions: strip the trailing main "$@" call and
+# skip re-sourcing common.sh.
+load_start_functions() {
+    source "$SCRIPTS_DIR/common.sh"
+
+    local temp_start="$TEST_TEMP_DIR/start_functions.sh"
+
+    sed -e '/^main "\$@"$/d' \
+        -e 's|source "\$SCRIPT_DIR/common.sh"|# common.sh already sourced|' \
+        -e 's/^set -e$/# set -e  # disabled for testing/' \
+        "$SCRIPTS_DIR/start.sh" > "$temp_start"
+
+    SCRIPT_DIR="$SCRIPTS_DIR"
+
+    source "$temp_start"
+
+    # Re-assert test isolation
+    PROJECT_DIR="$TEST_TEMP_DIR"
 }
 
 # Load setup-voip-network.sh functions
 # This script has inline code, so we need to be careful
 load_network_functions() {
+    # Source common.sh directly (the extracted snippet's own source line is
+    # neutralized below — its SCRIPT_DIR would resolve to the temp dir)
+    source "$SCRIPTS_DIR/common.sh"
+
     local temp_network="$TEST_TEMP_DIR/network_functions.sh"
 
     # Extract everything up to "parse_args "$@"" (marker-based, not line-number)
@@ -349,7 +382,8 @@ load_network_functions() {
     # Remove 'set -e' to prevent premature test exits
     sed -n '1,/^parse_args "\$@"/p' "$SCRIPTS_DIR/setup-voip-network.sh" | \
         sed -e '$d' \
-            -e 's/^set -e$/# set -e  # disabled for testing/' > "$temp_network"
+            -e 's/^set -e$/# set -e  # disabled for testing/' \
+            -e 's|^source "\$SCRIPT_DIR/common.sh"$|# common.sh already sourced|' > "$temp_network"
 
     source "$temp_network"
 

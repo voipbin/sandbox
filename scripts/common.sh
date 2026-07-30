@@ -52,6 +52,97 @@ check_root() {
 }
 
 # =============================================================================
+# .env Access + Domain Mode (dual-mode DNS, VOIP-1275)
+# =============================================================================
+
+# get_env_var <env-file> <var-name>
+# Prints the value of VAR= from the file (last occurrence wins). Pure text
+# processing — the file is never sourced, so untrusted content (e.g. $(...))
+# is returned literally, never executed. Empty output if the file or the
+# variable is absent.
+get_env_var() {
+    local env_file="$1"
+    local var_name="$2"
+
+    [[ -n "$env_file" && -f "$env_file" ]] || return 0
+    grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2-
+}
+
+# get_domain_mode <env-file>
+# Prints the install mode: internal | external. A missing file or missing
+# DOMAIN_MODE key maps to "internal" (legacy .env rule, design §2.5) — all
+# mode gates must call this, never get_env_var DOMAIN_MODE directly.
+get_domain_mode() {
+    local env_file="$1"
+    local mode
+    mode=$(get_env_var "$env_file" DOMAIN_MODE)
+
+    if [[ -z "$mode" ]]; then
+        echo "internal"
+    else
+        echo "$mode"
+    fi
+}
+
+# derive_domain_env <base_domain>
+# Sets the DERIVED_* shell variables for the 11 domain-dependent .env values
+# (design §2.1). This is the ONLY place domain values are composed. For
+# <base_domain> = voipbin.test the results are byte-identical to the historic
+# literals (mode-1 no-regression invariant; asserted by tests/common.bats).
+derive_domain_env() {
+    local d="$1"
+
+    DERIVED_API_URL="https://api.${d}:8443/"
+    DERIVED_WEBSOCKET_URL="wss://api.${d}:8443/v1.0/ws"
+    DERIVED_REGISTRAR_URL="wss://sip.${d}:5066"
+    DERIVED_REGISTRAR_DOMAIN="registrar.${d}"
+    DERIVED_CONFERENCE_URL="wss://conference.${d}"
+    DERIVED_CONFERENCE_DOMAIN="conference.${d}"
+    DERIVED_DOMAIN_NAME_EXTENSION="registrar.${d}"
+    DERIVED_DOMAIN_NAME_TRUNK="trunk.${d}"
+    DERIVED_EMAIL_VERIFY_BASE_URL="https://api.${d}:8443"
+    DERIVED_BASE_DOMAIN="${d}"
+    DERIVED_BASE_HOSTNAME="${d}"
+}
+
+# check_compose_profiles_conflict <env-file>
+# Guards against (a) a shell-exported COMPOSE_PROFILES contradicting the
+# project .env (shell wins in Compose precedence, silently changing the
+# service set) and (b) a stale pre-dual-mode .env (internal mode, no
+# COMPOSE_PROFILES key) that would silently drop coredns while resolv.conf
+# still points at 127.0.0.1. Defined here (not in start.sh) because both
+# start.sh and check-install.sh consume it.
+# Returns 0 when consistent; on conflict sets COMPOSE_PROFILES_CONFLICT_REASON,
+# logs the problem, and returns 1 (callers emit their own result line).
+check_compose_profiles_conflict() {
+    local env_file="$1"
+
+    COMPOSE_PROFILES_CONFLICT_REASON=""
+    [[ -n "$env_file" && -f "$env_file" ]] || return 0
+
+    local env_profiles
+    env_profiles=$(get_env_var "$env_file" COMPOSE_PROFILES)
+
+    # (a) shell-exported COMPOSE_PROFILES contradicting .env
+    if [[ -n "${COMPOSE_PROFILES+x}" && "$COMPOSE_PROFILES" != "$env_profiles" ]]; then
+        COMPOSE_PROFILES_CONFLICT_REASON="COMPOSE_PROFILES is set in your shell ('${COMPOSE_PROFILES}') and contradicts .env ('${env_profiles}'); run: unset COMPOSE_PROFILES"
+        log_error "$COMPOSE_PROFILES_CONFLICT_REASON"
+        return 1
+    fi
+
+    # (b) internal mode with no COMPOSE_PROFILES key at all -> stale .env
+    if ! grep -q '^COMPOSE_PROFILES=' "$env_file" 2>/dev/null; then
+        if [[ "$(get_domain_mode "$env_file")" == "internal" ]]; then
+            COMPOSE_PROFILES_CONFLICT_REASON="stale .env, re-run ./scripts/init.sh --yes"
+            log_error "$COMPOSE_PROFILES_CONFLICT_REASON"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
 # Host IP Detection
 # =============================================================================
 detect_host_ip() {

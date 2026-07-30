@@ -187,6 +187,121 @@ teardown() {
 }
 
 # =============================================================================
+# get_env_var() tests
+# =============================================================================
+
+@test "get_env_var returns empty for absent variable" {
+    create_env_file "OTHER_VAR=value"
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MISSING_VAR")
+
+    assert_equal "$result" ""
+}
+
+@test "get_env_var returns empty for missing file" {
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/does-not-exist" "ANY_VAR")
+
+    assert_equal "$result" ""
+}
+
+@test "get_env_var last occurrence wins" {
+    create_env_file "MY_VAR=first" "OTHER=x" "MY_VAR=second"
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MY_VAR")
+
+    assert_equal "$result" "second"
+}
+
+@test "get_env_var preserves values containing equals signs" {
+    create_env_file "MY_VAR=a=b=c"
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "MY_VAR")
+
+    assert_equal "$result" "a=b=c"
+}
+
+@test "get_env_var never executes command substitution content" {
+    create_env_file 'EVIL_VAR=$(touch '"$TEST_TEMP_DIR"'/pwned)'
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "EVIL_VAR")
+
+    # Value returned literally, side effect never executed
+    assert_equal "$result" '$(touch '"$TEST_TEMP_DIR"'/pwned)'
+    [[ ! -f "$TEST_TEMP_DIR/pwned" ]]
+}
+
+# =============================================================================
+# get_domain_mode() tests
+# =============================================================================
+
+@test "get_domain_mode returns internal when DOMAIN_MODE absent (legacy .env)" {
+    create_env_file "BASE_DOMAIN=voipbin.test"
+    load_common
+
+    result=$(get_domain_mode "$PROJECT_DIR/.env")
+
+    assert_equal "$result" "internal"
+}
+
+@test "get_domain_mode returns internal for missing .env" {
+    load_common
+
+    result=$(get_domain_mode "$PROJECT_DIR/does-not-exist")
+
+    assert_equal "$result" "internal"
+}
+
+@test "get_domain_mode returns external when DOMAIN_MODE=external" {
+    create_env_file "DOMAIN_MODE=external"
+    load_common
+
+    result=$(get_domain_mode "$PROJECT_DIR/.env")
+
+    assert_equal "$result" "external"
+}
+
+# =============================================================================
+# derive_domain_env() tests (mode-1 no-regression invariant, design §2.1)
+# =============================================================================
+
+@test "derive_domain_env voipbin.test is byte-identical to the historic literals" {
+    load_common
+
+    derive_domain_env "voipbin.test"
+
+    assert_equal "$DERIVED_API_URL" "https://api.voipbin.test:8443/"
+    assert_equal "$DERIVED_WEBSOCKET_URL" "wss://api.voipbin.test:8443/v1.0/ws"
+    assert_equal "$DERIVED_REGISTRAR_URL" "wss://sip.voipbin.test:5066"
+    assert_equal "$DERIVED_REGISTRAR_DOMAIN" "registrar.voipbin.test"
+    assert_equal "$DERIVED_CONFERENCE_URL" "wss://conference.voipbin.test"
+    assert_equal "$DERIVED_CONFERENCE_DOMAIN" "conference.voipbin.test"
+    assert_equal "$DERIVED_DOMAIN_NAME_EXTENSION" "registrar.voipbin.test"
+    assert_equal "$DERIVED_DOMAIN_NAME_TRUNK" "trunk.voipbin.test"
+    assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.voipbin.test:8443"
+    assert_equal "$DERIVED_BASE_DOMAIN" "voipbin.test"
+    assert_equal "$DERIVED_BASE_HOSTNAME" "voipbin.test"
+}
+
+@test "derive_domain_env example.com spot-checks" {
+    load_common
+
+    derive_domain_env "example.com"
+
+    assert_equal "$DERIVED_API_URL" "https://api.example.com:8443/"
+    assert_equal "$DERIVED_WEBSOCKET_URL" "wss://api.example.com:8443/v1.0/ws"
+    assert_equal "$DERIVED_REGISTRAR_DOMAIN" "registrar.example.com"
+    assert_equal "$DERIVED_DOMAIN_NAME_EXTENSION" "registrar.example.com"
+    assert_equal "$DERIVED_EMAIL_VERIFY_BASE_URL" "https://api.example.com:8443"
+    assert_equal "$DERIVED_BASE_DOMAIN" "example.com"
+}
+
+# =============================================================================
 # detect_os() tests
 # =============================================================================
 
