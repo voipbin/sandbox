@@ -1,9 +1,9 @@
-# VoIPBin Sandbox — Install Reliability Fix (Call-Manager / Transcribe-Manager Crash Loops, Version Pin Refresh, Env Template Sync)
+# VoIPBin Sandbox — Install Reliability Fix (Call-Manager / Transcribe-Manager / Timeline-Manager Crash Loops, Version Pin Refresh, Env Template Sync)
 
-Status: DRAFT (Design Review Round 3, addressing Round 2 REQUEST_CHANGES)
+Status: DRAFT (Design Review Round 4, addressing Round 3 REQUEST_CHANGES)
 Author: Hermes (CPO) with pchero (CEO/CTO)
 Date: 2026-07-30
-Repo: sandbox (fixes 2.1/2.2 land in monorepo; this doc is the sandbox-side design of record for the whole effort)
+Repo: sandbox (fixes 2.1/2.2/2.3 land in monorepo; this doc is the sandbox-side design of record for the whole effort)
 
 ## 0. Mandate
 
@@ -16,10 +16,13 @@ either the customer's logs or their confirmation after this fix ships; this docu
 not claim that confirmation.
 
 Goal: after this cycle, a fresh sandbox install reaches a stable, fully-running state (no
-unexplained crash-looping containers) for a new self-hoster, the version/credential
-bookkeeping that made this hard to diagnose is cleaned up, and the two monorepo-level bugs
-found are fixed in a way that does not silently disable functionality. Everything this
-document cannot verify without an interactive `sudo` session is deferred to §6, not hidden.
+unexplained crash-looping containers) for a new self-hoster — **both today, against the
+currently-pinned images, and after this cycle's own version-pin refresh (§2.4)**, which
+Round-3 review found would otherwise introduce a new crash of its own (§1). The
+version/credential bookkeeping that made this hard to diagnose is cleaned up, and the
+monorepo-level bugs found are fixed in a way that does not silently disable functionality.
+Everything this document cannot verify without an interactive `sudo` session is deferred to
+§6, not hidden.
 
 ## 1. Reproduction findings (verified facts)
 
@@ -34,35 +37,72 @@ findings).
 
 | Container | Cause | Verdict |
 |---|---|---|
-| `voipbin-call-mgr` | `bin-call-manager/pkg/subscribehandler/main.go:124-134` (`subscribeHandler.Run()`): after `QueueCreate` (124-126), the loop over 4 targets (129-134) calls `QueueSubscribe`, which delegates to `QueueBind` (`bin-common-handler/pkg/rabbitmqhandler/queue.go:~90-98`; interface declared at `main.go:34-35`). The target list is built in `cmd/call-manager/main.go:180-185` and includes `commonoutline.QueueNameSentinelEvent` alongside asterisk-event-all/customer-event/flow-event. Sandbox's `docker-compose.yml` deliberately omits the `sentinel-manager` service (requires the Kubernetes API, crash-loops in Compose per its own inline comment), so that exchange is never declared, `QueueBind` returns an AMQP 404, and the wrapped error propagates to a `logrus.Fatalf` exit. Not sandbox-specific — **any non-Kubernetes Compose-based deployment of call-manager hits this**. Sentinel is last in the target list, so bindings 1-3 (asterisk-event-all, customer-event, flow-event) succeed before the 4th call fails and the channel is torn down — the failure is not "call-manager never subscribes to anything", it's "call-manager dies mid-subscribe, after already succeeding on 3 of 4, which the crash-loop then hides" (the `ConsumeMessage` goroutine at 137-141 never even gets a chance to start, since `Run()` returns the error before reaching it). | **Fatal, highest priority.** Leading hypothesis for the customer's reported failure (see §0). |
-| `sandbox-transcribe-manager-1` | `bin-transcribe-manager/pkg/streaminghandler/main.go` (`NewStreamingHandler`, spans 83-130) already treats GCP/AWS client init failure as non-fatal (`log.Warnf`, continues) for each provider individually — that part already degrades gracefully. The actual fatal: if **both** providers end up nil, the function returns a bare `nil` interface (112-116), and `cmd/transcribe-manager/main.go:144-146` turns the `streamingHandler == nil` check into a returned error, unwinding to the same `logrus.Fatalf` exit path. Root cause: `init.sh`/`init_no_sudo.sh` generate a syntactically-present but unparseable dummy GCP private key (§2.4), so GCP init fails, and no AWS credentials are configured by default, so both are nil. Only `runStreaming(streamingHandler)` (`cmd/transcribe-manager/main.go:224`, calling `.Run()`) touches the interface at boot — `transcribehandler.NewTranscribeHandler` (`pkg/transcribehandler/main.go:99-119`) only stores it in a struct field at construction time, it does not call a method on it, so the earliest possible nil-dereference is inside `runStreaming`, with further ones at later per-request call sites in `transcribehandler`. | **Fatal, second priority.** Inconsistent with the *intent* already expressed in the per-provider warnings — the code clearly meant to support "degrade, don't crash" but stops short of it. |
+| `voipbin-call-mgr` | `bin-call-manager/pkg/subscribehandler/main.go:124-134` (`subscribeHandler.Run()`): after `QueueCreate` (124-126), the loop over 4 targets (129-134) calls `QueueSubscribe`, which delegates to `QueueBind` (`bin-common-handler/pkg/rabbitmqhandler/queue.go:166-191`, interface declared at `main.go:34-35`). The target list is built in `cmd/call-manager/main.go:180-185` and includes `commonoutline.QueueNameSentinelEvent`, added 2025-06-22 (`git blame`, commit `4eee7e8062`) — well before the current pin, so this bug is present in the image actually deployed today. Sandbox's `docker-compose.yml` deliberately omits the `sentinel-manager` service (requires the Kubernetes API, crash-loops in Compose per its own inline comment), so that exchange is never declared, `QueueBind` returns an AMQP 404, and the wrapped error propagates to a `logrus.Fatalf` exit. Not sandbox-specific — **any non-Kubernetes Compose-based deployment of call-manager hits this**. Sentinel is last in the target list, so bindings 1-3 (asterisk-event-all, customer-event, flow-event) succeed before the 4th call fails and the channel is torn down — `Run()` returns the error at line 132, before the `ConsumeMessage` goroutine (137-141) ever starts. | **Fatal, highest priority.** Leading hypothesis for the customer's reported failure (see §0). |
+| `sandbox-transcribe-manager-1` | `bin-transcribe-manager/pkg/streaminghandler/main.go` (`NewStreamingHandler`, spans 83-137) already treats GCP/AWS client init failure as non-fatal (`log.Warnf`, continues) for each provider individually. The actual fatal: if both providers end up nil, the function returns a bare `nil` interface (113-116), and `cmd/transcribe-manager/main.go:144-146` turns the `streamingHandler == nil` check into a returned error, unwinding to the same `logrus.Fatalf` exit. Root cause: `init.sh`/`init_no_sudo.sh` generate a syntactically-present but unparseable dummy GCP private key (§2.5), so GCP init fails, and no AWS credentials are configured by default. Only `runStreaming(streamingHandler)` (`cmd/transcribe-manager/main.go:224`, calling `.Run()`) touches the interface at boot — `transcribehandler.NewTranscribeHandler` (`pkg/transcribehandler/main.go:99-119`) only stores it in a struct field, it does not call a method on it. | **Fatal, second priority.** Inconsistent with the intent already expressed in the per-provider warnings. |
 | `voipbin-kamailio` | Requires the `KAMAILIO_EXTERNAL_IP` macvlan interface, only created by the sudo-gated `setup-voip-network.sh`. Expected, not run this session. | Not a bug, deferred to §6. |
 | `voipbin-dns` (CoreDNS) | Requires `config/coredns/Corefile`, only generated by the sudo-gated DNS setup step. Expected, not run this session. | Not a bug, deferred to §6. |
 
-**A third service may be silently degraded rather than genuinely healthy.**
-`timeline-manager` (`docker-compose.yml:~1155`) reads `CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-}`
-with no ClickHouse service defined anywhere in `docker-compose.yml`, and sandbox `CLAUDE.md`
-itself documents timeline-manager as "requires ClickHouse". Its healthcheck only probes
-`:2112/metrics` (the generic Prometheus port every manager exposes), which can report healthy
-independent of whether its actual ClickHouse-backed functionality works. This was not
-separately confirmed broken in this cycle's reproduction — it reported healthy — but it is
-flagged here explicitly rather than silently counted as a clean pass, since the same
-"loud crash beats silent degradation" argument this document makes for call-manager and
-transcribe-manager applies here too. Out of scope to fix this cycle (§4); noted so the §3
-pass criterion isn't read as stronger than it is.
+**A third, previously-unlisted service has the same sentinel-subscribe bug — but it is
+latent today and will only surface after this cycle's own version-pin refresh (§2.4).**
+`bin-timeline-manager/pkg/subscribehandler/main.go:47` includes
+`commonoutline.QueueNameSentinelEvent` in its `subscribeTargets`, and its `Run(ctx)`
+(`main.go:112-134`) is structurally identical to call-manager's: `QueueCreate`, then a loop
+that returns the first `QueueSubscribe` failure. That error is fatal via
+`cmd/timeline-manager/main.go:runSubscribe` (221-227) → `runServices` → `run` →
+`rootCmd.Execute()`. Round-3 review correctly flagged this as a live contradiction against
+this document's own 40/44 count, since `timeline-manager` **is** deployed
+(`docker-compose.yml:1140`) and reported healthy in this cycle's reproduction.
 
-**Version drift is not implicated.** `versions.lock` pins the Feb-21 monorepo commit while
-monorepo HEAD is now Jul-30 (~5 months). Migrations against the Feb-21 pin completed with
-zero errors, and both fatal bugs above were confirmed to exist unchanged at current monorepo
-HEAD (`a0438c1f2`). Bumping the pin alone would not have fixed the customer's install.
+**Root cause of the apparent contradiction, confirmed via `git blame` and
+`git merge-base --is-ancestor`**: `commonoutline.QueueNameSentinelEvent` was added to
+`bin-timeline-manager`'s subscribe list by commit `9ad08f416` (2026-03-16, "Centralize
+ClickHouse writes in timeline-manager"), which is **not an ancestor of the pinned
+target commit** `0ce70d7d3` (2026-02-21) —
+`git merge-base --is-ancestor 9ad08f416 0ce70d7d3a0df3c49af817d6c2c14e6a9b2f7f9b` returns
+false. The currently-**deployed** `timeline-manager` image predates that change and simply
+does not attempt a sentinel subscription, so it never hits the bug — the reproduction was
+accurate for what real customers install today, and the "100% reproducible" claim for
+call-manager stands unweakened. Re-confirmed empirically: bringing up a fresh
+`rabbitmq` + the currently-pinned `timeline-manager` image in isolation (`docker inspect
+RestartCount: 0`, no sentinel/exchange/404 log lines, no `sentinel` exchange created per
+the RabbitMQ management API) shows no crash and no subscribe attempt on that path.
+
+This is a genuinely new finding with real consequence: **§2.4's `versions.lock` refresh, if
+shipped without also fixing timeline-manager, trades one known crash-looping service for
+two** — a working-today service would start crash-looping the moment the pin moves past
+2026-03-16. `grep -rln QueueNameSentinelEvent` across the monorepo confirms only three
+services reference it as a subscribe target: `bin-call-manager` (broken today),
+`bin-sentinel-manager` (the exchange's owner/publisher), and `bin-timeline-manager` (broken
+only after a future version bump). §2.1's fix is therefore scoped to both call-manager and
+timeline-manager (§2.2 renumbered accordingly below), and — because Phase A must ship before
+Phase B moves the pin (§2.4) — timeline-manager's fix must land in the same monorepo PR
+wave as call-manager's, not as a follow-up.
+
+**A fourth service may be silently degraded rather than genuinely healthy** (unrelated to
+the sentinel bug): `timeline-manager`, `campaign-manager` (`docker-compose.yml:589`), and
+`hook-manager` (`:783`) all read `CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-}` with no
+ClickHouse service defined anywhere in `docker-compose.yml`, and sandbox `CLAUDE.md`
+documents timeline-manager as requiring it. All three expose only a generic `:2112/metrics`
+healthcheck, which can report healthy independent of whether their ClickHouse-backed
+functionality works. Not separately confirmed broken this cycle (all three reported
+healthy); flagged rather than silently counted as a clean pass, since the "loud crash beats
+silent degradation" argument this document makes for call-manager/transcribe-manager
+applies here too. Out of scope to fix this cycle (§4).
+
+**Version drift is not implicated in the two bugs found and shipped-today.** `versions.lock`
+pins the Feb-21 monorepo commit while monorepo HEAD is now Jul-30 (~5 months). Migrations
+against the Feb-21 pin completed with zero errors. Both the call-manager and
+transcribe-manager bugs were confirmed to exist unchanged at current monorepo HEAD
+(`a0438c1f2`) as well as at the Feb-21 pin, so bumping the pin alone would not have fixed
+the customer's install — but, per the timeline-manager finding above, bumping the pin
+**without** this cycle's fixes would make things measurably worse, not neutral.
 
 **Dummy GCP credential is mounted into 3 services, not just transcribe-manager**
 (`docker-compose.yml:529` api-manager, `:989` rag-manager, `:1193` transcribe-manager, all
 `${GOOGLE_APPLICATION_CREDENTIALS:-./config/dummy-gcp-credentials.json}`). Confirmed in this
-session's reproduction that **api-manager and rag-manager stayed healthy** with the same
-unparseable credential — both are lazy-init on that path (only touched when a
-GCS/RAG-embedding feature is actually invoked, not at process boot), so they are not in
-scope for this cycle. Only transcribe-manager parses it eagerly at startup.
+session's reproduction that api-manager and rag-manager stayed healthy with the same
+unparseable credential (both lazy-init on that path). Only transcribe-manager parses it
+eagerly at startup.
 
 **Env var audit**: no genuinely required variable was found missing or broken. See §2.5 for
 the concrete `.env.template` sync plan.
@@ -72,112 +112,140 @@ set → JWT login → billing plan → extensions — was re-verified working wi
 
 ## 2. Scope
 
-### 2.1 monorepo `bin-call-manager` — sentinel-manager subscribe fix
+### 2.1 monorepo `bin-call-manager` and `bin-timeline-manager` — sentinel-manager subscribe fix
 
 **Rejected approach 1: "log the error and continue".** `QueueBind` failure with AMQP 404
-closes the underlying channel, which all four subscribe targets share on one subscribe
-queue — leaving call-manager deaf to whichever targets bind *after* the failing one
-(sentinel is last, so this specific ordering would only lose sentinel itself today, but the
-approach is fragile to future target-list reordering and does nothing to prevent the crash
-in the first place, since the loop still hits the same 404).
+closes the underlying channel, which all subscribe targets on a given service share on one
+queue — leaving that service deaf to whichever targets bind *after* the failing one. Fragile
+to future target-list reordering, and does nothing to prevent the crash in the first place.
 
-**Rejected approach 2 (this document's own Round-1→2 draft): "add `ExchangeDeclare` to the
-`Rabbit`/`SockHandler` interface, call it with hand-matched kind/durability parameters
-before the bind".** Round-2 review correctly caught two problems: (a) `ExchangeDeclare`
-is defined only on the unexported `amqpChannel`/`*rabbit` types
-(`bin-common-handler/pkg/rabbitmqhandler/main.go` interface section, `exchange.go:10`),
-not reachable through `SockHandler` — implementing this literally means extending a
-`bin-common-handler` public interface, which per root `CLAUDE.md` triggers a
-verification pass across all 37 consumer services, a scope this document never accounted
-for; (b) hand-matching exchange kind/durability risks an AMQP 406 `PRECONDITION_FAILED`
-on any mismatch with how sentinel-manager itself declares the exchange, which closes the
-channel — the exact failure mode this fix exists to avoid.
+**Rejected approach 2 (an earlier draft of this document): "add `ExchangeDeclare` to the
+`Rabbit`/`SockHandler` interface, hand-match kind/durability parameters before the bind".**
+Round-2 review caught: `ExchangeDeclare` is defined only on the unexported `amqpChannel`/
+`*rabbit` types, not reachable through `SockHandler` — extending it means a
+`bin-common-handler` public-interface change, which per root `CLAUDE.md` triggers a
+verification pass across all 37 consumer services. Hand-matching kind/durability also risks
+an AMQP 406 `PRECONDITION_FAILED` on any mismatch, which closes the channel — the exact
+failure mode this fix exists to avoid.
 
-**Chosen approach**: `SockHandler` (which `subscribeHandler` already holds as
-`h.sockHandler`) already exposes `TopicCreate(name string) error`
+**Chosen approach**: `SockHandler` (which both `subscribeHandler` implementations already
+hold as `h.sockHandler`) already exposes `TopicCreate(name string) error`
 (`bin-common-handler/pkg/sockhandler/main.go:20`), which internally calls
 `ExchangeDeclare(name, "fanout", true, false, false, false, nil)`
-(`rabbitmqhandler/topic.go:5-12`). This is **exactly** how sentinel-manager declares the
-same exchange today: `bin-sentinel-manager/cmd/sentinel-manager/main.go:93` constructs a
+(`rabbitmqhandler/topic.go:5-12`). This is exactly how sentinel-manager declares the same
+exchange today: `bin-sentinel-manager/cmd/sentinel-manager/main.go:93` constructs a
 `notifyhandler.NewNotifyHandler(...)`, whose constructor
-(`bin-common-handler/pkg/notifyhandler/main.go:112-122`) calls
-`sockHandler.TopicCreate(string(queueEvent))` for the event queue it owns. Calling
-`h.sockHandler.TopicCreate(string(target))` for the sentinel target before (or as part of)
-the existing `QueueSubscribe` loop in `pkg/subscribehandler/main.go` therefore requires
-**no interface change** (the method is already on `SockHandler`) and gets kind/durability
-parity **by construction**, not by hand-matching. If sentinel-manager is deployed, its own
-`TopicCreate` call already made this a no-op declare (idempotent, matching params); if it
-is not deployed (sandbox, or any non-K8s deployment), call-manager's `TopicCreate` call
-declares the exchange itself and the subsequent bind/subscribe succeeds. Scope this call to
-the sentinel target specifically (not all four), since the other three targets' owning
-services are always present in every deployment shape this fix needs to support.
+(`bin-common-handler/pkg/notifyhandler/main.go:112-131`) calls
+`sockHandler.TopicCreate(string(queueEvent))` at line 122. Calling
+`h.sockHandler.TopicCreate(string(commonoutline.QueueNameSentinelEvent))` immediately
+before that specific target's `QueueSubscribe` call — in both
+`bin-call-manager/pkg/subscribehandler/main.go`'s loop and
+`bin-timeline-manager/pkg/subscribehandler/main.go`'s equivalent loop — requires no
+interface change and gets kind/durability parity by construction. If sentinel-manager is
+deployed, its own `TopicCreate` call already made this a no-op declare (idempotent,
+matching params); if not, the calling service declares the exchange itself and the
+subsequent bind/subscribe succeeds.
+
+**Scoping decision (explicitly a single-target guard, not a blanket declare-all)**: the
+`TopicCreate` call is added only for the `QueueNameSentinelEvent` target specifically — via
+a name comparison inside the existing loop, e.g. `if target ==
+string(commonoutline.QueueNameSentinelEvent) { ... TopicCreate ... }` — not applied to all
+targets unconditionally. Reasoning: every other target in both services' lists (asterisk
+events, customer/flow/webhook events, etc.) is fanout-kind today, so declaring all of them
+via `TopicCreate` would currently be harmless, but `TopicCreateWithKind` already exists in
+this codebase (added by VOIP-1258, `bin-common-handler/pkg/rabbitmqhandler`) specifically
+because not every exchange is fanout going forward (the new topic-exchange webhook routing
+introduced by that same change). A blanket declare-all would silently paper over a future
+topic-kind target the same way approach 2's hand-matching would, just via a different
+mechanism. Scoping narrowly to the one target this document has actually verified is safe
+keeps the fix's blast radius equal to its verified justification.
 
 **Acceptance criterion**: after the fix, call-manager must still receive and process ARI
 events end-to-end — verified by confirming an actual call/ARI event flows through in the
-clean-room verification (§3), not merely "container does not restart".
+clean-room verification (§3), not merely "container does not restart". Timeline-manager
+must be confirmed to still receive its other (non-sentinel) subscribed events.
 
-**Doc-sync obligation**: this touches `pkg/subscribehandler/main.go`, so
-`bin-call-manager/docs/architecture.md` (if it documents the subscribe-target list /
-failure behavior) must be updated in the same PR.
+**Doc-sync obligation**: this touches `pkg/subscribehandler/main.go` in both services, which
+root `CLAUDE.md`'s service-docs-sync table (enforced by a PostToolUse hook,
+`scripts/check-service-docs.sh`) requires be reflected in each service's
+`docs/architecture.md` events section, in the same PR — not conditional on whether the doc
+"happens to" cover this.
+
+**Test impact**: adding a `TopicCreate` call inside each `Run()` requires new
+`MockSockHandler.EXPECT().TopicCreate(...)` expectations in both services' existing
+`subscribehandler` unit tests — expected, called out here so the monorepo review loop isn't
+surprised by it (§3).
 
 ### 2.2 monorepo `bin-transcribe-manager` — graceful STT-unavailable degradation
 
-**Chosen approach** (simplified from the Round-1→2 draft per Round-2 feedback that a
-separate nil-checking null-object added complexity without benefit): change
-`NewStreamingHandler` itself to return a working no-op/disabled implementation of the
-`StreamingHandler` interface instead of a bare `nil` when both providers are unavailable —
-i.e. add an exported constructor path (e.g. `streaminghandler.NewDisabledStreamingHandler()`,
-or fold the disabled case into `NewStreamingHandler`'s existing return so callers never see
-a nil sentinel at all). This removes the `streamingHandler == nil` check in
-`cmd/transcribe-manager/main.go:144-146` entirely — there is no longer a nil interface for
-`runStreaming` or any `transcribehandler` call site to dereference, by construction, not by
-adding guards at every call site.
+**Chosen approach**: change `NewStreamingHandler` itself to return a working no-op/disabled
+implementation of the `StreamingHandler` interface instead of a bare `nil` when both
+providers are unavailable — an exported constructor path (e.g.
+`streaminghandler.NewDisabledStreamingHandler()`, or folding the disabled case into
+`NewStreamingHandler`'s existing return) so callers never see a nil sentinel at all. This
+removes the `streamingHandler == nil` check in `cmd/transcribe-manager/main.go:144-146`
+entirely — there is no nil interface for `runStreaming` or any `transcribehandler` call
+site to dereference, by construction.
 
-**Defined behavior when STT is disabled**: any transcribe API request that would start
-real-time streaming STT returns a clear, documented error (e.g. `STT_NOT_CONFIGURED`) from
-the disabled implementation's `Run()`/streaming methods, rather than hanging, panicking, or
-silently no-op'ing. Non-streaming transcribe-manager functionality (if any exists
-independent of the streaming handler) is unaffected.
+**Defined behavior when STT is disabled**: the disabled implementation's `Run()` method
+returns `nil`, matching the real `streamingHandler.Run()`'s existing no-op behavior
+(`pkg/streaminghandler/run.go:6-8` — it is not on any API request path, it is a
+boot-time loop starter, and any non-nil return from it is what currently causes a fatal
+exit via `cmd/transcribe-manager/main.go:160-162`/`218-229`; the disabled implementation
+must not reintroduce that). `STT_NOT_CONFIGURED`-class errors are returned instead from the
+disabled implementation's per-request methods — `Start(...)` and `Stop(...)` on the
+`StreamingHandler` interface (`streaminghandler/main.go:37-43`) — which is what an actual
+transcribe-start API call reaches.
 
 **Doc-sync obligation**: `bin-transcribe-manager/CLAUDE.md` currently documents "at least
 one provider must be configured at startup" as an intentional invariant. This design
-**reverses that invariant** — it must be rewritten in the same PR, along with the
-failure-mode section of `docs/operations.md`, to describe the new
-degrade-instead-of-crash behavior and the `STT_NOT_CONFIGURED` API error.
+reverses that invariant — rewrite it in the same PR, along with the failure-mode section of
+`docs/operations.md`, to describe the degrade-instead-of-crash behavior and the
+`STT_NOT_CONFIGURED` API error.
 
-### 2.3 sandbox `versions.lock` refresh — sequencing and count reconciliation
+### 2.3 sandbox dummy GCP credential — explicit non-goal, not silently dropped
+
+This cycle does not change the dummy credential's shape/validity. §2.2's fix makes
+transcribe-manager tolerate it (and any other absent/invalid STT credential) without
+crashing — a real self-hoster who wants working STT still needs real credentials via
+`.env`, same as today. api-manager and rag-manager already tolerate the dummy credential
+(§1) and need no change.
+
+### 2.4 sandbox `versions.lock` refresh — sequencing and count reconciliation
 
 **Resolved sequencing**, three explicit phases, run in order:
 
-1. **Phase A (this cycle, first)**: land 2.1 and 2.2 as monorepo PRs, through the standard
-   monorepo review loop (CLAUDE.md policy: minimum 3 code-review rounds, until 2 consecutive
-   approvals). Verification during this phase does **not** use `docker compose build`
-   (sandbox's `docker-compose.yml` has no `build:` stanzas anywhere — every service is a
-   digest-pinned `image:` reference, and the Dockerfiles live in the monorepo, not here).
-   Instead: build `call-manager` and `transcribe-manager` images directly in the monorepo
-   worktree using its own build tooling, tag them locally (e.g.
-   `voipbin/bin-call-manager:local-fix`), and apply a `docker-compose.local-fix.yml`
-   override (same layering mechanism sandbox already uses for
-   `docker-compose.test.yml`: `docker compose -f docker-compose.yml -f
-   docker-compose.local-fix.yml up -d`) that replaces just those two services' `image:`
-   value with the local tag. This override file is a throwaway verification artifact for
-   Phase A, not committed to the sandbox repo.
+1. **Phase A (this cycle, first)**: land 2.1 (both call-manager and timeline-manager) and
+   2.2 as monorepo PRs, through the standard monorepo review loop (CLAUDE.md policy:
+   minimum 3 code-review rounds, until 2 consecutive approvals). Verification during this
+   phase does not use `docker compose build` (sandbox's `docker-compose.yml` has no
+   `build:` stanzas — every service is a digest-pinned `image:` reference, and the
+   Dockerfiles live in the monorepo). Instead: build the affected images directly in the
+   monorepo worktree (`docker build -f bin-call-manager/Dockerfile -t
+   voipbin/bin-call-manager:local-fix .` run from the monorepo root, since the Dockerfiles
+   expect a repo-root build context for `go mod vendor`; same pattern for
+   `bin-timeline-manager` and `bin-transcribe-manager`), then apply a
+   `docker-compose.local-fix.yml` override in the sandbox repo (same layering mechanism
+   already used for `docker-compose.test.yml`: `docker compose -f docker-compose.yml -f
+   docker-compose.local-fix.yml up -d`) that replaces just those services' `image:` value
+   with the local tag. This override file is a throwaway verification artifact for Phase A,
+   not committed to the sandbox repo.
 2. **Phase B (after Phase A merges to monorepo main and CI publishes images at that merge
    commit)**: regenerate `versions.lock` targeting that merge commit (or monorepo HEAD at
-   that point, whichever is later — default to HEAD, since the version refresh itself is
-   in scope this cycle, not just the two fixed services).
-3. **Phase C**: rerun the full clean-room procedure (§3) against the Phase-B `versions.lock`,
-   using the registry-pinned images like a real customer install would, confirming the fix
-   survives the full pin-and-pull path, not just a local build.
+   that point, whichever is later — default to HEAD, since the refresh itself is in scope
+   this cycle). Because Phase A already fixed timeline-manager's latent bug, this refresh
+   no longer trades one crash for another (§1).
+3. **Phase C**: rerun the full clean-room procedure (§3) against the Phase-B
+   `versions.lock`, using the registry-pinned images like a real customer install would.
 
 **Count reconciliation (44 services vs. 39 pinned images)**: 44 compose services break down
 as 4 third-party-image services (`db`, `redis`, `rabbitmq`, `coredns` — not tracked in
-`versions.lock`) + 40 `voipbin`-owned-image services. Those 40 map to 38 *distinct* images,
+`versions.lock`) + 40 `voipbin`-owned-image services. Those 40 map to 38 distinct images,
 since the three `asterisk-*-proxy` services share one `voip-asterisk-proxy` image. The 39th
 pinned image, `voipbin/bin-sentinel-manager`, corresponds to zero deployed services — it is
-still built and tagged in CI (monorepo builds all services, not just the ones sandbox
-deploys) and versions.lock has always pinned it defensively even though sandbox doesn't run
-it. The generator (below) keeps pinning it: it costs nothing to track, and stops being a
+still built and tagged in CI (monorepo builds every service, not just the ones sandbox
+deploys) and the current `versions.lock` does pin it defensively even though sandbox
+doesn't run it. The generator (below) keeps pinning it: cheap to track, and stops being a
 surprise gap the day sandbox does add a lightweight sentinel-manager stub (not this cycle,
 §4).
 
@@ -189,40 +257,36 @@ surprise gap the day sandbox does add a lightweight sentinel-manager stub (not t
   resolve the nearest registry tag at-or-before the target commit (mirroring how the
   original ancestry pin was built for da0c1cd), pull it, record its resolved sha256 digest
   and source git commit SHA.
-- Output: a regenerated `versions.lock` with the same schema as today's (`target_commit`,
-  `images`, `image_source_tags`, plus a new `generated_by: scripts/generate-versions-lock.sh`
-  field so a hand-edited lock is visually distinguishable from a generated one going
-  forward).
+- Output: a regenerated `versions.lock` with the same schema as today's, plus a new
+  `generated_by: scripts/generate-versions-lock.sh` field so a hand-edited lock is visually
+  distinguishable from a generated one going forward.
 - Fallback behavior: if a service has no registry tag at or before the target commit, keep
   that service's current pinned digest unchanged and print an explicit warning line — never
   silently pin to an unrelated/newer tag.
 - Idempotency: running it twice against the same target with no new merges produces a
   byte-identical `versions.lock` (excluding a `generated` timestamp field).
 - Out of scope for this cycle: wiring this into CI as an automatic drift-detector. Worth
-  doing later; not blocking this fix.
-
-### 2.4 sandbox dummy GCP credential — explicit non-goal, not silently dropped
-
-This cycle does **not** change the dummy credential's shape/validity. The fix in §2.2 makes
-transcribe-manager tolerate it (and any other absent/invalid STT credential) without
-crashing, which is the actual requirement — a real self-hoster who wants working STT still
-needs to supply real credentials via `.env`, same as today. api-manager and rag-manager
-already tolerate the dummy credential (§1) and need no change.
+  doing later; not blocking this fix. Also out of scope: an automated "does bumping the pin
+  introduce a newly-latent bug like timeline-manager's" checker — the discovery method used
+  in §1 (`git blame` + `git merge-base --is-ancestor` on subscribe-target changes across
+  the affected commit range) is manual this cycle; a scripted version of it is a natural
+  follow-up, not built here.
 
 ### 2.5 sandbox `.env.template` sync — concrete, resolvable spec
 
-Per-variable resolution, three categories:
+Per-variable resolution, four categories (corrected from an earlier draft that undercounted
+and mis-cited several lines):
 - **Add to template** (generated by `init.sh` today but undocumented): `BASE_HOSTNAME`,
   `API_URL`, `WEBSOCKET_URL`, `REGISTRAR_URL`, `REGISTRAR_DOMAIN`, `CONFERENCE_URL`,
   `CONFERENCE_DOMAIN` — document with their actual generated defaults (from `CLAUDE.md`'s
-  own table, which already has correct values).
-- **Keep in template, annotate as compose-internal-default** (documented today, not written
-  by `init.sh`, but genuinely consumed via `${VAR:-default}` in `docker-compose.yml` with a
-  matching default — verified line-by-line for each): `DB_HOST`/`DB_PORT`
-  (docker-compose.yml:379), `REDIS_HOST`/`REDIS_PORT` (:458-460), `RABBITMQ_HOST`/`RABBITMQ_PORT`
-  (:129, :131-132), `KAMAILIO_DB_HOST`/`KAMAILIO_REDIS_HOST` (:183, :196),
-  `RTPENGINE_PORT_MIN`/`RTPENGINE_PORT_MAX` (:287, :292),
-  `RTPENGINE_LISTEN_HTTP` (:129). Add a one-line comment next to each: "compose default is
+  own table).
+- **Keep in template, annotate as compose-internal-default**: `DB_HOST`/`DB_PORT`
+  (e.g. `docker-compose.yml:458`; read via `${VAR:-default}` by nearly every manager
+  service, 20+ occurrences, not a single call site), `REDIS_HOST`/`REDIS_PORT` (e.g. :292),
+  `RABBITMQ_HOST`/`RABBITMQ_PORT` (e.g. :287), `KAMAILIO_DB_HOST` (:183),
+  `KAMAILIO_REDIS_HOST` (:196), `RTPENGINE_PORT_MIN`/`RTPENGINE_PORT_MAX` (:131-132),
+  `RTPENGINE_LISTEN_HTTP` (:129) — all verified as genuine `${VAR:-default}` reads with
+  matching template defaults. Add a one-line comment next to each: "compose default is
   used unless you override this — see Track A externalization,
   `docs/plans/2026-07-05-production-grade-horizontal-scale-design.md`, for the multi-host
   case."
@@ -230,97 +294,120 @@ Per-variable resolution, three categories:
   documents `RTPENGINE_INTERFACE=any`, but `docker-compose.yml:128` sets it unconditionally
   to `pub/${RTPENGINE_EXTERNAL_IP:-127.0.0.1};priv/10.100.0.201` — not a `${VAR:-default}`
   read, a hard override. Setting `RTPENGINE_INTERFACE` in `.env` has no effect today.
-  Either delete the line from the template or mark it explicitly
-  `# currently ignored — docker-compose.yml hardcodes this from RTPENGINE_EXTERNAL_IP`, so
-  the template never documents a control path that doesn't exist.
+  Either delete the line or mark it explicitly `# currently ignored — docker-compose.yml
+  hardcodes this from RTPENGINE_EXTERNAL_IP`.
+- **Documented, genuinely consumed, but no backing service — mark aspirational**:
+  `CLICKHOUSE_ADDRESS`/`CLICKHOUSE_DATABASE` (`.env.template:137-138`). Real reads exist
+  (§1's three ClickHouse-consuming services), but there is no ClickHouse container in
+  `docker-compose.yml` for a value to point at by default. Annotate as "set this only if
+  you run your own ClickHouse instance; timeline-manager/campaign-manager/hook-manager
+  degrade without it (§1) — no local default exists".
 - **Drift check**: add `scripts/check-env-template-sync.sh`, run manually for now (CI
-  wiring out of scope, same as §2.3's generator) — greps `init.sh`'s `.env`
-  heredoc/write calls for variable names, greps `.env.template` for documented variable
-  names, and prints any variable present in one but not the other, exit non-zero if any
-  found (excluding the compose-internal-default and dead-var sets above, which are
-  intentionally template-only or template-stale by design, not drift).
+  wiring out of scope, same as §2.4's generator) — greps **both** `init.sh` and
+  `init_no_sudo.sh` (§1 confirmed both generate the dummy GCP credential and write `.env`
+  independently, so a checker reading only one would miss drift in the other) for `.env`
+  variable names, greps `.env.template` for documented variable names, and prints any
+  variable present in one but not the other, exit non-zero if any found (excluding the
+  compose-internal-default, dead, and aspirational sets above, which are intentionally
+  template-only or template-stale by design, not drift).
 
 ## 3. Verification plan
 
-**Phase A verification (locally-built images via override file, §2.3):**
-- Build `call-manager` and `transcribe-manager` from the fix branch in the monorepo
-  worktree, tag locally, apply `docker-compose.local-fix.yml` in the clean-room
-  `docker compose up -d` run per §2.3.
-- Confirm `voipbin-call-mgr` and `sandbox-transcribe-manager-1` reach a running,
-  non-restarting state.
+**Phase A verification (locally-built images via override file, §2.4):**
+- Build `call-manager`, `timeline-manager`, and `transcribe-manager` from the fix branch in
+  the monorepo worktree, tag locally, apply `docker-compose.local-fix.yml` in the
+  clean-room `docker compose up -d` run per §2.4.
+- Confirm `voipbin-call-mgr`, `timeline-manager`, and `sandbox-transcribe-manager-1` reach a
+  running, non-restarting state.
 - **Confirm call-manager still processes ARI events** — drive a test call or synthetic ARI
   event through and confirm call-manager's logs show it consumed from the
   asterisk-event-all queue, satisfying §2.1's acceptance criterion.
+- **Confirm timeline-manager still receives its other subscribed events** (§2.1's
+  acceptance criterion for the second service).
 - **Confirm transcribe-manager's disabled-STT behavior is correct** — issue a
   transcribe-start API request against it with the dummy credential in place and confirm it
-  returns the defined `STT_NOT_CONFIGURED`-class error rather than hanging, panicking, or
-  silently no-op'ing.
+  returns the defined `STT_NOT_CONFIGURED`-class error from `Start(...)`, and separately
+  confirm the container itself does not restart (its `Run()` returning `nil` at boot).
 - Rerun `setup_test_customer.sh`, confirm no regression.
 
-**Phase C verification (registry-pinned images, §2.3, after monorepo merge + versions.lock
+**Phase C verification (registry-pinned images, §2.4, after monorepo merge + versions.lock
 refresh):**
 - Full clean-room procedure (infra → migration → full `docker compose up -d`) against the
   refreshed `versions.lock`.
 - **Pass criterion**: only `voipbin-kamailio` and `voipbin-dns` are down, both attributable
   solely to the sudo-gated setup not having run in this session (§1, §6) — not "zero
-  containers down", which is unachievable without sudo.
+  containers down", which is unachievable without sudo. `timeline-manager` must be
+  confirmed **not** newly crash-looping at this new pin (the specific regression §1
+  identified and §2.1/§2.4-Phase-A exists to prevent).
 - Confirm image pulls succeed for all 39 pinned images at the new target commit (including
-  `bin-sentinel-manager`, per §2.3's count reconciliation); any fallback-pin exceptions are
+  `bin-sentinel-manager`, per §2.4's count reconciliation); any fallback-pin exceptions are
   documented in the regenerated `versions.lock` and called out explicitly in the PR
-  description, not buried.
+  description.
 
 Deferred, sudo-gated verification: see §6.
 
 ## 4. Non-goals
 
 - Not implementing `sentinel-manager` itself in sandbox — it remains an intentional,
-  documented Kubernetes-only exclusion. (§2.3 keeps pinning its image defensively, which is
+  documented Kubernetes-only exclusion. (§2.4 keeps pinning its image defensively, which is
   not the same as deploying it.)
-- Not changing the dummy GCP credential's content/validity (§2.4).
-- Not fixing `timeline-manager`'s ClickHouse-dependent functionality or its healthcheck
-  blind spot (§1) — flagged, not silently dropped, but out of scope this cycle.
+- Not changing the dummy GCP credential's content/validity (§2.3).
+- Not fixing `timeline-manager`/`campaign-manager`/`hook-manager`'s ClickHouse-dependent
+  functionality or their healthcheck blind spot (§1) — flagged, not silently dropped, but
+  out of scope this cycle.
 - Not touching secrets storage — plaintext `.env` stays as-is (decided this cycle: the
   meaningful risk is backup-archive exposure, out of scope here).
 - Track A (horizontal-scale enablement) is already complete and out of scope.
 - Not a general Track B (install-parity hardening: TLS lifecycle, scheduled backup,
   monitoring stack, public DNS) — that remains a separate, not-yet-started body of work.
-- Not wiring §2.3's generator or §2.5's drift check into CI as an automated recurring job —
+- Not wiring §2.4's generator or §2.5's drift check into CI as an automated recurring job —
   both ship as manually-invoked scripts this cycle; CI automation is explicitly future work.
+- Not building an automated "does this version bump introduce a newly-latent subscribe bug"
+  checker (§2.4) — this cycle's discovery of the timeline-manager case was manual;
+  automating it is a natural follow-up, not in scope now.
 
 ## 5. Risks
 
-- **R1 — production behavior regression from making sentinel-subscribe non-fatal.** In a
-  real Kubernetes deployment where sentinel-manager legitimately should be running, the
-  `TopicCreate`-before-subscribe fix (§2.1) means a genuine sentinel-manager outage or
-  misconfiguration now starts call-manager successfully instead of crash-looping loudly —
-  `EventSMPodDeleted`-driven pod-recovery (`bin-call-manager/pkg/callhandler/event.go:85`)
-  would silently stop working with no crash to signal it. **Mitigation is honestly
-  limited**: `ExchangeDeclare`/`TopicCreate` is idempotent and returns no
-  created-vs-already-existed signal, so call-manager cannot distinguish "sentinel-manager
-  is up and already declared this" from "I just declared it because nobody else did" at
-  declare time — the metric/warn-log mitigation floated in an earlier draft of this
-  document is not implementable on that signal and is withdrawn. The workable mitigation is
-  a runtime liveness signal instead of a declare-time one: track a
-  last-sentinel-event-received timestamp and expose it as a gauge/health field, so an
-  operator who expects sentinel events can alert on "no sentinel event in N minutes" — this
-  is a monorepo-PR-scope addition to consider, not blocking sandbox's fix from shipping if
-  deferred. Same shape applies to §2.2: the `STT_NOT_CONFIGURED` API-level error is the
-  primary mitigation for callers, but there is no standing "STT is disabled" health/metric
-  signal for an operator who isn't actively calling the API.
-- **R2 — version refresh safety is not the same claim as "drift didn't cause this bug".**
-  §1 shows the 5-month drift did not cause the two bugs fixed here. It does not show that
-  bumping 39 images across 5 months of monorepo history is itself risk-free. Phase C's
-  verification (§3) only checks for crash loops and the customer-bootstrap flow; it does
-  not exercise real SIP/call flow (deferred, §6). The refresh can plausibly introduce
-  breakage that this verification cannot detect until the deferred sudo-gated pass runs.
+- **R1 — production behavior regression from making sentinel-subscribe non-fatal, with a
+  narrower and more honest framing than an earlier draft.** `TopicCreate` declares
+  `durable=true` (`topic.go:7`), so in a real Kubernetes cluster the sentinel exchange
+  survives broker restarts once sentinel-manager has started even once — meaning
+  call-manager/timeline-manager **already** start fine through a sentinel-manager outage on
+  a broker that has seen sentinel-manager before; today's crash loop is only a signal on a
+  fresh/never-seen-sentinel broker, not a general "sentinel-manager is down" signal. The
+  `TopicCreate`-before-subscribe fix (§2.1) removes even that narrower signal: a
+  genuinely fresh-broker deployment that's missing sentinel-manager now starts these
+  services successfully instead of crash-looping. **Mitigation is honestly limited**:
+  `ExchangeDeclare`/`TopicCreate` is idempotent with no created-vs-already-existed return
+  signal, so there is no way to distinguish "I just declared this because nobody else did"
+  from "sentinel-manager already declared this" at declare time — a metric/log at declare
+  time cannot work. The workable alternative is a runtime liveness signal instead of a
+  declare-time one: track a last-sentinel-event-received timestamp and expose it as a
+  gauge/health field, so an operator who expects sentinel events can alert on "no sentinel
+  event in N minutes". This is a monorepo-PR-scope addition to consider, not blocking
+  sandbox's fix from shipping if deferred. Same shape applies to §2.2: the
+  `STT_NOT_CONFIGURED` API-level error is the primary mitigation for callers, but there is
+  no standing "STT is disabled" health/metric signal for an operator who isn't actively
+  calling the API.
+- **R2 — version refresh safety is not fully covered by this cycle's verification, even
+  after §1's timeline-manager finding is fixed.** The 5-month drift is now confirmed to
+  contain at least one real, previously-undiscovered regression risk (timeline-manager) that
+  this cycle happened to catch via manual investigation, not systematic checking (§2.4).
+  Phase C's verification (§3) checks for crash loops, the customer-bootstrap flow, and the
+  specific timeline-manager regression already found — it does not exercise real SIP/call
+  flow (deferred, §6) and cannot rule out other undiscovered regressions of the same shape
+  elsewhere in the 5 months of changes. The refresh can plausibly introduce breakage this
+  verification cannot detect until the deferred sudo-gated pass runs, or until a future
+  systematic drift-regression check (§4) exists.
 - **R3 — rollback plan.** If Phase C's refreshed `versions.lock` regresses something:
   `git revert` the versions.lock commit restores the Feb-21 pin immediately (sandbox side,
-  no dependency on anything else). If either monorepo fix (2.1/2.2) regresses something
+  no dependency on anything else). If any monorepo fix (2.1/2.2) regresses something
   post-merge: standard monorepo PR revert; since Phase B's `versions.lock` refresh depends
   on Phase A having merged, reverting a Phase-A monorepo PR after Phase B already shipped a
-  lock pointing past it would require re-running Phase B's generator against the pre-revert
-  commit as well — call this out explicitly in the Phase-B PR description so it isn't a
-  surprise later.
+  lock pointing past it would require re-running Phase B's generator against the
+  pre-revert commit as well, and would re-expose the timeline-manager regression if the
+  timeline-manager fix specifically were the one reverted — call this out explicitly in the
+  Phase-B PR description.
 - **R4 — hypothesis, not confirmed diagnosis.** We do not have the customer's logs. This
   fix addresses the most severe, 100%-reproducible failure found, which is a strong
   candidate, not a confirmed match to the specific customer report.
@@ -335,6 +422,7 @@ from:
 - Real SIP registration / call flow (`softphone.py`, `test_call.py`).
 - Browser-based admin/talk/meet UI check.
 
-Until this runs, "fixed" in §3 means "no unexplained crash loops observed, ARI events and
-STT-disabled behavior verified" — it does not mean "verified working for real SIP calls"
-(also noted in R2 above). This gap is explicit, not hidden.
+Until this runs, "fixed" in §3 means "no unexplained crash loops observed (including the
+timeline-manager regression §1 found), ARI events and STT-disabled behavior verified" — it
+does not mean "verified working for real SIP calls" (also noted in R2 above). This gap is
+explicit, not hidden.
