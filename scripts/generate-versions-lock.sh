@@ -26,8 +26,9 @@
 #   --first-parent is load-bearing: without it, git's history simplification
 #   returns the PR's branch commit instead of the merge commit CI built, and that
 #   branch commit has no registry tag. (Verified against the existing lock: with
-#   --first-parent, all 30 monorepo-built images resolve to exactly the
-#   image_source_tags recorded for target 0ce70d7d.)
+#   --first-parent, all 31 monorepo-built images (30 bin-* plus
+#   voip-asterisk-proxy) resolve to exactly the image_source_tags recorded for
+#   target 0ce70d7d.)
 #
 # Fallback: images that are not built from the monorepo (square-*, voip-kamailio,
 # voip-rtpengine, voip-asterisk-call/conference/registrar — see the existing
@@ -94,6 +95,41 @@ preflight() {
 
     if ! docker info &> /dev/null; then
         log_error "Cannot talk to the Docker daemon (needed for registry lookups)"
+        exit 1
+    fi
+
+    # Registry reachability/auth smoke check: probe one image at its CURRENT
+    # pinned digest (from the existing lock, not a tag we're trying to resolve).
+    # This must always succeed if the registry is reachable and we're
+    # authenticated, regardless of what target commit we're regenerating for.
+    # Without this, an unauthenticated/unreachable registry makes every single
+    # tag-resolution attempt fail the exact same way as "tag genuinely never
+    # published" — every image silently falls back to its current pin and the
+    # script exits 0, looking like a successful no-op run instead of a broken
+    # registry connection.
+    local probe_image probe_digest
+    probe_image=$(python3 -c "
+import json
+with open('$LOCK_FILE') as f:
+    lock = json.load(f)
+images = lock.get('images', {})
+if images:
+    name = sorted(images)[0]
+    print(f'{name}@{images[name]}')
+")
+    if [[ -z "$probe_image" ]]; then
+        log_error "versions.lock has no images to probe registry access with"
+        exit 1
+    fi
+    if ! probe_digest=$(resolve_digest "$probe_image"); then
+        log_error "Registry reachability/auth check failed: could not inspect $probe_image"
+        log_error "This image is already pinned in the current versions.lock, so this"
+        log_error "failure means the registry is unreachable or you are not authenticated"
+        log_error "(try 'docker login'), not that the image doesn't exist."
+        exit 1
+    fi
+    if [[ "$probe_digest" != "$(python3 -c "print('$probe_image'.split('@', 1)[1])")" ]]; then
+        log_error "Registry probe returned an unexpected digest for $probe_image — refusing to proceed"
         exit 1
     fi
 }
@@ -188,8 +224,14 @@ for name in sorted(lock.get('images', {})):
         # voipbin/bin-agent-manager <-> bin-agent-manager/
         service_dir="${image#voipbin/}"
 
-        if [[ ! -d "$MONOREPO_PATH/$service_dir" ]]; then
-            log_warn "$image: no '$service_dir/' directory in the monorepo (built from a separate repo) — keeping current pin"
+        # Check the tree AT target_commit, not the live working-tree checkout —
+        # MONOREPO_PATH may be on a different branch/commit than target_commit,
+        # and a service directory could be renamed/removed after target_commit.
+        # A live `-d` filesystem check would misclassify either case as "not
+        # built from the monorepo" and skip a service that git log could
+        # actually resolve correctly.
+        if ! git -C "$MONOREPO_PATH" cat-file -e "$target_commit:$service_dir" 2> /dev/null; then
+            log_warn "$image: no '$service_dir/' directory at $target_commit (built from a separate repo) — keeping current pin"
             fallback=$((fallback + 1))
             continue
         fi
