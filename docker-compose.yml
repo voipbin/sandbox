@@ -1164,7 +1164,7 @@ services:
   # server-production-mode-design.md section 3.6.
 
   storage-manager:
-    image: voipbin/bin-storage-manager@sha256:936a7f9780a5387e430be4182f89441f5fdf07a82b810e98f88f94ac6dfaba6a
+    image: voipbin/bin-storage-manager@sha256:e6d7eb76e09b48c7be8712b98554d75e3ad034fecf7118456e7bb462863cc6d5
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
@@ -1259,7 +1259,7 @@ services:
     command: ./talk-manager
 
   timeline-manager:
-    image: voipbin/bin-timeline-manager@sha256:a0b411d158882be51409def5a020c413403be92b5fe3b305baf18c4c752537dd
+    image: voipbin/bin-timeline-manager@sha256:510a05c600325232186851eca22ed5979d323d94d92f8f2fcf8314c836ab2b4f
     logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2112/metrics"]
