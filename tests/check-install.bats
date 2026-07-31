@@ -240,6 +240,19 @@ exit 1'
     [[ "$output" == *'DNS runbook'* ]]
 }
 
+@test "internal commented-out nameserver line is not treated as CoreDNS-configured" {
+    make_internal_env
+    stub_docker_healthy "registrar.voipbin.test"
+    stub_dig "192.168.1.100" "192.168.1.108"
+    stub_curl_ok
+    printf '#nameserver 127.0.0.1\nnameserver 8.8.8.8\n' > "$RESOLV_FIXTURE"
+
+    run_check
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'CHECK resolv-conf: fail'* ]]
+}
+
 @test "external leftover resolv.conf hijack fails naming setup-dns.sh --uninstall" {
     make_external_env
     stub_docker_healthy "registrar.example.com"

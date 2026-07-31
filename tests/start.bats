@@ -60,6 +60,19 @@ teardown() {
     [[ "$status" -eq 1 ]]
 }
 
+@test "check_host_prereqs does not accept a commented-out nameserver line (internal)" {
+    load_start_functions
+    create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
+    mock_command_script "ip" 'exit 0'
+    mock_command_script "dig" 'exit 1'
+    RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
+    printf '#nameserver 127.0.0.1\nnameserver 8.8.8.8\n' > "$RESOLV_CONF"
+
+    run check_host_prereqs
+
+    [[ "$status" -eq 1 ]]
+}
+
 @test "check_host_prereqs accepts an answering CoreDNS when resolv.conf is untouched (internal)" {
     load_start_functions
     create_env_file "DOMAIN_MODE=internal" "COMPOSE_PROFILES=internal-dns"
