@@ -106,12 +106,14 @@ parse_args() {
     INIT_KEY_FILE=""
     INIT_YES="false"
     INIT_FORCE_REINIT="false"
+    INIT_MODE_EXPLICIT="false"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --mode)
                 [[ $# -ge 2 ]] || die 1 "--mode requires a value"
                 INIT_MODE="$2"
+                INIT_MODE_EXPLICIT="true"
                 shift 2
                 ;;
             --domain)
@@ -265,6 +267,16 @@ check_existing_env_compat() {
     [[ -z "$existing_domain" ]] && existing_domain="voipbin.test"
 
     if [[ "$INIT_FORCE_REINIT" == "true" ]]; then
+        # Footgun guard: without an explicit --mode, the internal/voipbin.test
+        # defaults would silently overwrite an existing external install's
+        # .env/certs with self-signed config. Require the operator to state
+        # the target when it differs from what is installed.
+        if [[ "$INIT_MODE_EXPLICIT" != "true" ]] \
+            && [[ "$existing_mode" != "$INIT_MODE" || "$existing_domain" != "$TARGET_DOMAIN" ]]; then
+            log_error "Refusing --force-reinit with implicit target (defaults: mode=$INIT_MODE domain=$TARGET_DOMAIN)."
+            log_error "  existing:  mode=$existing_mode domain=$existing_domain"
+            die 1 "existing install is $existing_mode ($existing_domain); --force-reinit requires explicit --mode (and --domain for external) to confirm the target"
+        fi
         if [[ "$existing_mode" == "internal" && "$INIT_MODE" == "external" ]]; then
             check_force_reinit_preconditions
         fi

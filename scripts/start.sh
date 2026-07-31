@@ -774,7 +774,7 @@ main() {
     # Step 8: Check DNS configuration
     if [ "$domain_mode" = "internal" ]; then
         log_step "Checking DNS configuration..."
-        if grep -q "nameserver 127.0.0.1" /etc/resolv.conf 2>/dev/null; then
+        if grep -q "nameserver 127.0.0.1" "$RESOLV_CONF" 2>/dev/null; then
             log_info "DNS is configured (resolv.conf → CoreDNS)"
         else
             log_warn "DNS not configured. Setting up..."

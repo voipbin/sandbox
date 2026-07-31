@@ -555,6 +555,31 @@ teardown() {
     [[ "$output" == *'--force-reinit: rewriting .env/certs/Corefile'* ]]
 }
 
+@test "check_existing_env_compat refuses --force-reinit without explicit --mode on differing install" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com"
+    parse_args --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'--force-reinit requires explicit --mode'* ]]
+    [[ "$output" == *'existing install is external (example.com)'* ]]
+    [[ "$output" == *'VOIPBIN_INIT: status=error'* ]]
+}
+
+@test "check_existing_env_compat allows --force-reinit with explicit --mode past the guard" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com"
+    parse_args --force-reinit --mode internal --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *'--force-reinit requires explicit --mode'* ]]
+    [[ "$output" == *'--force-reinit: rewriting .env/certs/Corefile'* ]]
+}
+
 # =============================================================================
 # --force-reinit follow-up message (design §2.7)
 # =============================================================================
