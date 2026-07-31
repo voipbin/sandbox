@@ -188,11 +188,22 @@ step_install_ca_trust() {
     record_step "ca-trust:done"
 }
 
+# Restore invoking-user ownership of project files this root script wrote.
+# Without this, unprivileged start.sh cannot regenerate the Corefile (its
+# Step 7 rewrites it each internal-mode start). Idempotent; runs even when
+# the DNS step skips, so a rerun repairs ownership left by an older run.
+fix_coredns_ownership() {
+    [[ -z "${SUDO_USER:-}" ]] && return 0
+    [[ -d "$PROJECT_DIR/config/coredns" ]] || return 0
+    chown -R "$SUDO_USER" "$PROJECT_DIR/config/coredns" 2>/dev/null || true
+}
+
 # Step: generate the Corefile and configure the OS resolver (setup-dns.sh -y).
 # start.sh Step 7 regenerates the Corefile each internal-mode start anyway.
 step_setup_dns() {
     if grep -qE "^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1" "$RESOLV_CONF" 2>/dev/null; then
         log_info "  resolv.conf already points at CoreDNS (127.0.0.1), skipping DNS setup"
+        fix_coredns_ownership
         record_step "dns:skipped"
         return 0
     fi
@@ -207,6 +218,7 @@ step_setup_dns() {
     log_info "  Generated CoreDNS Corefile (web → $host_ip, SIP → $kamailio_ip)"
 
     "$SCRIPT_DIR/setup-dns.sh" -y
+    fix_coredns_ownership
     record_step "dns:done"
 }
 

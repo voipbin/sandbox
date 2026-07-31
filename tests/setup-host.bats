@@ -179,6 +179,23 @@ exit 1'
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_NETWORK"
 }
 
+@test "step_setup_dns repairs coredns config ownership even when skipping" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=internal"
+    RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
+    echo "nameserver 127.0.0.1" > "$RESOLV_CONF"
+    PROJECT_DIR="$TEST_TEMP_DIR"
+    mkdir -p "$PROJECT_DIR/config/coredns"
+    mock_command_script "chown" 'echo "STUB_CHOWN $*"'
+    SUDO_USER="testuser"
+
+    SETUP_HOST_STEPS=""
+    run step_setup_dns
+
+    [[ "$output" == *'already points at CoreDNS'* ]]
+    [[ "$output" == *"STUB_CHOWN -R testuser $TEST_TEMP_DIR/config/coredns"* ]]
+}
+
 @test "step_setup_dns does not skip on a commented-out nameserver line" {
     load_setup_host_functions
     create_env_file "DOMAIN_MODE=internal" "HOST_EXTERNAL_IP=192.168.1.100" "KAMAILIO_EXTERNAL_IP=192.168.1.108"
