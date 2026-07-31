@@ -804,7 +804,12 @@ EOF
     echo ""
     log_info "SIP Services:"
     log_info "  sip.${TARGET_DOMAIN}    → $KAMAILIO_EXTERNAL_IP"
-    if [[ "$USE_MKCERT" == "true" ]]; then
+    # Branch on the TLS mode first: byo certs are operator-provided and must
+    # never get the self-signed warning or the destructive rm -rf advice.
+    # Internal-mode output (mkcert/selfsigned) stays byte-identical.
+    if [[ "$INIT_TLS_MODE" == "byo" ]]; then
+        log_info "  SSL Certs:      operator-provided (BYO), managed via scripts/install-certs.sh"
+    elif [[ "$USE_MKCERT" == "true" ]]; then
         log_info "  SSL Certs:      mkcert (browser-trusted)"
     else
         log_warn "  SSL Certs:      self-signed (browser will show warnings)"

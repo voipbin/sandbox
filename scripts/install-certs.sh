@@ -325,14 +325,20 @@ update_env_certs() {
 recreate_services() {
     log_step "Applying certificates to running services"
 
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "voipbin-api-mgr"; then
+    # Scope the "is it running" check to THIS project's compose. A global
+    # `docker ps` name match (voipbin-api-mgr) would match any compose project
+    # on the host and trigger recreates against a stack this .env doesn't own.
+    local running_services
+    running_services="$(cd "$PROJECT_DIR" && docker compose ps --services --status running 2>/dev/null || true)"
+
+    if grep -qx "api-manager" <<< "$running_services"; then
         log_info "  Recreating api-manager and hook-manager (env-baked certs)..."
         (cd "$PROJECT_DIR" && docker compose rm -sf api-manager hook-manager && docker compose up -d api-manager hook-manager)
     else
         log_info "  api-manager not running — skipping recreate (certs apply on next start)"
     fi
 
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "voipbin-kamailio"; then
+    if grep -qx "kamailio" <<< "$running_services"; then
         log_info "  Restarting kamailio (file-mounted certs)..."
         (cd "$PROJECT_DIR" && docker compose restart kamailio)
     else

@@ -250,6 +250,30 @@ def test_softphone_defaults_from_env(tmp_dir):
     print("ok test_softphone_defaults_from_env")
 
 
+def test_crlf_env_values_are_trimmed(cli_module, tmp_dir):
+    """CRLF-saved .env: no trailing \\r may leak into derived values."""
+    project_dir = os.path.join(tmp_dir, "crlf-project")
+    os.makedirs(project_dir, exist_ok=True)
+    with open(os.path.join(project_dir, ".env"), "w", newline="") as f:
+        f.write("\r\n".join(EXTERNAL_ENV) + "\r\n")
+
+    assert cli_module.read_env_file_var(project_dir, "DOMAIN_MODE") == "external"
+    assert cli_module.read_env_file_var(project_dir, "BASE_DOMAIN") == "example.com"
+
+    os.environ["VOIPBIN_PROJECT_DIR"] = project_dir
+    os.environ.pop("VOIPBIN_SIP_SERVER", None)
+    os.environ.pop("VOIPBIN_DOMAIN_NAME_EXTENSION", None)
+
+    sp = load_module("softphone_crlf", os.path.join(SCRIPTS_DIR, "softphone.py"))
+    assert sp.default_server() == "sip.example.com", sp.default_server()
+    assert sp.default_domain_ext() == "registrar.example.com", sp.default_domain_ext()
+
+    tc = load_module("test_call_crlf", os.path.join(SCRIPTS_DIR, "test_call.py"))
+    assert tc.SIP_SERVER == "sip.example.com", tc.SIP_SERVER
+    assert tc.DOMAIN.endswith(".registrar.example.com"), tc.DOMAIN
+    print("ok test_crlf_env_values_are_trimmed")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -268,6 +292,7 @@ def main():
         test_status_urls_from_base_domain(cli_module, tmp_dir, log_path)
         test_test_call_defaults_from_env(tmp_dir)
         test_softphone_defaults_from_env(tmp_dir)
+        test_crlf_env_values_are_trimmed(cli_module, tmp_dir)
 
         print("All test_cli_mode.py tests passed")
     finally:

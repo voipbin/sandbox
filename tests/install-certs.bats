@@ -183,6 +183,53 @@ make_env_fixture() {
 }
 
 # =============================================================================
+# Service recreation scoping (design §2.6 step 4)
+# =============================================================================
+
+@test "recreate_services scopes the running check to this project's compose" {
+    load_install_certs_functions
+    mock_command_script "docker" '
+echo "DOCKER:$*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+if [[ "$1" == "compose" && "$2" == "ps" ]]; then
+    printf "api-manager\nkamailio\n"
+fi
+exit 0'
+
+    run recreate_services
+
+    [[ "$status" -eq 0 ]]
+    local calls
+    calls=$(cat "$TEST_TEMP_DIR/docker.log")
+    # The check is compose-scoped (run from $PROJECT_DIR), never global docker ps
+    [[ "$calls" == *'DOCKER:compose ps --services --status running'* ]]
+    [[ "$calls" != *$'\n''DOCKER:ps'* ]]
+    [[ "$calls" != DOCKER:ps* ]]
+    # Both consumers were recreated/restarted via compose
+    [[ "$calls" == *'DOCKER:compose rm -sf api-manager hook-manager'* ]]
+    [[ "$calls" == *'DOCKER:compose up -d api-manager hook-manager'* ]]
+    [[ "$calls" == *'DOCKER:compose restart kamailio'* ]]
+}
+
+@test "recreate_services ignores same-named containers from other compose projects" {
+    load_install_certs_functions
+    # Regression: a foreign stack's voipbin-api-mgr/voipbin-kamailio containers
+    # are visible to global `docker ps` but NOT to this project's compose ps.
+    mock_command_script "docker" '
+if [[ "$1" == "compose" && "$2" == "ps" ]]; then exit 0; fi
+if [[ "$1" == "ps" ]]; then printf "voipbin-api-mgr\nvoipbin-kamailio\n"; exit 0; fi
+echo "UNEXPECTED-DOCKER:$*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+exit 0'
+
+    run recreate_services
+
+    [[ "$status" -eq 0 ]]
+    # Skip-with-note path, no recreate/restart attempted
+    [[ "$output" == *'api-manager not running'* ]]
+    [[ "$output" == *'kamailio not running'* ]]
+    [[ ! -f "$TEST_TEMP_DIR/docker.log" ]]
+}
+
+# =============================================================================
 # Ownership/mode preservation across the .env inode replacement (design §2.6)
 # =============================================================================
 

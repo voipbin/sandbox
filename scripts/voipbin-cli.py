@@ -1292,7 +1292,9 @@ def read_env_file_var(project_dir, name, default=""):
         with open(env_path) as f:
             for line in f:
                 if line.startswith(f"{name}="):
-                    value = line.rstrip("\n").split("=", 1)[1]
+                    # .strip() drops \r\n (CRLF-saved .env) and surrounding
+                    # whitespace, mirroring common.sh:get_env_var.
+                    value = line.split("=", 1)[1].strip()
     except OSError:
         pass
     return value

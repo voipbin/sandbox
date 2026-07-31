@@ -33,14 +33,21 @@ NETWORK_SUBNET="10.100.0.0/16"
 
 # Compose project name, derived the way docker compose derives it:
 # COMPOSE_PROJECT_NAME when set (compose honors it too), else the project
-# directory's basename — normalized to compose's rules (lowercase, keep only
-# [a-z0-9_-], strip leading chars until it starts with [a-z0-9]). The default
-# network is then <project>_default with a com.docker.compose.project=<project>
-# label, exactly what a later `docker compose up` expects to adopt.
+# directory's basename. Real compose (v2) does NOT sanitize an explicit
+# COMPOSE_PROJECT_NAME — it hard-errors on invalid values — so an override is
+# validated and used as-is (returns non-zero when invalid; the caller dies
+# mirroring compose's message). Only the directory-basename derivation is
+# normalized to compose's rules (lowercase, keep only [a-z0-9_-], strip
+# leading chars until it starts with [a-z0-9]). The default network is then
+# <project>_default with a com.docker.compose.project=<project> label,
+# exactly what a later `docker compose up` expects to adopt.
 derive_compose_project_name() {
-    local name="${COMPOSE_PROJECT_NAME:-}"
-    [[ -z "$name" ]] && name="$(basename "$PROJECT_DIR")"
-    printf '%s' "$name" \
+    if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+        [[ "$COMPOSE_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || return 1
+        printf '%s' "$COMPOSE_PROJECT_NAME"
+        return 0
+    fi
+    basename "$PROJECT_DIR" \
         | tr '[:upper:]' '[:lower:]' \
         | tr -cd 'a-z0-9_-' \
         | sed 's/^[-_]*//'
@@ -217,7 +224,9 @@ step_setup_dns() {
 # adopts silently and even owns the network on `compose down`.
 step_ensure_docker_network() {
     local project network_name
-    project="$(derive_compose_project_name)"
+    if ! project="$(derive_compose_project_name)"; then
+        die 1 "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
+    fi
     if [[ -z "$project" ]]; then
         die 1 "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
     fi

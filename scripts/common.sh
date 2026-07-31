@@ -59,13 +59,20 @@ check_root() {
 # Prints the value of VAR= from the file (last occurrence wins). Pure text
 # processing — the file is never sourced, so untrusted content (e.g. $(...))
 # is returned literally, never executed. Empty output if the file or the
-# variable is absent.
+# variable is absent. Trailing \r (CRLF-saved .env) and surrounding
+# whitespace are stripped so the strict-equality mode/TLS gates never
+# silently mismatch on an invisible character.
 get_env_var() {
     local env_file="$1"
     local var_name="$2"
+    local value
 
     [[ -n "$env_file" && -f "$env_file" ]] || return 0
-    grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2-
+    value=$(grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "$value"
 }
 
 # get_domain_mode <env-file>

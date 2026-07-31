@@ -236,6 +236,23 @@ teardown() {
     [[ ! -f "$TEST_TEMP_DIR/pwned" ]]
 }
 
+@test "get_env_var strips CRLF line endings and surrounding whitespace" {
+    # CRLF-saved .env (e.g. edited on Windows): the trailing \r must never
+    # leak into strict-equality mode/TLS comparisons.
+    printf 'DOMAIN_MODE=external\r\nBASE_DOMAIN=example.com\r\nPADDED_VAR=  padded value  \r\n' \
+        > "$PROJECT_DIR/.env"
+    load_common
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "BASE_DOMAIN")
+    assert_equal "$result" "example.com"
+
+    result=$(get_env_var "$PROJECT_DIR/.env" "PADDED_VAR")
+    assert_equal "$result" "padded value"
+
+    result=$(get_domain_mode "$PROJECT_DIR/.env")
+    assert_equal "$result" "external"
+}
+
 # =============================================================================
 # get_domain_mode() tests
 # =============================================================================

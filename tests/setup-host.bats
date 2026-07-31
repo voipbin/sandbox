@@ -213,7 +213,7 @@ exit 1'
     [[ "$created" == *'--label com.docker.compose.project=my_sandbox42'* ]]
 }
 
-@test "step_ensure_docker_network honors COMPOSE_PROJECT_NAME over the project dir" {
+@test "step_ensure_docker_network uses a valid COMPOSE_PROJECT_NAME as-is over the project dir" {
     load_setup_host_functions
     mock_command_script "docker" '
 if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 1; fi
@@ -227,8 +227,8 @@ exit 1'
     PROJECT_DIR="$TEST_TEMP_DIR/My_Sandbox.42"
     mkdir -p "$PROJECT_DIR"
     # Compose honors COMPOSE_PROJECT_NAME over the directory name; so must we.
-    # Same normalization applies (leading separators stripped, lowercased).
-    export COMPOSE_PROJECT_NAME="-Custom.Proj"
+    # A valid override passes through unmodified (compose never normalizes it).
+    export COMPOSE_PROJECT_NAME="custom-proj_1"
 
     SETUP_HOST_STEPS=""
     run step_ensure_docker_network
@@ -236,9 +236,33 @@ exit 1'
     [[ "$status" -eq 0 ]]
     local created
     created=$(cat "$TEST_TEMP_DIR/docker.log")
-    [[ "$created" == *'customproj_default'* ]]
-    [[ "$created" == *'--label com.docker.compose.project=customproj'* ]]
+    [[ "$created" == *'custom-proj_1_default'* ]]
+    [[ "$created" == *'--label com.docker.compose.project=custom-proj_1'* ]]
     [[ "$created" != *'my_sandbox42'* ]]
+}
+
+@test "step_ensure_docker_network dies on an invalid COMPOSE_PROJECT_NAME (compose does not sanitize)" {
+    load_setup_host_functions
+    mock_command_script "docker" '
+if [[ "$1" == "network" && "$2" == "create" ]]; then
+    echo "DOCKER-NETWORK-CREATE $*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+fi
+exit 0'
+    PROJECT_DIR="$TEST_TEMP_DIR/My_Sandbox.42"
+    mkdir -p "$PROJECT_DIR"
+    # Real compose (v2.40.3) hard-errors on this instead of sanitizing it;
+    # normalizing here would create a network compose will never adopt.
+    export COMPOSE_PROJECT_NAME="-Custom.Proj"
+
+    SETUP_HOST_STEPS=""
+    run step_ensure_docker_network
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'invalid COMPOSE_PROJECT_NAME'* ]]
+    [[ "$output" == *'must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number'* ]]
+    [[ "$output" == *'VOIPBIN_SETUP_HOST: status=error'* ]]
+    # No network was created under the normalized (never-adopted) name
+    [[ ! -f "$TEST_TEMP_DIR/docker.log" ]]
 }
 
 @test "step_ensure_docker_network skips when the network already exists" {

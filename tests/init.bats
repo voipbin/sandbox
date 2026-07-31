@@ -625,6 +625,30 @@ teardown() {
     [[ "$last_line" == *'tls=byo'* ]]
 }
 
+@test "init.sh byo summary reports operator-provided certs, no self-signed/rm -rf advice" {
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user"
+    fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command "docker" ""
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$TEST_TEMP_DIR/byo.key" -out "$TEST_TEMP_DIR/byo.pem" \
+        -days 90 -subj "/CN=example.com" \
+        -addext "subjectAltName=DNS:example.com,DNS:*.example.com,DNS:*.registrar.example.com" 2>/dev/null
+
+    run main --mode external --domain example.com --tls byo \
+        --cert "$TEST_TEMP_DIR/byo.pem" --key "$TEST_TEMP_DIR/byo.key" --yes
+
+    [[ "$status" -eq 0 ]]
+    # Accurate BYO summary line, pointing at the BYO management script
+    [[ "$output" == *'operator-provided (BYO)'* ]]
+    [[ "$output" == *'scripts/install-certs.sh'* ]]
+    # Never the self-signed warning or the destructive regeneration advice
+    [[ "$output" != *'self-signed'* ]]
+    [[ "$output" != *'rm -rf'* ]]
+}
+
 # =============================================================================
 # Result-line grammar (design §2.2)
 # =============================================================================
