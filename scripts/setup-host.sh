@@ -191,7 +191,7 @@ step_install_ca_trust() {
 # Step: generate the Corefile and configure the OS resolver (setup-dns.sh -y).
 # start.sh Step 7 regenerates the Corefile each internal-mode start anyway.
 step_setup_dns() {
-    if grep -q "nameserver 127.0.0.1" "$RESOLV_CONF" 2>/dev/null; then
+    if grep -qE "^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1" "$RESOLV_CONF" 2>/dev/null; then
         log_info "  resolv.conf already points at CoreDNS (127.0.0.1), skipping DNS setup"
         record_step "dns:skipped"
         return 0

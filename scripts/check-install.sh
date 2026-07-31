@@ -258,7 +258,7 @@ check_realm() {
 # external: must be untouched — no 127.0.0.1 hijack and no .voipbin-backup.
 check_resolv_conf() {
     local hijacked="false" backup_exists="false"
-    grep -q "nameserver 127.0.0.1" "$RESOLV_CONF" 2>/dev/null && hijacked="true"
+    grep -qE "^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1" "$RESOLV_CONF" 2>/dev/null && hijacked="true"
     [[ -f "$RESOLV_BACKUP" ]] && backup_exists="true"
 
     if [[ "$CHECK_MODE" == "internal" ]]; then

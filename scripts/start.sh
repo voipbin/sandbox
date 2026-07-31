@@ -362,7 +362,7 @@ check_host_prereqs() {
     fi
 
     if [ "$(get_domain_mode "$PROJECT_DIR/.env")" = "internal" ]; then
-        if grep -q "nameserver 127.0.0.1" "$RESOLV_CONF" 2>/dev/null; then
+        if grep -qE "^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1" "$RESOLV_CONF" 2>/dev/null; then
             return 0
         fi
         # resolv.conf not pointing at CoreDNS — accept a CoreDNS that answers
@@ -774,7 +774,7 @@ main() {
     # Step 8: Check DNS configuration
     if [ "$domain_mode" = "internal" ]; then
         log_step "Checking DNS configuration..."
-        if grep -q "nameserver 127.0.0.1" "$RESOLV_CONF" 2>/dev/null; then
+        if grep -qE "^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1" "$RESOLV_CONF" 2>/dev/null; then
             log_info "DNS is configured (resolv.conf → CoreDNS)"
         else
             log_warn "DNS not configured. Setting up..."

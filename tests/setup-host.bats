@@ -179,6 +179,21 @@ exit 1'
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_NETWORK"
 }
 
+@test "step_setup_dns does not skip on a commented-out nameserver line" {
+    load_setup_host_functions
+    create_env_file "DOMAIN_MODE=internal" "HOST_EXTERNAL_IP=192.168.1.100" "KAMAILIO_EXTERNAL_IP=192.168.1.108"
+    RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
+    printf '#nameserver 127.0.0.1\nnameserver 8.8.8.8\n' > "$RESOLV_CONF"
+    SCRIPT_DIR="$STUB_SCRIPTS"
+    PROJECT_DIR="$TEST_TEMP_DIR"
+
+    SETUP_HOST_STEPS=""
+    run step_setup_dns
+
+    [[ "$output" != *'already points at CoreDNS'* ]]
+    [[ "$output" == *'STUB_SETUP_DNS'* ]]
+}
+
 # =============================================================================
 # Compose default network ensure (fresh-host fix, VOIP-1275)
 # =============================================================================
