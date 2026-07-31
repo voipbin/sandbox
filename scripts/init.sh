@@ -793,14 +793,17 @@ EOF
     log_info "  Certificates:       $CERTS_DIR"
     log_info "  Environment:        $ENV_FILE"
     echo ""
+    # Summary URLs/domains derive from the selected base domain (same approach
+    # as start.sh's summary) — internal mode stays voipbin.test byte-for-byte,
+    # external mode shows the operator's real domain.
     log_info "Web Services (Docker port mapping):"
-    log_info "  http://admin.voipbin.test:3003"
-    log_info "  http://meet.voipbin.test:3004"
-    log_info "  http://talk.voipbin.test:3005"
-    log_info "  https://api.voipbin.test:8443"
+    log_info "  http://admin.${TARGET_DOMAIN}:3003"
+    log_info "  http://meet.${TARGET_DOMAIN}:3004"
+    log_info "  http://talk.${TARGET_DOMAIN}:3005"
+    log_info "  https://api.${TARGET_DOMAIN}:8443"
     echo ""
     log_info "SIP Services:"
-    log_info "  sip.voipbin.test    → $KAMAILIO_EXTERNAL_IP"
+    log_info "  sip.${TARGET_DOMAIN}    → $KAMAILIO_EXTERNAL_IP"
     if [[ "$USE_MKCERT" == "true" ]]; then
         log_info "  SSL Certs:      mkcert (browser-trusted)"
     else

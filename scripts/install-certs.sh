@@ -255,6 +255,8 @@ install_layout() {
     mkdir -p "$CERTS_DIR/api"
     cp "$CERT_FILE" "$CERTS_DIR/api/cert.pem"
     cp "$KEY_FILE" "$CERTS_DIR/api/privkey.pem"
+    # Private keys: owner-only (cp inherits the source mode, which may be wider)
+    chmod 600 "$CERTS_DIR/api/privkey.pem"
     log_info "  Installed certs/api/{cert,privkey}.pem"
 
     local name dir
@@ -263,6 +265,7 @@ install_layout() {
         mkdir -p "$dir"
         cp "$CERT_FILE" "$dir/fullchain.pem"
         cp "$KEY_FILE" "$dir/privkey.pem"
+        chmod 600 "$dir/privkey.pem"
     done
     log_info "  Installed certs/{registrar,conference,sip,sip-service,trunk}.$d/"
 

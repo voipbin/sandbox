@@ -139,12 +139,15 @@ make_env_fixture() {
     run bash "$SCRIPTS_DIR/install-certs.sh" "$FIXTURES/wildcard.pem" "$FIXTURES/wildcard.key"
 
     [[ "$status" -eq 0 ]]
-    # Layout: certs/api + the five per-domain directories
+    # Layout: certs/api + the five per-domain directories; every installed
+    # private key is owner-only (600)
     [[ -f "$CERTS_DIR/api/cert.pem" ]]
     [[ -f "$CERTS_DIR/api/privkey.pem" ]]
+    [[ "$(/usr/bin/stat -c '%a' "$CERTS_DIR/api/privkey.pem")" == "600" ]]
     for name in registrar conference sip sip-service trunk; do
         [[ -f "$CERTS_DIR/$name.example.com/fullchain.pem" ]]
         [[ -f "$CERTS_DIR/$name.example.com/privkey.pem" ]]
+        [[ "$(/usr/bin/stat -c '%a' "$CERTS_DIR/$name.example.com/privkey.pem")" == "600" ]]
     done
     # .env base64 values are the actual fixture cert/key
     local cert_b64 key_b64

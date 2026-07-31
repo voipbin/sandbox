@@ -27,11 +27,24 @@ RESOLV_CONF="${RESOLV_CONF:-/etc/resolv.conf}"
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
 
-# Compose default network identity (must mirror setup-voip-network.sh's
-# NETWORK_NAME and the docker-compose.yml networks.default definition).
-NETWORK_NAME="sandbox_default"
+# Compose default network subnet (must mirror the docker-compose.yml
+# networks.default definition).
 NETWORK_SUBNET="10.100.0.0/16"
-COMPOSE_PROJECT_LABEL="sandbox"
+
+# Compose project name, derived the way docker compose derives it:
+# COMPOSE_PROJECT_NAME when set (compose honors it too), else the project
+# directory's basename — normalized to compose's rules (lowercase, keep only
+# [a-z0-9_-], strip leading chars until it starts with [a-z0-9]). The default
+# network is then <project>_default with a com.docker.compose.project=<project>
+# label, exactly what a later `docker compose up` expects to adopt.
+derive_compose_project_name() {
+    local name="${COMPOSE_PROJECT_NAME:-}"
+    [[ -z "$name" ]] && name="$(basename "$PROJECT_DIR")"
+    printf '%s' "$name" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr -cd 'a-z0-9_-' \
+        | sed 's/^[-_]*//'
+}
 
 # =============================================================================
 # Result line + exit helpers (design §2.2 pattern, shared with init.sh)
@@ -191,30 +204,38 @@ step_setup_dns() {
 }
 
 # Step: ensure the compose default network exists (both modes, probe-and-skip).
-# setup-voip-network.sh derives its bridge interface from the sandbox_default
+# setup-voip-network.sh derives its bridge interface from the compose default
 # network, which on a fresh host does not exist until the first
 # `docker compose up`. Internal mode usually creates it via the DNS step
 # (setup-dns.sh runs `docker compose up -d coredns`), but external mode
 # deploys no coredns and would reach the interfaces step with no network.
-# The network is created exactly as compose would (name, bridge driver, the
-# compose file's subnet, and the com.docker.compose.network/project labels),
-# which a later `docker compose up -d` adopts cleanly — verified: without
-# these labels compose hard-errors ("was found but has incorrect label"),
-# with them it adopts silently and even owns the network on `compose down`.
+# The network is created exactly as compose would (derived project name,
+# bridge driver, the compose file's subnet, and the
+# com.docker.compose.network/project labels), which a later
+# `docker compose up -d` adopts cleanly — verified: without these labels
+# compose hard-errors ("was found but has incorrect label"), with them it
+# adopts silently and even owns the network on `compose down`.
 step_ensure_docker_network() {
-    if docker network inspect "$NETWORK_NAME" &> /dev/null; then
-        log_info "  Docker network $NETWORK_NAME already exists, skipping"
+    local project network_name
+    project="$(derive_compose_project_name)"
+    if [[ -z "$project" ]]; then
+        die 1 "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+    fi
+    network_name="${project}_default"
+
+    if docker network inspect "$network_name" &> /dev/null; then
+        log_info "  Docker network $network_name already exists, skipping"
         record_step "docker-network:skipped"
         return 0
     fi
 
-    log_info "  Creating docker network $NETWORK_NAME (compose-compatible)..."
-    if ! docker network create "$NETWORK_NAME" \
+    log_info "  Creating docker network $network_name (compose-compatible)..."
+    if ! docker network create "$network_name" \
         --driver bridge \
         --subnet "$NETWORK_SUBNET" \
         --label "com.docker.compose.network=default" \
-        --label "com.docker.compose.project=$COMPOSE_PROJECT_LABEL" > /dev/null; then
-        die 2 "failed to create docker network $NETWORK_NAME"
+        --label "com.docker.compose.project=$project" > /dev/null; then
+        die 2 "failed to create docker network $network_name"
     fi
     record_step "docker-network:done"
 }

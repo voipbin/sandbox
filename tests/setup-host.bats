@@ -10,8 +10,10 @@ load 'test_helper'
 
 setup() {
     setup_test_env
-    # Deterministic: never inherit a SUDO_USER from the invoking shell
+    # Deterministic: never inherit a SUDO_USER or a compose project override
+    # from the invoking shell
     unset SUDO_USER
+    unset COMPOSE_PROJECT_NAME
 
     # Stub sub-scripts: run_host_setup invokes "$SCRIPT_DIR/<script>", so tests
     # point SCRIPT_DIR at this stub directory after loading.
@@ -74,6 +76,10 @@ exit 1'
     create_env_file "DOMAIN_MODE=external" "BASE_DOMAIN=example.com" "COMPOSE_PROFILES="
     stub_default_host_state
     SCRIPT_DIR="$STUB_SCRIPTS"
+    # Differently-named project dir: the network name must be DERIVED from it
+    # (compose normalization), not hardcoded to sandbox_default.
+    PROJECT_DIR="$TEST_TEMP_DIR/My_Sandbox.42"
+    mkdir -p "$PROJECT_DIR"
 
     SETUP_HOST_STEPS=""
     run_host_setup external > "$TEST_TEMP_DIR/out.log"
@@ -86,7 +92,8 @@ exit 1'
     [[ ! -f "$TEST_TEMP_DIR/config/coredns/Corefile" ]]
     # Fresh-host fix: the compose default network is created BEFORE the
     # interfaces step (setup-voip-network.sh needs its bridge interface).
-    assert_file_contains "$TEST_TEMP_DIR/docker.log" "DOCKER-NETWORK-CREATE sandbox_default"
+    # Name derived from the project dir basename (My_Sandbox.42 → my_sandbox42).
+    assert_file_contains "$TEST_TEMP_DIR/docker.log" "DOCKER-NETWORK-CREATE my_sandbox42_default"
 }
 
 # =============================================================================
@@ -155,6 +162,9 @@ exit 1'
     RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
     echo "nameserver 127.0.0.1" > "$RESOLV_CONF"
     SCRIPT_DIR="$STUB_SCRIPTS"
+    # Derivation fixture: skip log must name the project-derived network
+    PROJECT_DIR="$TEST_TEMP_DIR/My_Sandbox.42"
+    mkdir -p "$PROJECT_DIR"
 
     SETUP_HOST_STEPS=""
     run_host_setup internal > "$TEST_TEMP_DIR/out.log"
@@ -163,7 +173,7 @@ exit 1'
     assert_file_contains "$TEST_TEMP_DIR/out.log" "mkcert already installed, skipping"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "mkcert CA already installed, skipping"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "resolv.conf already points at CoreDNS (127.0.0.1), skipping"
-    assert_file_contains "$TEST_TEMP_DIR/out.log" "Docker network sandbox_default already exists, skipping"
+    assert_file_contains "$TEST_TEMP_DIR/out.log" "Docker network my_sandbox42_default already exists, skipping"
     assert_file_contains "$TEST_TEMP_DIR/out.log" "VoIP network interfaces already configured, skipping"
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_DNS"
     assert_file_not_contains "$TEST_TEMP_DIR/out.log" "STUB_SETUP_NETWORK"
@@ -173,7 +183,7 @@ exit 1'
 # Compose default network ensure (fresh-host fix, VOIP-1275)
 # =============================================================================
 
-@test "step_ensure_docker_network creates the network with compose-compatible labels" {
+@test "step_ensure_docker_network derives name/label from the project dir (compose normalization)" {
     load_setup_host_functions
     mock_command_script "docker" '
 if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 1; fi
@@ -184,20 +194,51 @@ if [[ "$1" == "network" && "$2" == "create" ]]; then
     exit 0
 fi
 exit 1'
+    # Compose-normalized derivation: lowercase, drop chars outside [a-z0-9_-]
+    PROJECT_DIR="$TEST_TEMP_DIR/My_Sandbox.42"
+    mkdir -p "$PROJECT_DIR"
 
     SETUP_HOST_STEPS=""
     run step_ensure_docker_network
 
     [[ "$status" -eq 0 ]]
-    # Exactly what compose would create: name, bridge driver, the compose
-    # file subnet, and the two labels compose validates on adoption.
+    # Exactly what compose would create: derived name, bridge driver, the
+    # compose file subnet, and the two labels compose validates on adoption.
     local created
     created=$(cat "$TEST_TEMP_DIR/docker.log")
-    [[ "$created" == *'sandbox_default'* ]]
+    [[ "$created" == *'my_sandbox42_default'* ]]
     [[ "$created" == *'--driver bridge'* ]]
     [[ "$created" == *'--subnet 10.100.0.0/16'* ]]
     [[ "$created" == *'--label com.docker.compose.network=default'* ]]
-    [[ "$created" == *'--label com.docker.compose.project=sandbox'* ]]
+    [[ "$created" == *'--label com.docker.compose.project=my_sandbox42'* ]]
+}
+
+@test "step_ensure_docker_network honors COMPOSE_PROJECT_NAME over the project dir" {
+    load_setup_host_functions
+    mock_command_script "docker" '
+if [[ "$1" == "network" && "$2" == "inspect" ]]; then exit 1; fi
+if [[ "$1" == "network" && "$2" == "create" ]]; then
+    shift 2
+    echo "DOCKER-NETWORK-CREATE $*" >> "'"$TEST_TEMP_DIR"'/docker.log"
+    echo "stub-network-id"
+    exit 0
+fi
+exit 1'
+    PROJECT_DIR="$TEST_TEMP_DIR/My_Sandbox.42"
+    mkdir -p "$PROJECT_DIR"
+    # Compose honors COMPOSE_PROJECT_NAME over the directory name; so must we.
+    # Same normalization applies (leading separators stripped, lowercased).
+    export COMPOSE_PROJECT_NAME="-Custom.Proj"
+
+    SETUP_HOST_STEPS=""
+    run step_ensure_docker_network
+
+    [[ "$status" -eq 0 ]]
+    local created
+    created=$(cat "$TEST_TEMP_DIR/docker.log")
+    [[ "$created" == *'customproj_default'* ]]
+    [[ "$created" == *'--label com.docker.compose.project=customproj'* ]]
+    [[ "$created" != *'my_sandbox42'* ]]
 }
 
 @test "step_ensure_docker_network skips when the network already exists" {

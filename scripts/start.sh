@@ -665,9 +665,11 @@ main() {
         if [ "$EUID" -eq 0 ]; then
             log_warn "Host prerequisites missing: $HOST_PREREQS_MISSING"
             log_info "Running host setup (setup-host.sh)..."
-            # Tolerate failure here: on a fresh install the compose network
-            # does not exist yet, so the interface step can only complete at
-            # Step 9 below (after docker compose up) — today's root behavior.
+            # The compose default network is pre-created by setup-host.sh's
+            # step_ensure_docker_network, so the interfaces step normally
+            # succeeds here even on a fresh host. The || tolerance remains as
+            # a defensive fallback: if host setup still fails for another
+            # reason, Steps 7-9 below retry after services start.
             "$SCRIPT_DIR/setup-host.sh" || \
                 log_warn "Host setup incomplete; Steps 7-9 below will retry after services start"
         else
