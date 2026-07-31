@@ -580,6 +580,17 @@ teardown() {
     [[ "$output" == *'--force-reinit: rewriting .env/certs/Corefile'* ]]
 }
 
+@test "check_existing_env_compat allows implicit --force-reinit when mode and domain match" {
+    load_init_functions
+    create_env_file "DOMAIN_MODE=internal" "BASE_DOMAIN=voipbin.test"
+    parse_args --force-reinit --yes
+
+    run check_existing_env_compat
+
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *'--force-reinit requires explicit --mode'* ]]
+}
+
 # =============================================================================
 # --force-reinit follow-up message (design §2.7)
 # =============================================================================

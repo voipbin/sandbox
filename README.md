@@ -301,7 +301,9 @@ switch on an existing install. Two supported escape hatches:
    database, then prints the exact follow-up needed for live state: delete
    and recreate extensions via the API (or `setup_test_customer.sh` for
    the test customer) and recreate the `registrar-manager`, `api-manager`,
-   `hook-manager`, `customer-manager` and `square-*` containers. Switching
+   `hook-manager`, `customer-manager` and `square-*` containers. Without
+   an explicit `--mode`, `--force-reinit` is refused when it would silently
+   target a different mode or domain than the existing install. Switching
    from internal to external additionally requires a clean host first
    (stack down under the old `.env`, then
    `sudo ./scripts/setup-dns.sh --uninstall`); the flag refuses and prints

@@ -151,7 +151,9 @@ switch on an existing `.env`. Escape hatches: full reset
 `init.sh --force-reinit` (rewrites `.env`/certs/Corefile, never the
 database, and prints the live-state follow-up: recreate extensions via the
 API and recreate `registrar-manager`, `api-manager`, `hook-manager`,
-`customer-manager`, `square-*`). An internal-to-external `--force-reinit`
+`customer-manager`, `square-*`). `--force-reinit` without an explicit
+`--mode` is refused when it would silently target a different mode or
+domain than the existing install. An internal-to-external `--force-reinit`
 first requires a clean host (stack down under the old `.env`, then
 `sudo ./scripts/setup-dns.sh --uninstall`).
 
