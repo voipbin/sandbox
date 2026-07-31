@@ -69,7 +69,13 @@ for name, idx in services:
         entry.append("      default:")
         entry.append(f"        ipv4_address: 10.199.{m_ip.group(1)}")
     if name in EXCLUDE:
-        entry.append('    profiles: ["host-mutating"]')
+        # !override: replace (not merge) any base-file profiles. Without it,
+        # coredns's base 'internal-dns' profile would merge to the union
+        # ["internal-dns","host-mutating"], and a mode-1 tree's
+        # COMPOSE_PROFILES=internal-dns would re-enable it in the test project.
+        # Uniform for all EXCLUDE services: semantically identical for the
+        # ones with no base profile, and avoids special-casing coredns.
+        entry.append('    profiles: !override ["host-mutating"]')
     elif deps and any(d in EXCLUDE for d in deps):
         kept = [d for d in deps if d not in EXCLUDE]
         # rewrite depends_on without the excluded services (preserve

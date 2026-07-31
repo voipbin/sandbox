@@ -6,6 +6,7 @@ Runs in the background to keep registration alive.
 
 import socket
 import hashlib
+import os
 import random
 import time
 import sys
@@ -13,14 +14,49 @@ import re
 import threading
 import argparse
 
+
+def read_env_var(name, default=""):
+    """Read VAR= from the sandbox .env (last occurrence wins, never sourced).
+
+    The project directory is the script's parent, overridable via
+    VOIPBIN_PROJECT_DIR (same override the CLI honors).
+    """
+    project_dir = os.environ.get("VOIPBIN_PROJECT_DIR") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    value = default
+    try:
+        with open(os.path.join(project_dir, ".env")) as f:
+            for line in f:
+                if line.startswith(f"{name}="):
+                    # .strip() drops \r\n (CRLF-saved .env) and surrounding
+                    # whitespace, mirroring common.sh:get_env_var.
+                    value = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return value
+
+
+# Defaults derive from .env (dual-mode DNS, design §2.10) so the softphone
+# points at the configured base domain in both modes; explicit CLI arguments
+# still win.
+def default_server():
+    return "sip." + (read_env_var("BASE_DOMAIN") or "voipbin.test")
+
+
+def default_domain_ext():
+    return read_env_var("DOMAIN_NAME_EXTENSION") or "registrar.voipbin.test"
+
+
 class SIPSoftphone:
-    def __init__(self, server, port, customer_id, extension, password, local_port=None):
+    def __init__(self, server, port, customer_id, extension, password, local_port=None,
+                 domain_ext=None):
         self.server = server
         self.port = port
         self.customer_id = customer_id
         self.extension = extension
         self.password = password
-        self.domain = f"{customer_id}.registrar.voipbin.test"
+        self.domain = f"{customer_id}.{domain_ext or default_domain_ext()}"
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(5)
@@ -357,21 +393,25 @@ def main():
     parser = argparse.ArgumentParser(description='SIP Softphone')
     parser.add_argument('extension', help='Extension number (e.g., 2000)')
     parser.add_argument('password', help='SIP password')
-    parser.add_argument('--server', default='sip.voipbin.test', help='SIP server address')
+    parser.add_argument('--server', default=None,
+                        help='SIP server address (default: sip.<BASE_DOMAIN> from .env)')
     parser.add_argument('--port', type=int, default=5060, help='SIP server port')
     parser.add_argument('--customer-id', default='904a4f3b-d72e-48d4-9d9f-1e06968917c5', help='Customer ID')
+    parser.add_argument('--domain-ext', default=None,
+                        help='SIP realm domain suffix (default: DOMAIN_NAME_EXTENSION from .env)')
     parser.add_argument('--local-port', type=int, help='Local port to bind')
     parser.add_argument('--no-auto-answer', action='store_true', help='Disable auto-answer')
 
     args = parser.parse_args()
 
     phone = SIPSoftphone(
-        args.server,
+        args.server or default_server(),
         args.port,
         args.customer_id,
         args.extension,
         args.password,
-        args.local_port
+        args.local_port,
+        domain_ext=args.domain_ext
     )
 
     try:

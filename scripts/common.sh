@@ -52,6 +52,104 @@ check_root() {
 }
 
 # =============================================================================
+# .env Access + Domain Mode (dual-mode DNS, VOIP-1275)
+# =============================================================================
+
+# get_env_var <env-file> <var-name>
+# Prints the value of VAR= from the file (last occurrence wins). Pure text
+# processing — the file is never sourced, so untrusted content (e.g. $(...))
+# is returned literally, never executed. Empty output if the file or the
+# variable is absent. Trailing \r (CRLF-saved .env) and surrounding
+# whitespace are stripped so the strict-equality mode/TLS gates never
+# silently mismatch on an invisible character.
+get_env_var() {
+    local env_file="$1"
+    local var_name="$2"
+    local value
+
+    [[ -n "$env_file" && -f "$env_file" ]] || return 0
+    value=$(grep "^${var_name}=" "$env_file" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "$value"
+}
+
+# get_domain_mode <env-file>
+# Prints the install mode: internal | external. A missing file or missing
+# DOMAIN_MODE key maps to "internal" (legacy .env rule, design §2.5) — all
+# mode gates must call this, never get_env_var DOMAIN_MODE directly.
+get_domain_mode() {
+    local env_file="$1"
+    local mode
+    mode=$(get_env_var "$env_file" DOMAIN_MODE)
+
+    if [[ -z "$mode" ]]; then
+        echo "internal"
+    else
+        echo "$mode"
+    fi
+}
+
+# derive_domain_env <base_domain>
+# Sets the DERIVED_* shell variables for the 11 domain-dependent .env values
+# (design §2.1). This is the ONLY place domain values are composed. For
+# <base_domain> = voipbin.test the results are byte-identical to the historic
+# literals (mode-1 no-regression invariant; asserted by tests/common.bats).
+derive_domain_env() {
+    local d="$1"
+
+    DERIVED_API_URL="https://api.${d}:8443/"
+    DERIVED_WEBSOCKET_URL="wss://api.${d}:8443/v1.0/ws"
+    DERIVED_REGISTRAR_URL="wss://sip.${d}:5066"
+    DERIVED_REGISTRAR_DOMAIN="registrar.${d}"
+    DERIVED_CONFERENCE_URL="wss://conference.${d}"
+    DERIVED_CONFERENCE_DOMAIN="conference.${d}"
+    DERIVED_DOMAIN_NAME_EXTENSION="registrar.${d}"
+    DERIVED_DOMAIN_NAME_TRUNK="trunk.${d}"
+    DERIVED_EMAIL_VERIFY_BASE_URL="https://api.${d}:8443"
+    DERIVED_BASE_DOMAIN="${d}"
+    DERIVED_BASE_HOSTNAME="${d}"
+}
+
+# check_compose_profiles_conflict <env-file>
+# Guards against (a) a shell-exported COMPOSE_PROFILES contradicting the
+# project .env (shell wins in Compose precedence, silently changing the
+# service set) and (b) a stale pre-dual-mode .env (internal mode, no
+# COMPOSE_PROFILES key) that would silently drop coredns while resolv.conf
+# still points at 127.0.0.1. Defined here (not in start.sh) because both
+# start.sh and check-install.sh consume it.
+# Returns 0 when consistent; on conflict sets COMPOSE_PROFILES_CONFLICT_REASON,
+# logs the problem, and returns 1 (callers emit their own result line).
+check_compose_profiles_conflict() {
+    local env_file="$1"
+
+    COMPOSE_PROFILES_CONFLICT_REASON=""
+    [[ -n "$env_file" && -f "$env_file" ]] || return 0
+
+    local env_profiles
+    env_profiles=$(get_env_var "$env_file" COMPOSE_PROFILES)
+
+    # (a) shell-exported COMPOSE_PROFILES contradicting .env
+    if [[ -n "${COMPOSE_PROFILES+x}" && "$COMPOSE_PROFILES" != "$env_profiles" ]]; then
+        COMPOSE_PROFILES_CONFLICT_REASON="COMPOSE_PROFILES is set in your shell ('${COMPOSE_PROFILES}') and contradicts .env ('${env_profiles}'); run: unset COMPOSE_PROFILES"
+        log_error "$COMPOSE_PROFILES_CONFLICT_REASON"
+        return 1
+    fi
+
+    # (b) internal mode with no COMPOSE_PROFILES key at all -> stale .env
+    if ! grep -q '^COMPOSE_PROFILES=' "$env_file" 2>/dev/null; then
+        if [[ "$(get_domain_mode "$env_file")" == "internal" ]]; then
+            COMPOSE_PROFILES_CONFLICT_REASON="stale .env, re-run ./scripts/init.sh --yes"
+            log_error "$COMPOSE_PROFILES_CONFLICT_REASON"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
 # Host IP Detection
 # =============================================================================
 detect_host_ip() {
@@ -179,14 +277,23 @@ update_env_ips() {
     log_info "  KAMAILIO_EXTERNAL_IP: $new_kamailio_ip"
     log_info "  RTPENGINE_EXTERNAL_IP: $new_rtpengine_ip"
 
-    # Update .env file
+    # Update .env file (IP vars update in both modes)
     sed -i "s|^HOST_EXTERNAL_IP=.*|HOST_EXTERNAL_IP=$new_host_ip|" "$env_file"
     sed -i "s|^KAMAILIO_EXTERNAL_IP=.*|KAMAILIO_EXTERNAL_IP=$new_kamailio_ip|" "$env_file"
     sed -i "s|^RTPENGINE_EXTERNAL_IP=.*|RTPENGINE_EXTERNAL_IP=$new_rtpengine_ip|" "$env_file"
 
-    # Also update frontend URLs that use the host IP
-    sed -i "s|^API_URL=.*|API_URL=https://api.voipbin.test:8443/|" "$env_file"
-    sed -i "s|^WEBSOCKET_URL=.*|WEBSOCKET_URL=wss://api.voipbin.test:8443/v1.0/ws|" "$env_file"
+    # Also update frontend URLs that use the host IP — composed from BASE_DOMAIN
+    # (never a hardcoded literal), and skipped entirely in external mode:
+    # external URLs never embed IPs, so an IP change must not clobber them.
+    if [[ "$(get_domain_mode "$env_file")" == "external" ]]; then
+        log_info "External mode: skipping API_URL/WEBSOCKET_URL rewrite (operator-managed domain)" >&2
+    else
+        local base_domain
+        base_domain=$(get_env_var "$env_file" BASE_DOMAIN)
+        [[ -z "$base_domain" ]] && base_domain="voipbin.test"
+        sed -i "s|^API_URL=.*|API_URL=https://api.${base_domain}:8443/|" "$env_file"
+        sed -i "s|^WEBSOCKET_URL=.*|WEBSOCKET_URL=wss://api.${base_domain}:8443/v1.0/ws|" "$env_file"
+    fi
 
     echo "$new_kamailio_ip"
 }
@@ -196,6 +303,15 @@ regenerate_ssl_certs() {
     local new_host_ip="$1"
     local env_file="${PROJECT_DIR}/.env"
     local cert_dir="${PROJECT_DIR}/certs/api"
+
+    # BYO certificates (TLS_MODE=byo) must never be overwritten by mkcert
+    # regeneration. return 0, NOT 1: all call sites invoke this bare under
+    # set -e, so a non-zero return would abort the caller mid-run on every
+    # external-mode IP change. Same rule for every gate at a shared choke point.
+    if [[ "$(get_env_var "$env_file" TLS_MODE)" == "byo" ]]; then
+        log_info "TLS_MODE=byo: skipping certificate regeneration (manage certs with install-certs.sh)"
+        return 0
+    fi
 
     # Check if mkcert is available
     if ! command -v mkcert &> /dev/null; then
@@ -250,9 +366,14 @@ regenerate_ip_config() {
     # Update .env and get new Kamailio IP
     local new_kamailio_ip=$(update_env_ips "$current_ip")
 
-    # Regenerate CoreDNS config
-    generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$new_kamailio_ip"
-    log_info "CoreDNS configuration regenerated"
+    # Regenerate CoreDNS config (internal mode only — external mode deploys no
+    # coredns, and writing .test zones onto an external tree is confusing residue)
+    if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
+        generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$new_kamailio_ip"
+        log_info "CoreDNS configuration regenerated"
+    else
+        log_info "External mode: operator DNS may need updating (HOST_EXTERNAL_IP changed)"
+    fi
 
     # Regenerate SSL certificates
     regenerate_ssl_certs "$current_ip"

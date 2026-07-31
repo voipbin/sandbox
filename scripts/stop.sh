@@ -7,7 +7,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Override-friendly for test isolation. Blast radius: an operator's exported
+# PROJECT_DIR redirects which tree this script operates on — deliberate.
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
@@ -42,6 +44,14 @@ done
 restore_dns() {
     # Restore original DNS configuration before stopping CoreDNS
     # This prevents internet from dropping when CoreDNS stops
+
+    # External mode: DNS was never hijacked, nothing to restore (§2.3).
+    # (Already a de-facto no-op — guarded by the backup file's existence —
+    # this makes the skip explicit in the logs.)
+    if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "external" ]]; then
+        log_info "External mode: DNS is operator-managed, nothing to restore"
+        return 0
+    fi
 
     local os_type=$(detect_os)
 

@@ -11,7 +11,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Override-friendly for test isolation. Blast radius: an operator's exported
+# PROJECT_DIR redirects which tree this script operates on — deliberate.
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
@@ -145,10 +147,15 @@ if check_ip_changed; then
     # Regenerate SSL certificate
     regenerate_ssl_certs "$current_ip"
 
-    # Regenerate CoreDNS config
-    kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
-    generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
-    log_info "CoreDNS configuration regenerated"
+    # Regenerate CoreDNS config (internal mode only — this script runs in both
+    # modes under setup-host.sh, and external mode deploys no coredns, §2.4)
+    if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
+        kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+        generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
+        log_info "CoreDNS configuration regenerated"
+    else
+        log_info "External mode: operator DNS may need updating (HOST_EXTERNAL_IP changed)"
+    fi
 
     IP_CHANGED=true
 fi

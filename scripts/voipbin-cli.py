@@ -1280,6 +1280,26 @@ def get_all_services():
     return output.split("\n") if output else []
 
 
+def read_env_file_var(project_dir, name, default=""):
+    """Read VAR= from <project_dir>/.env (last occurrence wins).
+
+    Pure text processing - the file is never sourced, mirroring
+    common.sh:get_env_var. Returns default when the file or key is absent.
+    """
+    env_path = os.path.join(project_dir, ".env")
+    value = default
+    try:
+        with open(env_path) as f:
+            for line in f:
+                if line.startswith(f"{name}="):
+                    # .strip() drops \r\n (CRLF-saved .env) and surrounding
+                    # whitespace, mirroring common.sh:get_env_var.
+                    value = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return value
+
+
 # =============================================================================
 # Docker Hub API Helpers
 # =============================================================================
@@ -1931,6 +1951,21 @@ class VoIPBinCLI:
 Type 'help <command>' for detailed usage.
 """)
 
+    # -------------------------------------------------------------------------
+    # Mode awareness (dual-mode DNS, VOIP-1275 design §2.10). URLs and mode
+    # gates derive from .env; the base domain is never hardcoded here.
+    # -------------------------------------------------------------------------
+
+    def _project_dir(self):
+        return self.config.get("project_dir", ".")
+
+    def _base_domain(self):
+        return read_env_file_var(self._project_dir(), "BASE_DOMAIN") or "voipbin.test"
+
+    def _domain_mode(self):
+        """internal | external; a missing key maps to internal (legacy rule)."""
+        return read_env_file_var(self._project_dir(), "DOMAIN_MODE") or "internal"
+
     def cmd_status(self, args):
         """Show service status"""
         output = run_cmd("docker compose ps --format '{{.Name}}\t{{.Status}}' 2>/dev/null")
@@ -1938,8 +1973,9 @@ Type 'help <command>' for detailed usage.
             print(yellow("No services running. Run 'start' to start services."))
             return
 
-        # Get host IP for endpoints
+        # Get host IP for endpoints; base domain drives all composed URLs
         host_ip = run_cmd("grep '^HOST_EXTERNAL_IP=' .env 2>/dev/null | cut -d'=' -f2 | head -1") or "localhost"
+        base_domain = self._base_domain()
 
         # Parse services into a dict
         services = {}
@@ -1955,8 +1991,8 @@ Type 'help <command>' for detailed usage.
         # Key services with endpoints (service_name: (label, endpoint, credentials))
         # Web services use Docker port mapping on HOST_IP
         endpoint_services = {
-            "admin": ("Admin Console", "http://admin.voipbin.test:3003", None),
-            "api-mgr": ("API Manager", "https://api.voipbin.test:8443", None),
+            "admin": ("Admin Console", f"http://admin.{base_domain}:3003", None),
+            "api-mgr": ("API Manager", f"https://api.{base_domain}:8443", None),
             "mq": ("RabbitMQ", "http://localhost:15672", "guest / guest"),
             "db": ("MySQL", "localhost:3306", "root / root_password"),
         }
@@ -2141,7 +2177,7 @@ Type 'help <command>' for detailed usage.
             print(f"  {gray('○')} AWS:                {gray('not set')}")
 
         # DNS Configuration
-        print(f"\n{bold('DNS Domains')} (*.voipbin.test → {host_ip})")
+        print(f"\n{bold('DNS Domains')} (*.{base_domain} → {host_ip})")
         print("-" * 60)
 
         # Check if CoreDNS is running and DNS is configured
@@ -2156,17 +2192,17 @@ Type 'help <command>' for detailed usage.
             print(f"  {red('○')} DNS Status: {red('CoreDNS not running')}")
 
         print(f"\n  {bold('Web Services')} (Docker port mapping on {host_ip})")
-        print(f"    https://api.voipbin.test:8443     API Manager")
-        print(f"    http://admin.voipbin.test:3003    Admin Console")
-        print(f"    http://meet.voipbin.test:3004     Meet")
-        print(f"    http://talk.voipbin.test:3005     Talk")
+        print(f"    {'https://api.' + base_domain + ':8443':<34}API Manager")
+        print(f"    {'http://admin.' + base_domain + ':3003':<34}Admin Console")
+        print(f"    {'http://meet.' + base_domain + ':3004':<34}Meet")
+        print(f"    {'http://talk.' + base_domain + ':3005':<34}Talk")
 
         print(f"\n  {bold('SIP Services')} (Kamailio: {host_ip})")
-        print(f"    sip.voipbin.test                  SIP proxy")
-        print(f"    sip-service.voipbin.test          SIP proxy (alias)")
-        print(f"    pstn.voipbin.test                 PSTN gateway")
-        print(f"    trunk.voipbin.test                SIP trunking")
-        print(f"    *.registrar.voipbin.test          SIP registration")
+        print(f"    {'sip.' + base_domain:<34}SIP proxy")
+        print(f"    {'sip-service.' + base_domain:<34}SIP proxy (alias)")
+        print(f"    {'pstn.' + base_domain:<34}PSTN gateway")
+        print(f"    {'trunk.' + base_domain:<34}SIP trunking")
+        print(f"    {'*.registrar.' + base_domain:<34}SIP registration")
 
         print(f"\n  Run 'dns list' for full domain reference.")
         print()
@@ -4029,6 +4065,13 @@ Type 'registrar <subcommand> help' for more details.
         """DNS setup for SIP domains"""
         subcmd = args[0].lower() if args else "status"
 
+        # External mode (design §2.10): DNS is operator-managed. Every dns
+        # subcommand prints the required record set instead of touching
+        # CoreDNS/resolv.conf state, and exits 0.
+        if self._domain_mode() == "external":
+            self.dns_external_info()
+            return
+
         if subcmd == "status":
             self.dns_status()
         elif subcmd == "list":
@@ -4041,6 +4084,43 @@ Type 'registrar <subcommand> help' for more details.
             self.dns_test()
         else:
             print("Usage: dns [status|list|setup|regenerate|test]")
+
+    def dns_external_info(self):
+        """External mode: print the operator DNS runbook (design §2.9 table)
+        with the actual domain and IPs substituted."""
+        project_dir = self._project_dir()
+        d = self._base_domain()
+        host_ip = read_env_file_var(project_dir, "HOST_EXTERNAL_IP") or "<host-ip>"
+        kamailio_ip = read_env_file_var(project_dir, "KAMAILIO_EXTERNAL_IP") or "<kamailio-ip>"
+
+        print(f"\n{bold('DNS is operator-managed in external mode')}")
+        print("-" * 70)
+        print("The sandbox does not run CoreDNS or touch resolv.conf in external")
+        print("mode. Create these records at your DNS provider:")
+        print()
+        print(f"  {'Record':<28} {'Type':<6} {'Target':<18} Purpose")
+        print(f"  {'-' * 68}")
+        rows = [
+            (f"api.{d}", host_ip, "REST API + WebSocket (:8443)"),
+            (f"admin.{d}", host_ip, "Admin Console (:3003)"),
+            (f"meet.{d}", host_ip, "Meet (:3004)"),
+            (f"talk.{d}", host_ip, "Talk (:3005)"),
+            (f"sip.{d}", kamailio_ip, "SIP signaling / WSS (:5060/:5066)"),
+            (f"sip-service.{d}", kamailio_ip, "SIP surface"),
+            (f"conference.{d}", kamailio_ip, "SIP surface"),
+            (f"trunk.{d}", kamailio_ip, "SIP trunking"),
+            (f"pstn.{d}", kamailio_ip, "PSTN gateway"),
+            (f"registrar.{d}", kamailio_ip, "Apex registrar name (not covered by the wildcard)"),
+            (f"*.registrar.{d}", kamailio_ip, "Per-customer SIP realm resolution"),
+        ]
+        for record, target, purpose in rows:
+            print(f"  {record:<28} {'A':<6} {target:<18} {purpose}")
+        print()
+        print(f"  Host IP ({host_ip}) and Kamailio IP ({kamailio_ip}) are two")
+        print("  distinct addresses on the same subnet; both must be routable.")
+        print("  See the external-mode runbook in README.md for TTL guidance")
+        print("  and the reverse-proxy recommendation for the web UIs.")
+        print()
 
     def dns_status(self):
         """Check DNS configuration status"""
@@ -4283,12 +4363,61 @@ Type 'registrar <subcommand> help' for more details.
         """Manage SSL certificates"""
         subcmd = args[0].lower() if args else "status"
 
+        # External mode (design §2.10): certificates are BYO. Report expiry
+        # and SANs and point at install-certs.sh. NEVER advise rm -rf certs/
+        # or mkcert regeneration; that would destroy a real certificate.
+        if self._domain_mode() == "external":
+            self.certs_external_status()
+            return
+
         if subcmd == "status":
             self.certs_status()
         elif subcmd == "trust":
             self.certs_trust()
         else:
             print("Usage: certs [status|trust]")
+
+    def certs_external_status(self):
+        """External mode: report the installed BYO certificate's expiry and
+        SANs; renewal goes through install-certs.sh."""
+        project_dir = self._project_dir()
+        api_cert = os.path.join(project_dir, "certs", "api", "cert.pem")
+
+        print(f"\n{bold('Certificate Status (external mode, BYO)')}")
+        print("-" * 60)
+
+        if not os.path.exists(api_cert):
+            print(f"  {red('○')} API certificate: not found ({api_cert})")
+            print()
+            print("  Install your certificate:")
+            print("    ./scripts/install-certs.sh <fullchain.pem> <privkey.pem>")
+            print()
+            return
+
+        expires = run_cmd(f"openssl x509 -in {shlex.quote(api_cert)} -noout -enddate 2>/dev/null")
+        expires = expires.split("=", 1)[1] if "=" in expires else expires or "unknown"
+        subject = run_cmd(f"openssl x509 -in {shlex.quote(api_cert)} -noout -subject 2>/dev/null")
+        sans = run_cmd(
+            f"openssl x509 -in {shlex.quote(api_cert)} -noout -ext subjectAltName 2>/dev/null | tail -n +2"
+        ).strip()
+
+        print(f"  {green('●')} API certificate: {api_cert}")
+        print(f"      {subject}")
+        print(f"      Expires: {expires}")
+        if sans:
+            print(f"      SANs: {sans}")
+
+        not_expiring = run_cmd(
+            f"openssl x509 -in {shlex.quote(api_cert)} -noout -checkend {30 * 24 * 3600} >/dev/null 2>&1 && echo ok"
+        )
+        if not_expiring != "ok":
+            print(f"\n  {yellow('!')} Certificate expires within 30 days (or is expired).")
+
+        print()
+        print("  To renew or replace the certificate:")
+        print("    ./scripts/install-certs.sh <fullchain.pem> <privkey.pem>")
+        print("  (certbot users: wire it as a --deploy-hook, see README.md)")
+        print()
 
     def certs_status(self):
         """Check certificate configuration"""
@@ -4559,6 +4688,13 @@ Type 'registrar <subcommand> help' for more details.
         if clean_volumes:
             print("Stopping all services and removing volumes...")
             run_cmd("docker compose down -v 2>&1")
+            # The test-data marker mirrors DB state (which lives in the
+            # volumes), so it is removed with --volumes — aligned with
+            # clean.sh --volumes (VOIP-1275 §2.10).
+            marker_path = os.path.join(project_dir, ".test_data_initialized")
+            if os.path.exists(marker_path):
+                os.remove(marker_path)
+                print("  Removed test data marker")
             print(green("✓ All containers and volumes removed"))
         elif clean_containers:
             # Remove only app containers, keep infrastructure
@@ -4641,7 +4777,8 @@ Type 'registrar <subcommand> help' for more details.
             files_to_remove = [
                 ("certs", "certificates directory"),
                 (".env", ".env file"),
-                (".test_data_initialized", "test data marker"),
+                # .test_data_initialized moved to the --volumes branch: the
+                # marker mirrors DB state, which lives in the volumes.
                 ("config/coredns", "CoreDNS config"),
                 ("config/dummy-gcp-credentials.json", "dummy GCP credentials"),
                 ("tmp", "tmp directory"),

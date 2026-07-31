@@ -7,7 +7,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Override-friendly for test isolation. Blast radius: an operator's exported
+# PROJECT_DIR redirects this DESTRUCTIVE script (clean.sh --volumes) to a
+# different tree — low probability, documented deliberately.
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
@@ -114,6 +117,14 @@ main() {
         docker compose down -v 2>/dev/null || true
     fi
 
+    # The test-data marker mirrors DB state, which lives in the volumes — so
+    # --volumes removes it too, letting start.sh re-seed the test customer
+    # against a fresh database (§2.7).
+    if [ "$CLEAN_VOLUMES" = true ] && [ -f "$PROJECT_DIR/.test_data_initialized" ]; then
+        log_info "Removing test data marker (.test_data_initialized)..."
+        rm -f "$PROJECT_DIR/.test_data_initialized"
+    fi
+
     # Step 2: Remove docker images if requested
     if [ "$CLEAN_IMAGES" = true ]; then
         log_step "Removing docker images..."
@@ -168,7 +179,10 @@ main() {
     # Step 4: Remove DNS configuration if requested
     if [ "$TEARDOWN_DNS" = true ]; then
         log_step "Removing DNS configuration..."
-        if [ -f "$SCRIPT_DIR/setup-dns.sh" ]; then
+        if [ "$(get_domain_mode "$PROJECT_DIR/.env")" = "external" ]; then
+            # External mode: DNS was never hijacked, nothing to remove (§2.3).
+            log_info "External mode: DNS is operator-managed, skipping"
+        elif [ -f "$SCRIPT_DIR/setup-dns.sh" ]; then
             if sudo -n true 2>/dev/null || [ "$EUID" -eq 0 ]; then
                 "$SCRIPT_DIR/setup-dns.sh" --uninstall || true
             else

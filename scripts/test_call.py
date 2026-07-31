@@ -12,12 +12,41 @@ import time
 import sys
 import re
 
-# Configuration
-SIP_SERVER = os.environ.get("VOIPBIN_SIP_SERVER", "sip.voipbin.test")
+def read_env_var(name, default=""):
+    """Read VAR= from the sandbox .env (last occurrence wins, never sourced).
+
+    The project directory is the script's parent, overridable via
+    VOIPBIN_PROJECT_DIR (same override the CLI honors).
+    """
+    project_dir = os.environ.get("VOIPBIN_PROJECT_DIR") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    value = default
+    try:
+        with open(os.path.join(project_dir, ".env")) as f:
+            for line in f:
+                if line.startswith(f"{name}="):
+                    # .strip() drops \r\n (CRLF-saved .env) and surrounding
+                    # whitespace, mirroring common.sh:get_env_var.
+                    value = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return value
+
+
+# Configuration. Defaults derive from .env (dual-mode DNS, design §2.10) so
+# the script points at the configured base domain in both modes; explicit
+# VOIPBIN_* environment variables still win.
+SIP_SERVER = os.environ.get("VOIPBIN_SIP_SERVER") or (
+    "sip." + (read_env_var("BASE_DOMAIN") or "voipbin.test")
+)
 SIP_PORT = 5060
 # Set VOIPBIN_CUSTOMER_ID to the customer created by setup_test_customer.sh
 CUSTOMER_ID = os.environ.get("VOIPBIN_CUSTOMER_ID", "904a4f3b-d72e-48d4-9d9f-1e06968917c5")
-DOMAIN = f"{CUSTOMER_ID}.registrar.voipbin.test"
+DOMAIN_NAME_EXTENSION = os.environ.get("VOIPBIN_DOMAIN_NAME_EXTENSION") or (
+    read_env_var("DOMAIN_NAME_EXTENSION") or "registrar.voipbin.test"
+)
+DOMAIN = f"{CUSTOMER_ID}.{DOMAIN_NAME_EXTENSION}"
 
 # Caller (User A)
 CALLER_EXT = "2000"
