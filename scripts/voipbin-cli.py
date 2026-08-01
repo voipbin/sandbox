@@ -1763,6 +1763,8 @@ class VoIPBinCLI:
             "certs": self.cmd_certs,
             "network": self.cmd_network,
             "init": self.cmd_init,
+            "doctor": self.cmd_doctor,
+            "check": self.cmd_doctor,
             "clean": self.cmd_clean,
             "update": self.cmd_update,
             "backup": self.cmd_backup,
@@ -1813,6 +1815,8 @@ class VoIPBinCLI:
             "certs": ("Manage SSL certificates", "certs [status|trust]\n  certs status   Check certificate configuration\n  certs trust    Install mkcert CA for browser-trusted certificates"),
             "network": ("Manage VoIP network interfaces", "network [status|setup|teardown]\n  network status                       Show current network configuration\n  network setup                        Setup VoIP network interfaces\n  network setup --external-ip X.X.X.X  Setup with fixed external IP\n  network teardown                     Remove VoIP network interfaces"),
             "init": ("Initialize sandbox", "init\n  Runs initialization script to generate .env and certificates"),
+            "doctor": ("Diagnose the install (unprivileged, read-only)", "doctor\n  Runs scripts/check-install.sh: service health, cert trust, DNS,\n  TLS chain, API reachability, registrar realm, resolv.conf.\n  Prints one CHECK line per probe plus a final pass/fail summary."),
+            "check": ("Alias for doctor", "check"),
             "clean": ("Cleanup sandbox", "clean [options]\n  clean --containers  Remove app containers (keeps db/redis/mq/dns)\n  clean --volumes     Remove docker volumes (database, recordings, redis, rabbitmq)\n  clean --images      Remove docker images\n  clean --network     Teardown VoIP network interfaces\n  clean --dns         Remove DNS configuration\n  clean --purge       Remove generated files (.env, certs, configs)\n  clean --all         All of the above (full reset)"),
             "update": ("Update sandbox", "update [subcommand] [--check] [--skip-backup]\n  update               Pull latest Docker images + restart services\n                       (pinned repo: pulls pinned digests only; real upgrades = 'update all')\n  update --check       Dry-run: show available image updates\n  update scripts       Update scripts/configs from GitHub (with backup)\n  update scripts --check  Dry-run: show what would change\n  update all           Full upgrade. Pinned repo: backup -> git pull -> compose pull\n                       -> migrate -> up -d -> verify (safe-ordered)\n  update all --skip-backup  Skip the automatic pre-upgrade backup (pinned repo)\n  update all --check   Dry-run: describe the upgrade plan, change nothing"),
             "backup": ("Create a full data backup", "backup\n  Dumps MySQL (all databases), archives recording volumes, and copies\n  .env/certs/versions.lock into backups/<timestamp>/ (chmod 700/600).\n  Runs while services are up (mysqldump --single-transaction).\n  Retention: last 7 backups are kept.\n  NOTE: backups contain your full .env secrets in plaintext - copy them\n  off-host (rsync/rclone) for real disaster recovery."),
@@ -1901,6 +1905,7 @@ class VoIPBinCLI:
 
 {blue('Setup & Cleanup:')}
   init              Initialize sandbox (.env, certs)
+  doctor, check     Diagnose the install (services, certs, DNS, TLS, API)
   update [options]  Update (scripts, all, --check) - 'update all' = full pinned upgrade
   backup            Full data backup (MySQL + recordings + config) to backups/<ts>/
   restore <ts>      Restore DATA from a backup (DESTRUCTIVE, requires --force + stopped services)
@@ -4654,6 +4659,17 @@ Type 'registrar <subcommand> help' for more details.
         print("Running initialization script...")
         print("This will generate .env and certificates.\n")
         os.system(script_path)
+
+    def cmd_doctor(self, args):
+        """Diagnose the install (unprivileged, read-only)"""
+        script_path = os.path.join(self._project_dir(), "scripts", "check-install.sh")
+
+        if not os.path.exists(script_path):
+            print(red(f"Check script not found: {script_path}"))
+            return
+
+        print(f"\n{bold('Running install diagnostics...')}\n")
+        subprocess.run([script_path])
 
     def cmd_clean(self, args):
         """Cleanup sandbox"""

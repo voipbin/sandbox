@@ -271,6 +271,9 @@ realm configuration, and that resolv.conf was left untouched. It prints
 one `CHECK` line per check and a final `VOIPBIN_CHECK:` result line, and
 exits 0 only when everything passes.
 
+Also reachable as `doctor` (alias `check`) from the interactive CLI or as
+`sudo ./voipbin doctor`, for whenever you're already inside `voipbin>`.
+
 ### Certificate renewal
 
 `install-certs.sh` is idempotent and usable as a certbot deploy hook, so

@@ -274,6 +274,23 @@ def test_crlf_env_values_are_trimmed(cli_module, tmp_dir):
     print("ok test_crlf_env_values_are_trimmed")
 
 
+def test_doctor_command_wiring(cli_module, tmp_dir):
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    assert cli.commands["doctor"] == cli.cmd_doctor
+    assert cli.commands["check"] == cli.cmd_doctor
+    print("ok test_doctor_command_wiring")
+
+
+def test_doctor_missing_script_reports_error(cli_module, tmp_dir):
+    # make_cli's project_dir has no scripts/ directory at all, so cmd_doctor
+    # must report the missing script rather than blow up on a bad path.
+    cli, _ = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+    out = capture(cli.cmd_doctor, [])
+    assert "not found" in out, out
+    assert "check-install.sh" in out, out
+    print("ok test_doctor_missing_script_reports_error")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -293,6 +310,8 @@ def main():
         test_test_call_defaults_from_env(tmp_dir)
         test_softphone_defaults_from_env(tmp_dir)
         test_crlf_env_values_are_trimmed(cli_module, tmp_dir)
+        test_doctor_command_wiring(cli_module, tmp_dir)
+        test_doctor_missing_script_reports_error(cli_module, tmp_dir)
 
         print("All test_cli_mode.py tests passed")
     finally:
