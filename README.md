@@ -754,6 +754,69 @@ These commands use manager container CLIs for direct resource management:
 | `clean [options]` | Cleanup sandbox resources |
 | `config [key] [value]` | View/set CLI configuration |
 
+### Scheduled Jobs (VOIP-1281)
+
+`schedule-manager` (container `voipbin-schedule-mgr`) is the platform's internal
+cron: DB-stored schedule rows, dispatched via the same RabbitMQ RPC every other
+manager uses, no external CronJob or host crontab anywhere. Three schedules
+are seeded by the DB migration:
+
+| Schedule | Cadence | Enabled by default? | What it does |
+|----------|---------|----------------------|---------------|
+| `number-renew` | daily | yes | Renews phone numbers via number-manager (`/v1/numbers/renew`) |
+| `execution-retention` | daily | yes | Prunes the scheduler's own execution audit rows older than 90 days |
+| `database-backup` | nightly | **no upstream** — `./scripts/start.sh` enables it | `mysqldump` + gzip of `bin_manager`/`asterisk`, written to `backups/scheduled-db/` on the host (retains the newest 7) |
+
+`database-backup` ships disabled in the upstream seed migration (production
+uses managed Cloud SQL backups, which have no sandbox equivalent).
+`start.sh` enables it on every run (idempotent — a no-op once already
+enabled), so a normal `./scripts/start.sh` install ends up with all three
+enabled. If you skip `start.sh` (e.g. `docker compose up -d` directly) or the
+enable step logged a warning, enable it yourself:
+```bash
+docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule enable database-backup
+```
+
+```bash
+# Inspect schedule state and history (no RabbitMQ dependency, works even if the broker is down)
+docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule list
+docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule get number-renew
+docker exec voipbin-schedule-mgr /app/bin/schedule-control execution list --schedule-id <uuid>
+
+# Disable/enable a misbehaving schedule
+docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule disable number-renew
+```
+
+**`database-backup` vs `voipbin backup`:** these are deliberately separate and
+do not share retention or layout. `voipbin backup` (above) is a full,
+manually-triggered snapshot — MySQL + call recordings + `.env`/certs/
+`versions.lock` + a `manifest.json` — meant for disaster recovery and upgrades.
+The scheduler's `database-backup` is a narrower, automatic, MySQL-only
+`mysqldump` that runs unattended every night as a safety net between manual
+backups. They land in different subdirectories of `backups/` (`<ts>/` for the
+manual CLI backup, `scheduled-db/` for the scheduler) precisely so neither
+one's retention pruning touches the other.
+
+`./scripts/check-install.sh` includes a `scheduler` check confirming
+schedule-manager is running and all three schedules above are enabled — see
+"Troubleshooting" if it fails.
+
+#### Host-side gaps (operator runbook, out of scope for sandbox automation)
+
+Two maintenance tasks structurally cannot move inside the platform and stay
+manual/operator-owned:
+
+- **Offsite copy of backups.** Neither `voipbin backup` nor the scheduler's
+  `database-backup` copies anything off the host. `backups/` is local disk —
+  rsync or otherwise ship it to remote/object storage yourself on whatever
+  cadence your recovery objective requires (e.g. a host cron job or a
+  systemd timer running `rsync -a backups/ user@remote:/path`, entirely
+  outside this repo).
+- **Host-level maintenance.** OS package updates, Docker Engine upgrades,
+  disk space/log rotation on the host, and kernel/security patching are the
+  operator's responsibility — nothing in this sandbox observes or manages
+  host OS state.
+
 ### Configuration
 
 The CLI stores settings in `~/.voipbin-cli.conf`:
@@ -994,6 +1057,7 @@ All managers connect to MySQL, Redis, and RabbitMQ. Key services:
 | `ai-manager` | (no container_name — use `docker compose ps ai-manager`) | AI/chatbot features |
 | `transcribe-manager` | (no container_name — use `docker compose ps transcribe-manager`) | Speech-to-text |
 | `talk-manager` | voipbin-talk-mgr | Talk app backend |
+| `schedule-manager` | voipbin-schedule-mgr | Platform internal cron (number renewal, execution retention, DB backup) — see [Scheduled Jobs](#scheduled-jobs-voip-1281) |
 
 ### Frontend Services
 
@@ -1091,6 +1155,24 @@ mkcert -install
 rm -rf certs/
 sudo ./voipbin init
 sudo ./voipbin restart api-manager
+```
+
+#### Scheduler Not Firing (`CHECK scheduler: fail`)
+
+```bash
+# Confirm the container is up
+docker compose ps schedule-manager
+
+# List seeded schedules and their enabled/last-run state
+docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule list
+
+# Missing/disabled schedule rows usually mean the DB seed migration never
+# ran (fresh volume + incomplete ./scripts/init_database.sh) — re-run it:
+./scripts/init_database.sh
+
+# Container not inspectable at all: check logs, restart
+docker compose logs schedule-manager
+docker compose restart schedule-manager
 ```
 
 ### Reset Everything

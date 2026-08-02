@@ -119,6 +119,70 @@ exit 1'
 }
 
 # =============================================================================
+# ensure_scheduled_backup_enabled (VOIP-1281): database-backup ships disabled
+# upstream; start.sh turns it on idempotently.
+# =============================================================================
+
+@test "ensure_scheduled_backup_enabled is a no-op when already enabled" {
+    load_start_functions
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$*" == *"schedule list"* ]]; then
+    printf "%s" "[{\"name\":\"database-backup\",\"enabled\":true}]"
+    exit 0
+fi
+if [[ "$1" == "exec" && "$*" == *"schedule enable"* ]]; then
+    echo "SHOULD NOT BE CALLED" >> "'"$TEST_TEMP_DIR"'/enable_calls.log"
+    exit 0
+fi
+exit 1'
+
+    run ensure_scheduled_backup_enabled
+
+    [[ ! -f "$TEST_TEMP_DIR/enable_calls.log" ]]
+}
+
+@test "ensure_scheduled_backup_enabled enables a disabled schedule" {
+    load_start_functions
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$*" == *"schedule list"* ]]; then
+    printf "%s" "[{\"name\":\"database-backup\",\"enabled\":false}]"
+    exit 0
+fi
+if [[ "$1" == "exec" && "$*" == *"schedule enable database-backup"* ]]; then
+    exit 0
+fi
+exit 1'
+
+    run ensure_scheduled_backup_enabled
+
+    [[ "$output" == *'Enabled scheduled DB backup'* ]]
+}
+
+@test "ensure_scheduled_backup_enabled warns when schedule-manager is unreachable" {
+    load_start_functions
+    mock_command_script "docker" 'exit 1'
+
+    run ensure_scheduled_backup_enabled
+
+    [[ "$output" == *'Could not reach schedule-manager'* ]]
+    [[ "$output" == *'schedule-control schedule enable database-backup'* ]]
+}
+
+@test "ensure_scheduled_backup_enabled warns when the enable command itself fails" {
+    load_start_functions
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$*" == *"schedule list"* ]]; then
+    printf "%s" "[{\"name\":\"database-backup\",\"enabled\":false}]"
+    exit 0
+fi
+exit 1'
+
+    run ensure_scheduled_backup_enabled
+
+    [[ "$output" == *'Could not enable database-backup'* ]]
+}
+
+# =============================================================================
 # Script-level behavior: the gate that replaced check_root (design §2.5)
 # =============================================================================
 

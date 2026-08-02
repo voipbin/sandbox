@@ -75,6 +75,10 @@ if [[ "$1" == "inspect" ]]; then
     echo "PATH=/usr/bin"
     exit 0
 fi
+if [[ "$1" == "exec" && "$*" == *"schedule-control"* ]]; then
+    printf "%s" "[{\"name\":\"number-renew\",\"enabled\":true},{\"name\":\"execution-retention\",\"enabled\":true},{\"name\":\"database-backup\",\"enabled\":true}]"
+    exit 0
+fi
 exit 1'
 }
 
@@ -114,7 +118,7 @@ exit 0'
     run_check
 
     [[ "$status" -eq 0 ]]
-    for name in compose-profiles services dns tls api-ping realm resolv-conf; do
+    for name in compose-profiles services dns tls api-ping realm scheduler resolv-conf; do
         [[ "$output" == *"CHECK $name: pass"* ]]
     done
     # TLS_MODE=selfsigned: cert-trust is a skip, not a fail
@@ -142,6 +146,7 @@ exit 0'
     [[ "$output" == *'CHECK cert-trust: pass'* ]]
     [[ "$output" == *'CHECK dns: pass'* ]]
     [[ "$output" == *'CHECK tls: pass'* ]]
+    [[ "$output" == *'CHECK scheduler: pass'* ]]
     local last_line
     last_line=$(echo "$output" | tail -1)
     [[ "$last_line" =~ ^VOIPBIN_CHECK:\ status=pass\ passed=[0-9]+\ failed=0\ mode=external$ ]]
@@ -302,6 +307,64 @@ exit 1'
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'CHECK realm: fail running=voipbin.test .env=registrar.voipbin.test'* ]]
     [[ "$output" == *'docker compose rm -fsv registrar-manager'* ]]
+}
+
+# =============================================================================
+# Scheduler present and firing (VOIP-1281)
+# =============================================================================
+
+@test "scheduler passes when all three seeded schedules are enabled" {
+    load_check_install_functions
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$*" == *"schedule-control"* ]]; then
+    printf "%s" "[{\"name\":\"number-renew\",\"enabled\":true},{\"name\":\"execution-retention\",\"enabled\":true},{\"name\":\"database-backup\",\"enabled\":true}]"
+    exit 0
+fi
+exit 1'
+
+    run check_scheduler
+
+    [[ "$output" == *'CHECK scheduler: pass'* ]]
+    [[ "$output" == *'3 schedule(s) enabled'* ]]
+}
+
+@test "scheduler fails naming a disabled seeded schedule" {
+    load_check_install_functions
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$*" == *"schedule-control"* ]]; then
+    printf "%s" "[{\"name\":\"number-renew\",\"enabled\":false},{\"name\":\"execution-retention\",\"enabled\":true},{\"name\":\"database-backup\",\"enabled\":true}]"
+    exit 0
+fi
+exit 1'
+
+    run check_scheduler
+
+    [[ "$output" == *'CHECK scheduler: fail'* ]]
+    [[ "$output" == *'number-renew'* ]]
+}
+
+@test "scheduler fails naming a missing seeded schedule" {
+    load_check_install_functions
+    mock_command_script "docker" '
+if [[ "$1" == "exec" && "$*" == *"schedule-control"* ]]; then
+    printf "%s" "[{\"name\":\"execution-retention\",\"enabled\":true},{\"name\":\"database-backup\",\"enabled\":true}]"
+    exit 0
+fi
+exit 1'
+
+    run check_scheduler
+
+    [[ "$output" == *'CHECK scheduler: fail'* ]]
+    [[ "$output" == *'number-renew'* ]]
+}
+
+@test "scheduler fails when schedule-manager is not running or not inspectable" {
+    load_check_install_functions
+    mock_command_script "docker" 'exit 1'
+
+    run check_scheduler
+
+    [[ "$output" == *'CHECK scheduler: fail schedule-manager not running'* ]]
 }
 
 # =============================================================================
