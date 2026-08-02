@@ -491,6 +491,33 @@ wait_for_admin_agent() {
     return 1
 }
 
+# Enable the scheduler's in-stack DB backup (VOIP-1281). It ships disabled
+# upstream (bin-dbscheme-manager seed migration a5e6f559299c: "production
+# uses managed Cloud SQL backups; self-hosted installs enable it"), since a
+# self-hosted sandbox has no managed-backup equivalent. Idempotent: a no-op
+# if already enabled (re-runs of start.sh, restarts).
+ensure_scheduled_backup_enabled() {
+    local list_json enabled
+    list_json=$(docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule list 2>/dev/null)
+    if [ -z "$list_json" ]; then
+        log_warn "  Could not reach schedule-manager to enable database-backup. Run manually:"
+        log_warn "    docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule enable database-backup"
+        return
+    fi
+
+    enabled=$(echo "$list_json" | jq -r '.[] | select(.name == "database-backup") | .enabled' 2>/dev/null)
+    if [ "$enabled" = "true" ]; then
+        return
+    fi
+
+    if docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule enable database-backup > /dev/null 2>&1; then
+        log_info "  Enabled scheduled DB backup (database-backup)"
+    else
+        log_warn "  Could not enable database-backup. Run manually:"
+        log_warn "    docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule enable database-backup"
+    fi
+}
+
 # Setup test customer and extensions
 setup_test_customer() {
     local api_host="localhost"
@@ -802,6 +829,11 @@ main() {
     # Step 10: Wait for services to stabilize
     log_step "Waiting for services to stabilize..."
     sleep 5
+
+    # Step 10b: Enable the scheduler's in-stack DB backup (VOIP-1281) — ships
+    # disabled upstream, self-hosted installs turn it on.
+    log_step "Checking scheduled DB backup..."
+    ensure_scheduled_backup_enabled
 
     # Step 11: Wait for API to be ready
     log_step "Waiting for API..."

@@ -569,6 +569,12 @@ Key services:
   `GOOGLE_APPLICATION_CREDENTIALS` in `.env`
 - `timeline-manager` - Call timeline analytics, backed by the local `clickhouse`
   service
+- `schedule-manager` - Platform-internal cron (VOIP-1281): number renewal,
+  execution-audit retention, and a nightly in-stack DB backup, all DB-scheduled
+  and dispatched via RabbitMQ RPC like every other manager — no external
+  CronJob or host crontab. See README.md "Scheduled Jobs (VOIP-1281)" for the
+  seeded schedules, `schedule-control` CLI, and the host-side gaps (offsite
+  backup copy, host OS maintenance) that stay operator-owned by design.
 
 ### Frontend
 

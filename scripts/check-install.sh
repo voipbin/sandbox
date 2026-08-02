@@ -253,6 +253,43 @@ check_realm() {
     fi
 }
 
+# Scheduler present and firing (VOIP-1281): schedule-manager is running, and
+# its seeded platform schedules (number-renew, execution-retention,
+# database-backup) are enabled — proof the DB seed migration applied and the
+# dispatch loop has something to fire. Does not assert a recent tm_last_run:
+# right after a fresh install none of the daily/nightly jobs have had a slot
+# yet, so that would false-fail a healthy install.
+check_scheduler() {
+    local list_json
+    list_json=$(docker exec voipbin-schedule-mgr /app/bin/schedule-control schedule list 2>/dev/null)
+
+    if [[ -z "$list_json" ]]; then
+        check_result scheduler fail "schedule-manager not running or not inspectable (docker inspect voipbin-schedule-mgr)"
+        return
+    fi
+    if ! command -v jq &> /dev/null; then
+        check_result scheduler skip "jq not installed"
+        return
+    fi
+
+    local missing enabled_count
+    missing=""
+    for name in number-renew execution-retention database-backup; do
+        local enabled
+        enabled=$(echo "$list_json" | jq -r --arg n "$name" '.[] | select(.name == $n) | .enabled')
+        if [[ "$enabled" != "true" ]]; then
+            missing="$missing $name"
+        fi
+    done
+    enabled_count=$(echo "$list_json" | jq -r '[.[] | select(.enabled == true)] | length')
+
+    if [[ -n "$missing" ]]; then
+        check_result scheduler fail "schedule(s) missing or disabled:$missing — check the schedule_schedules seed migration and docker logs voipbin-schedule-mgr"
+        return
+    fi
+    check_result scheduler pass "schedule-manager present, $enabled_count schedule(s) enabled (number-renew, execution-retention, database-backup)"
+}
+
 # resolv.conf state matches the mode.
 # internal: must point at CoreDNS (127.0.0.1).
 # external: must be untouched — no 127.0.0.1 hijack and no .voipbin-backup.
@@ -318,6 +355,7 @@ main() {
     check_tls
     check_api_ping
     check_realm
+    check_scheduler
     check_resolv_conf
 
     echo ""
