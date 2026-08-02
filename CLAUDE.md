@@ -795,15 +795,19 @@ Back through Kamailio to destination
 
 ### Known Limitations
 
-**Flow Execution Timing Issue**: The VoIPBin platform's `confbridge_join` action completes immediately after the B-leg starts joining the conference, rather than waiting for the call to end. This causes the A-leg flow to terminate and send BYE/CANCEL before the B-leg can fully answer.
-
-- **SIP routing works correctly**: INVITE reaches the softphone, 180/200 responses return through Kamailio
-- **Call terminates prematurely**: The flow-manager's `confbridge_join` action completes too early
-- **Workaround**: For testing SIP routing, verify that:
-  1. INVITE is relayed to the softphone
-  2. 180 Ringing is received
-  3. 200 OK is received
-  4. This confirms the SIP layer is functioning correctly
+**~~Flow Execution Timing Issue~~ (fixed 2026-07-01):** This section previously
+documented the A-leg terminating a `confbridge_join`/`connect` call flow with
+BYE/CANCEL before the B-leg could fully answer. Root cause was call-manager
+never answering the master call-in channel while its peer joined the
+conference bridge. Fixed in monorepo `bin-call-manager` by
+`NOJIRA-Fix-call-bridge-auto-answer` (commit `f1dd2687a`, PR #1033): the join
+channel's `ChannelStateChange` to `Up` now auto-answers non-Up peer channels
+in the same call bridge. Covered by
+`pkg/confbridgehandler/ari_event_test.go` (`Test_ARIChannelStateChangeTypeJoin`,
+`Test_answerCallBridgePeers`). No further changes to this area since. Live
+E2E re-verification with an actual conference call is still pending in this
+sandbox (blocked on an unrelated Kamailio external-IP drift, see "Dynamic IP
+Detection" above) — remove this note entirely once that's confirmed.
 
 ## API Reference
 
