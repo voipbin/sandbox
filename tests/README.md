@@ -49,6 +49,7 @@ tests/
 ├── test_helper.bash              # Shared utilities and mocking functions
 ├── common.bats                   # Tests for scripts/common.sh
 ├── config.bats                   # Configuration validation tests
+├── doctor.bats                   # Tests for scripts/doctor.sh (install doctor, VOIP-1280)
 ├── init.bats                     # Tests for scripts/init.sh
 ├── setup-dns.bats                # Tests for scripts/setup-dns.sh
 └── setup-voip-network.bats       # Tests for scripts/setup-voip-network.sh
@@ -97,6 +98,11 @@ tests/
 - **Cross-file consistency**
   - Container IPs match between common.sh and docker-compose.yml
   - Internal network IPs consistent across scripts
+
+### doctor.bats (40 tests)
+- `scripts/doctor.sh` output grammar: `DOCTOR <name>: pass|fail|warn|skip` lines, `FIX <name>:` prescriptions, `VOIPBIN_DOCTOR:` result line, exit codes
+- Stage awareness (pre-install, pre-start, running), docker-availability gating, macOS gating
+- Prerequisite, install-state and runtime-pathology checks with seeded failures and exact prescription assertions
 
 ## Writing New Tests
 

@@ -450,6 +450,33 @@ load_check_install_functions() {
     CERTS_DIR="$TEST_TEMP_DIR/certs"
 }
 
+# Load doctor.sh functions without running main()
+# Same pattern as load_check_install_functions: strip the trailing main "$@"
+# call and skip re-sourcing common.sh (doctor.sh has no set -e by design).
+# The source-substring substitution's leading # comments out the whole guarded
+# source line, exit-2 guard suffix included.
+load_doctor_functions() {
+    source "$SCRIPTS_DIR/common.sh"
+
+    local temp_doctor="$TEST_TEMP_DIR/doctor_functions.sh"
+
+    sed -e '/^main "\$@"$/d' \
+        -e 's|source "\$SCRIPT_DIR/common.sh"|# common.sh already sourced|' \
+        "$SCRIPTS_DIR/doctor.sh" > "$temp_doctor"
+
+    source "$temp_doctor"
+
+    # Re-assert AFTER sourcing: the extracted snippet's own top-level
+    # SCRIPT_DIR=$(dirname BASH_SOURCE) resolves to the temp dir, which would
+    # break "$SCRIPT_DIR/<sub-script>" subprocess calls under test.
+    SCRIPT_DIR="$SCRIPTS_DIR"
+
+    # Re-assert test isolation
+    PROJECT_DIR="$TEST_TEMP_DIR"
+    ENV_FILE="$TEST_TEMP_DIR/.env"
+    CERTS_DIR="$TEST_TEMP_DIR/certs"
+}
+
 # Load setup-voip-network.sh functions
 # This script has inline code, so we need to be careful
 load_network_functions() {

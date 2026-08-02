@@ -115,6 +115,10 @@ sudo ./scripts/setup-host.sh
 ./scripts/check-install.sh
 ```
 
+If anything fails at any of these steps, run `./scripts/doctor.sh` as the
+optional diagnostic step: it is read-only, works at any stage, and prints
+the exact recovery command for every failure (see "Install doctor" below).
+
 `setup-host.sh` owns every host mutation: mkcert package + CA trust
 (internal only, with the two-pass CAROOT handoff), Corefile + DNS setup
 (internal only), the compose default docker network on fresh hosts, and
@@ -133,6 +137,7 @@ last line on stdout, on success and on failure (including `set -e` aborts):
 | `start.sh` | `VOIPBIN_START:` | `status=ok services=<running>/<total>` |
 | `check-install.sh` | `VOIPBIN_CHECK:` | `status=pass\|fail passed=N failed=M mode=<m>` |
 | `install-certs.sh` | `VOIPBIN_CERTS:` | `status=ok domain=<d> expires=<date>` |
+| `doctor.sh` | `VOIPBIN_DOCTOR:` | `status=pass\|fail passed=N failed=M warned=K mode=<internal\|external\|unknown>` |
 
 Failure shape for the first, second, third and fifth:
 `status=error reason="..."` (plus `next="..."` where a remedy exists).
@@ -141,6 +146,28 @@ Failure shape for the first, second, third and fifth:
 
 Exit codes: `0` success; `1` validation/user error; `2` environment error.
 `check-install.sh` exits `0` only when every check passes.
+
+### Install doctor (diagnose and prescribe)
+
+`./scripts/doctor.sh` (or `sudo ./voipbin doctor`) is the read-only
+diagnostic superset of `check-install.sh`. It runs at any stage
+(pre-install, mid-install, running stack), never mutates anything, and
+auto-skips whatever cannot be probed at the current stage.
+
+Output grammar: one `DOCTOR <name>: pass|fail|warn|skip <detail>` line per
+check; every fail (and every warn that has a remedy) is followed
+immediately by a `FIX <name>: <exact command or action>` line. The agent
+contract: `grep '^FIX '` on the output yields the ordered recovery
+commands, each exactly once (the summary re-lists them indented, without
+the FIX prefix). The last line is the `VOIPBIN_DOCTOR:` result line from
+the table above; `mode=unknown` appears before an `.env` exists and when
+`DOMAIN_MODE` holds an invalid value.
+
+Exit codes: `0` only when `failed=0` (warns and skips never fail the
+run); `1` when any check failed; `2` when the doctor cannot even start.
+In that last case the result line takes the early-abort shape
+`VOIPBIN_DOCTOR: status=error reason="..."` instead of the pass/fail
+shape, so parsers must handle all three status values.
 
 ### Caveat: mode/domain switching
 
