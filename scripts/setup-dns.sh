@@ -28,39 +28,57 @@ check_coredns() {
 # Linux (CoreDNS on port 53) configuration
 # ============================================================================
 
-# Backup file for original resolv.conf
-RESOLV_BACKUP="/etc/resolv.conf.voipbin-backup"
+# Backup file for original resolv.conf (overridable for bats — same pattern
+# as $RESOLV_CONF/$RESOLV_UPSTREAMS in common.sh; needed so setup_linux()/
+# uninstall_linux() can be exercised behaviorally in tests without touching
+# real /etc)
+RESOLV_BACKUP="${RESOLV_BACKUP:-/etc/resolv.conf.voipbin-backup}"
 
 setup_linux() {
     local host_ip="$1"
 
     log_step "Configuring Linux DNS (CoreDNS on port 53)..."
 
-    # Backup current resolv.conf if not already backed up
+    # Capture upstream fallback nameservers before anything else — must
+    # happen before the cleanup/restart block below, which can itself
+    # leave /run/systemd/resolve/resolv.conf momentarily stale if
+    # systemd-resolved is mid-restart.
+    #
+    # $RESOLV_UPSTREAMS stores bare IPs, one per line (no "nameserver "
+    # prefix — that's added later by write_resolv_conf_with_fallback).
+    # The validity check below must match that format: any non-blank
+    # line counts as a captured upstream. (An earlier version of this
+    # guard checked for a "nameserver " prefix, which $RESOLV_UPSTREAMS
+    # never contains — that guard was always true, so `refresh` mode was
+    # unreachable and every re-run silently re-ran `initial`, which can
+    # read source 2 (this script's own previously-written $RESOLV_CONF)
+    # and recover a stale upstream instead of detecting a genuine change.)
+    if [[ ! -s "$RESOLV_UPSTREAMS" ]] || ! grep -q '[^[:space:]]' "$RESOLV_UPSTREAMS"; then
+        capture_dns_upstreams initial
+    elif check_ip_changed; then
+        capture_dns_upstreams refresh
+    fi
+
+    # Backup current resolv.conf if not already backed up. Must happen
+    # before the cleanup block below so it captures pre-sandbox state, not
+    # state a systemd-resolved/NetworkManager restart may have altered.
     if [[ ! -f "$RESOLV_BACKUP" ]]; then
-        if [[ -L /etc/resolv.conf ]]; then
+        if [[ -L "$RESOLV_CONF" ]]; then
             # It's a symlink, save the target
-            readlink /etc/resolv.conf > "$RESOLV_BACKUP"
+            readlink "$RESOLV_CONF" > "$RESOLV_BACKUP"
             echo "symlink" >> "$RESOLV_BACKUP"
-        elif [[ -f /etc/resolv.conf ]]; then
+        elif [[ -f "$RESOLV_CONF" ]]; then
             # It's a file, copy it
-            cp /etc/resolv.conf "$RESOLV_BACKUP"
+            cp "$RESOLV_CONF" "$RESOLV_BACKUP"
         fi
         log_info "Backed up original resolv.conf"
     fi
 
-    # Create resolv.conf pointing to CoreDNS
-    rm -f /etc/resolv.conf
-    cat > /etc/resolv.conf << 'EOF'
-# VoIPBin Sandbox - DNS via CoreDNS
-# CoreDNS handles *.voipbin.test locally and forwards others to 8.8.8.8
-# To restore: sudo voipbin clean --dns
-nameserver 127.0.0.1
-EOF
-
-    log_info "Configured /etc/resolv.conf → CoreDNS (127.0.0.1:53)"
-
-    # Clean up old configurations
+    # Clean up old configurations — moved before the resolv.conf write
+    # below. systemctl restart systemd-resolved/NetworkManager can
+    # recreate $RESOLV_CONF as a symlink; running this first means our
+    # write (which unlinks unconditionally) always wins the race instead
+    # of possibly running before a restart that reverts it.
     if [[ -f /etc/systemd/resolved.conf.d/voipbin-sandbox.conf ]]; then
         rm -f /etc/systemd/resolved.conf.d/voipbin-sandbox.conf
         systemctl restart systemd-resolved 2>/dev/null || true
@@ -74,8 +92,17 @@ EOF
         systemctl restart NetworkManager 2>/dev/null || true
     fi
 
-    log_info "DNS configured: all queries → CoreDNS (127.0.0.1:53)"
-    log_info "CoreDNS forwards *.voipbin.test locally, others to 8.8.8.8"
+    # Create resolv.conf pointing to CoreDNS, with fallback nameservers
+    write_resolv_conf_with_fallback
+
+    log_info "Configured $RESOLV_CONF → CoreDNS (127.0.0.1:53) with fallback"
+
+    if systemctl is-active systemd-resolved &>/dev/null; then
+        log_warn "systemd-resolved is active but no longer manages $RESOLV_CONF until 'sudo ./scripts/setup-dns.sh --uninstall' runs — a future systemd-resolved restart (unrelated to this script) may revert this file"
+    fi
+
+    log_info "DNS configured: all queries → CoreDNS (127.0.0.1:53), fallback on CoreDNS failure"
+    log_info "CoreDNS forwards *.voipbin.test locally, others to fallback upstreams"
 }
 
 uninstall_linux() {
@@ -87,26 +114,28 @@ uninstall_linux() {
         if [[ "$last_line" == "symlink" ]]; then
             # Restore symlink
             local target=$(head -1 "$RESOLV_BACKUP")
-            rm -f /etc/resolv.conf
-            ln -s "$target" /etc/resolv.conf
+            rm -f "$RESOLV_CONF"
+            ln -s "$target" "$RESOLV_CONF"
             log_info "Restored resolv.conf symlink → $target"
         else
             # Restore file
-            rm -f /etc/resolv.conf
-            cp "$RESOLV_BACKUP" /etc/resolv.conf
+            rm -f "$RESOLV_CONF"
+            cp "$RESOLV_BACKUP" "$RESOLV_CONF"
             log_info "Restored original resolv.conf"
         fi
         rm -f "$RESOLV_BACKUP"
     else
         # No backup, create a sensible default
-        rm -f /etc/resolv.conf
-        cat > /etc/resolv.conf << 'EOF'
+        rm -f "$RESOLV_CONF"
+        cat > "$RESOLV_CONF" << 'EOF'
 # Default DNS configuration
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 EOF
         log_info "Created default resolv.conf (no backup found)"
     fi
+
+    rm -f "$RESOLV_UPSTREAMS"
 
     # Clean up any old configs
     if [[ -f /etc/systemd/resolved.conf.d/voipbin-sandbox.conf ]]; then
@@ -293,6 +322,16 @@ regenerate_corefile() {
             log_info "Updating .env with new IPs..."
             update_env_ips "$host_ip"
             ip_changed=true
+
+            # Host IP actually changed — refresh the DNS fallback
+            # upstreams too (a new gateway likely means a new upstream
+            # DNS server). Deliberately scoped to this real-IP-change
+            # branch, not the outer force_update guard: refreshing on
+            # every manual --regenerate would downgrade a good captured
+            # LAN upstream to the hardcoded 8.8.8.8/8.8.4.4 fallback for
+            # no reason.
+            capture_dns_upstreams refresh
+            write_resolv_conf_with_fallback
         fi
     fi
 

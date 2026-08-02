@@ -226,17 +226,32 @@ VoIPBin uses the `.voipbin.test` domain (IANA reserved TLD per RFC 2606) for SIP
 
 ### Architecture
 
-**Linux (CoreDNS on port 53):**
+**Linux (CoreDNS on port 53, with fallback — VOIP-1275, VOIP-1285):**
 ```
 Application / SIP Client
     ↓ DNS query
-/etc/resolv.conf → 127.0.0.1
-    ↓
-CoreDNS (Docker container, port 53)
+/etc/resolv.conf → 127.0.0.1 (primary), captured upstream(s) (fallback)
+    ↓ (CoreDNS reachable)         ↓ (CoreDNS unreachable)
+CoreDNS (Docker container,    original upstream DNS
+port 53)                      (e.g. router/ISP resolver)
     ↓
 *.voipbin.test → host IP (from Corefile)
 other queries  → 8.8.8.8 (forwarded)
 ```
+`/etc/resolv.conf` is not a bare `nameserver 127.0.0.1` — a downed/
+crashed CoreDNS container previously meant *all* host DNS resolution
+failed, not just `*.voipbin.test` (VOIP-1285). It now also carries up to
+two upstream nameservers captured at install time (from
+`/run/systemd/resolve/resolv.conf` when systemd-resolved is active, else
+the pre-existing `/etc/resolv.conf`, else a hardcoded `8.8.8.8`/`8.8.4.4`
+fallback) plus `options timeout:1 attempts:2` to bound worst-case latency
+if CoreDNS is up but unresponsive. **Known residual limitation**: on
+systemd-resolved hosts, this script takes over `/etc/resolv.conf` from
+systemd-resolved directly (not a scoped/cooperative handoff); a
+systemd-resolved restart triggered by something unrelated to this script
+(netplan/NetworkManager reconnect, suspend/resume) can still revert the
+file. `sudo ./scripts/setup-dns.sh --uninstall` is the supported way back
+to systemd-resolved-managed DNS.
 
 **macOS (/etc/resolver):**
 ```
@@ -253,8 +268,9 @@ Returns host IP (from config/coredns/Corefile)
 
 | File | Purpose |
 |------|---------|
-| `/etc/resolv.conf` | Linux: Points to 127.0.0.1 (CoreDNS) |
+| `/etc/resolv.conf` | Linux: Points to 127.0.0.1 (CoreDNS), plus fallback nameservers |
 | `/etc/resolv.conf.voipbin-backup` | Linux: Backup of original resolv.conf |
+| `/etc/resolv.conf.voipbin-upstreams` | Linux: Captured fallback upstream nameservers (VOIP-1285) |
 | `/etc/resolver/voipbin.test` | macOS: Routes .voipbin.test to CoreDNS |
 | `config/coredns/Corefile` | CoreDNS config (wildcard + forwarding) |
 
@@ -272,10 +288,13 @@ dig voipbin.test
 ping registrar.voipbin.test
 
 # Linux: Check resolv.conf
-cat /etc/resolv.conf  # Should show nameserver 127.0.0.1
+cat /etc/resolv.conf  # Should show nameserver 127.0.0.1 first, then fallback upstream(s)
 
 # Linux: Check backup exists
 cat /etc/resolv.conf.voipbin-backup
+
+# Linux: Check captured fallback upstreams
+cat /etc/resolv.conf.voipbin-upstreams
 
 # macOS: Check config
 cat /etc/resolver/voipbin.test

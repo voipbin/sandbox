@@ -539,7 +539,22 @@ sudo ./voipbin dns regenerate
 
 > **Note:** If you see `ERR_CERT_AUTHORITY_INVALID` after an IP change, run `sudo ./voipbin dns regenerate` to regenerate certificates and restart services.
 
-**Linux**: Modifies `/etc/resolv.conf` to use `127.0.0.1` (CoreDNS)
+**Linux**: Modifies `/etc/resolv.conf` to use `127.0.0.1` (CoreDNS) as the
+primary nameserver, with captured upstream nameservers appended as
+fallback lines (VOIP-1285) so a stopped/crashed CoreDNS container degrades
+to "voipbin.test stops resolving" instead of "all DNS resolution stops":
+```
+nameserver 127.0.0.1
+nameserver 192.168.1.1
+options timeout:1 attempts:2
+```
+On distros where `/etc/resolv.conf` is normally managed by
+systemd-resolved (a symlink to `/run/systemd/resolve/stub-resolv.conf`),
+this script takes over that file directly; systemd-resolved keeps running
+but no longer owns it until `sudo ./scripts/setup-dns.sh --uninstall`
+runs. A systemd-resolved restart triggered by something else on the host
+(netplan/NetworkManager reconnect, suspend/resume) can still revert this
+file — a known, disclosed limitation, not eliminated by VOIP-1285.
 **macOS**: Creates `/etc/resolver/voipbin.test` for selective forwarding
 
 ### Manual Host Mapping (Alternative)

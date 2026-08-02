@@ -107,6 +107,44 @@ setup_external_ip() {
     log_info "  External VoIP IP configured: $ext_ip on $iface"
 }
 
+# Check if host IP has changed and update .env / DNS / certs if needed.
+# Wrapped in a function (rather than left as top-level inline code) so it's
+# independently callable from bats via tests/test_helper.bash's
+# load_network_functions (VOIP-1285) — it extracts this script only up to
+# the `parse_args "$@"` call below, so anything meant to be testable must
+# be defined as a function above that line.
+handle_ip_change() {
+    IP_CHANGED=false
+    if check_ip_changed; then
+        local current_ip=$(detect_current_host_ip)
+        local configured_ip=$(get_configured_host_ip)
+        log_warn "Host IP changed: $configured_ip -> $current_ip"
+        log_info "Updating .env with new IPs..."
+        update_env_ips "$current_ip"
+
+        # Regenerate SSL certificate
+        regenerate_ssl_certs "$current_ip"
+
+        # Regenerate CoreDNS config + DNS fallback upstreams (internal
+        # mode only — this script runs in both modes under
+        # setup-host.sh, and external mode deploys no coredns, §2.4)
+        if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
+            local kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
+            generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
+            log_info "CoreDNS configuration regenerated"
+
+            # Host IP changed -> refresh DNS fallback upstreams too (a
+            # new gateway likely means a new upstream DNS server).
+            capture_dns_upstreams refresh
+            write_resolv_conf_with_fallback
+        else
+            log_info "External mode: operator DNS may need updating (HOST_EXTERNAL_IP changed)"
+        fi
+
+        IP_CHANGED=true
+    fi
+}
+
 # Parse command line arguments
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -135,30 +173,8 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Check if host IP has changed and update .env if needed
-IP_CHANGED=false
-if check_ip_changed; then
-    current_ip=$(detect_current_host_ip)
-    configured_ip=$(get_configured_host_ip)
-    log_warn "Host IP changed: $configured_ip -> $current_ip"
-    log_info "Updating .env with new IPs..."
-    update_env_ips "$current_ip"
-
-    # Regenerate SSL certificate
-    regenerate_ssl_certs "$current_ip"
-
-    # Regenerate CoreDNS config (internal mode only — this script runs in both
-    # modes under setup-host.sh, and external mode deploys no coredns, §2.4)
-    if [[ "$(get_domain_mode "$PROJECT_DIR/.env")" == "internal" ]]; then
-        kamailio_ip=$(grep '^KAMAILIO_EXTERNAL_IP=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1)
-        generate_coredns_config "$current_ip" "$PROJECT_DIR/config/coredns" "$kamailio_ip"
-        log_info "CoreDNS configuration regenerated"
-    else
-        log_info "External mode: operator DNS may need updating (HOST_EXTERNAL_IP changed)"
-    fi
-
-    IP_CHANGED=true
-fi
+# Check if host IP has changed and update .env / DNS / certs if needed
+handle_ip_change
 
 # Load external IPs from .env (may have just been updated)
 load_external_ips
