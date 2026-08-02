@@ -12,6 +12,71 @@ teardown() {
 }
 
 # =============================================================================
+# handle_ip_change() tests (VOIP-1285)
+# =============================================================================
+# handle_ip_change() was extracted from top-level inline code into a
+# function specifically so it's reachable here via load_network_functions
+# (which only extracts up to the `parse_args "$@"` line).
+
+setup_ip_change_test_paths() {
+    RESOLV_CONF="$TEST_TEMP_DIR/resolv.conf"
+    RESOLV_UPSTREAMS="$TEST_TEMP_DIR/resolv.conf.voipbin-upstreams"
+    SYSTEMD_RESOLVE_CONF="$TEST_TEMP_DIR/systemd-resolve.conf"
+    export RESOLV_CONF RESOLV_UPSTREAMS SYSTEMD_RESOLVE_CONF
+}
+
+@test "handle_ip_change refreshes DNS fallback upstreams when IP changed (internal mode)" {
+    setup_ip_change_test_paths
+    create_env_file \
+        "DOMAIN_MODE=internal" \
+        "TLS_MODE=byo" \
+        "HOST_EXTERNAL_IP=192.168.1.100" \
+        "KAMAILIO_EXTERNAL_IP=192.168.1.108"
+    mock_ip_route "192.168.1.200"  # differs from configured HOST_EXTERNAL_IP
+    load_network_functions
+
+    handle_ip_change
+
+    assert_equal "$IP_CHANGED" "true"
+    assert_file_contains "$RESOLV_CONF" "nameserver 127.0.0.1"
+    [[ -f "$RESOLV_UPSTREAMS" ]]
+    assert_file_contains "$PROJECT_DIR/config/coredns/Corefile" "192.168.1.200"
+}
+
+@test "handle_ip_change does not touch DNS in external mode even when IP changed" {
+    setup_ip_change_test_paths
+    create_env_file \
+        "DOMAIN_MODE=external" \
+        "TLS_MODE=byo" \
+        "HOST_EXTERNAL_IP=192.168.1.100"
+    mock_ip_route "192.168.1.200"
+    load_network_functions
+
+    handle_ip_change
+
+    assert_equal "$IP_CHANGED" "true"
+    [[ ! -f "$RESOLV_CONF" ]]
+    [[ ! -f "$RESOLV_UPSTREAMS" ]]
+}
+
+@test "handle_ip_change is a no-op when the host IP is unchanged" {
+    setup_ip_change_test_paths
+    create_env_file \
+        "DOMAIN_MODE=internal" \
+        "TLS_MODE=byo" \
+        "HOST_EXTERNAL_IP=192.168.1.100" \
+        "KAMAILIO_EXTERNAL_IP=192.168.1.108"
+    mock_ip_route "192.168.1.100"  # matches configured HOST_EXTERNAL_IP
+    load_network_functions
+
+    handle_ip_change
+
+    assert_equal "$IP_CHANGED" "false"
+    [[ ! -f "$RESOLV_CONF" ]]
+    [[ ! -f "$RESOLV_UPSTREAMS" ]]
+}
+
+# =============================================================================
 # detect_physical_interface() tests
 # =============================================================================
 

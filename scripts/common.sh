@@ -475,6 +475,92 @@ EOF
 }
 
 # =============================================================================
+# DNS Fallback / Upstream Capture (VOIP-1285)
+# =============================================================================
+# Overridable so bats can point these at a temp dir instead of real /etc
+# and /run (both normally require root to write).
+RESOLV_CONF="${RESOLV_CONF:-/etc/resolv.conf}"
+RESOLV_UPSTREAMS="${RESOLV_UPSTREAMS:-/etc/resolv.conf.voipbin-upstreams}"
+SYSTEMD_RESOLVE_CONF="${SYSTEMD_RESOLVE_CONF:-/run/systemd/resolve/resolv.conf}"
+
+# _filter_and_dedupe_nameservers: reads nameserver IPs on stdin (one per
+# line), drops loopback/link-local/IPv6-loopback entries, dedupes, caps at 2.
+_filter_and_dedupe_nameservers() {
+    # fe[89ab] covers the full fe80::/10 link-local block (first 10 bits
+    # fixed), not just the literal "fe80:" prefix.
+    grep -viE '^(127\.|169\.254\.|::1$|fe[89ab])' | awk '!seen[$0]++' | head -n 2
+}
+
+# capture_dns_upstreams <initial|refresh>
+# Captures upstream (non-CoreDNS) nameservers into $RESOLV_UPSTREAMS, for use
+# as a fallback chain so a downed CoreDNS container doesn't take down all
+# host DNS resolution.
+#
+# initial: systemd-resolved live file -> plain resolv.conf -> hardcoded
+#          Corefile-forward targets. Only correct before this script has
+#          ever rewritten $RESOLV_CONF.
+# refresh: systemd-resolved live file -> hardcoded Corefile-forward targets.
+#          Deliberately skips "read $RESOLV_CONF" — at refresh time that
+#          file is our own previously-generated output, so re-reading it
+#          would just recover the (possibly now-stale) previous fallback
+#          instead of finding a new upstream.
+capture_dns_upstreams() {
+    local mode="$1"
+    local upstreams=""
+
+    if [[ -f "$SYSTEMD_RESOLVE_CONF" ]]; then
+        upstreams=$(grep -E '^nameserver[[:space:]]+' "$SYSTEMD_RESOLVE_CONF" \
+            | awk '{print $2}' | _filter_and_dedupe_nameservers)
+    fi
+
+    if [[ -z "$upstreams" && "$mode" == "initial" && -f "$RESOLV_CONF" ]]; then
+        upstreams=$(grep -E '^nameserver[[:space:]]+' "$RESOLV_CONF" \
+            | awk '{print $2}' | _filter_and_dedupe_nameservers)
+    fi
+
+    if [[ -z "$upstreams" ]]; then
+        # Same trust boundary as generate_coredns_config's "forward" target —
+        # a hardcoded literal, not a read-back of a generated Corefile.
+        upstreams=$'8.8.8.8\n8.8.4.4'
+    fi
+
+    printf '%s\n' "$upstreams" > "$RESOLV_UPSTREAMS"
+}
+
+# write_resolv_conf_with_fallback: writes $RESOLV_CONF as
+#   nameserver 127.0.0.1 (CoreDNS)
+#   nameserver <upstream-1>      (from $RESOLV_UPSTREAMS, up to 2)
+#   nameserver <upstream-2>
+#   options timeout:1 attempts:2
+# capture_dns_upstreams must have been called at least once before this
+# (directly, or in an earlier run whose state file still exists).
+write_resolv_conf_with_fallback() {
+    local upstream_lines=""
+    if [[ -f "$RESOLV_UPSTREAMS" ]]; then
+        # Defense in depth: cap at 2 here too (not just at capture time in
+        # _filter_and_dedupe_nameservers), so 127.0.0.1 + these never
+        # exceeds glibc's MAXNS=3 even if $RESOLV_UPSTREAMS ever ends up
+        # with extra lines (manual edit, future capture-path bug, etc.).
+        upstream_lines=$(head -n 2 "$RESOLV_UPSTREAMS" | sed 's/^/nameserver /')
+    fi
+
+    # Cleanup/restart of systemd-resolved or NetworkManager (run by the
+    # caller before this, see setup-dns.sh) can recreate $RESOLV_CONF as a
+    # symlink (e.g. back to /run/systemd/resolve/stub-resolv.conf). Unlink
+    # first so `cat >` replaces it instead of writing through the symlink.
+    rm -f "$RESOLV_CONF"
+    {
+        echo "# VoIPBin Sandbox - DNS via CoreDNS"
+        echo "# CoreDNS handles *.voipbin.test locally and forwards others upstream."
+        echo "# Fallback nameservers below are used if CoreDNS is unreachable."
+        echo "# To restore: sudo ./scripts/setup-dns.sh --uninstall"
+        echo "nameserver 127.0.0.1"
+        [[ -n "$upstream_lines" ]] && echo "$upstream_lines"
+        echo "options timeout:1 attempts:2"
+    } > "$RESOLV_CONF"
+}
+
+# =============================================================================
 # OS Detection
 # =============================================================================
 detect_os() {
