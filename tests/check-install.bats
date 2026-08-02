@@ -13,6 +13,7 @@ setup() {
     setup_test_env
     RESOLV_FIXTURE="$TEST_TEMP_DIR/resolv.conf"
     RESOLV_BACKUP_FIXTURE="$TEST_TEMP_DIR/resolv.conf.voipbin-backup"
+    RESOLV_UPSTREAMS_FIXTURE="$TEST_TEMP_DIR/resolv.conf.voipbin-upstreams"
 }
 
 teardown() {
@@ -24,6 +25,7 @@ teardown() {
 run_check() {
     run env -u COMPOSE_PROFILES \
         RESOLV_CONF="$RESOLV_FIXTURE" RESOLV_BACKUP="$RESOLV_BACKUP_FIXTURE" \
+        RESOLV_UPSTREAMS="$RESOLV_UPSTREAMS_FIXTURE" \
         bash "$SCRIPTS_DIR/check-install.sh"
 }
 
@@ -256,6 +258,76 @@ exit 1'
 
     [[ "$status" -eq 1 ]]
     [[ "$output" == *'CHECK resolv-conf: fail'* ]]
+}
+
+@test "internal resolv-conf pass detail reports fallback upstream count" {
+    make_internal_env
+    stub_docker_healthy "voipbin.test"
+    stub_dig "192.168.1.100" "192.168.1.108"
+    stub_curl_ok
+    echo "nameserver 127.0.0.1" > "$RESOLV_FIXTURE"
+    printf '8.8.8.8\n8.8.4.4\n' > "$RESOLV_UPSTREAMS_FIXTURE"
+
+    run_check
+
+    [[ "$output" == *'CHECK resolv-conf: pass'* ]]
+    [[ "$output" == *'fallback: 2 upstream(s)'* ]]
+}
+
+@test "internal resolv-conf pass detail stays a single line when the upstreams state file exists but is empty" {
+    make_internal_env
+    stub_docker_healthy "voipbin.test"
+    stub_dig "192.168.1.100" "192.168.1.108"
+    stub_curl_ok
+    echo "nameserver 127.0.0.1" > "$RESOLV_FIXTURE"
+    : > "$RESOLV_UPSTREAMS_FIXTURE"  # exists, but empty (killed process, corruption, etc.)
+
+    run_check
+
+    # A `grep -c` zero-match/command-substitution bug would emit a
+    # two-line "0\n0" count here, splitting the CHECK line in two and
+    # breaking the "one CHECK line per check" output contract.
+    local resolv_conf_lines
+    resolv_conf_lines=$(printf '%s\n' "$output" | command grep -c '^CHECK resolv-conf:')
+    assert_equal "$resolv_conf_lines" "1"
+    [[ "$output" == *'CHECK resolv-conf: pass'* ]]
+    [[ "$output" == *'fallback: 0 upstream(s)'* ]]
+}
+
+@test "internal resolv-conf pass detail reports zero fallback upstreams when state file is absent" {
+    make_internal_env
+    stub_docker_healthy "voipbin.test"
+    stub_dig "192.168.1.100" "192.168.1.108"
+    stub_curl_ok
+    echo "nameserver 127.0.0.1" > "$RESOLV_FIXTURE"
+    # No $RESOLV_UPSTREAMS_FIXTURE file created.
+
+    run_check
+
+    [[ "$output" == *'CHECK resolv-conf: pass'* ]]
+    [[ "$output" == *'fallback: 0 upstream(s)'* ]]
+}
+
+@test "external leftover upstreams-state file alone fails resolv-conf (backup and hijack both absent)" {
+    make_external_env
+    stub_docker_healthy "registrar.example.com"
+    stub_dig "203.0.113.10" "203.0.113.11"
+    stub_curl_ok
+    echo "nameserver 8.8.8.8" > "$RESOLV_FIXTURE"
+    printf '8.8.8.8\n' > "$RESOLV_UPSTREAMS_FIXTURE"
+    mkdir -p "$CERTS_DIR/api"
+    openssl req -x509 -nodes -newkey rsa:2048 -days 90 \
+        -keyout "$CERTS_DIR/api/privkey.pem" -out "$CERTS_DIR/api/cert.pem" \
+        -subj "/CN=example.com" 2>/dev/null
+
+    run_check
+
+    [[ "$status" -eq 1 ]]
+    [[ "$output" == *'CHECK resolv-conf: fail'* ]]
+    [[ "$output" == *'upstreams=true'* ]]
+    [[ "$output" == *'hijacked=false'* ]]
+    [[ "$output" == *'backup=false'* ]]
+    [[ "$output" == *'setup-dns.sh --uninstall'* ]]
 }
 
 @test "external leftover resolv.conf hijack fails naming setup-dns.sh --uninstall" {

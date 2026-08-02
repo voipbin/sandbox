@@ -115,6 +115,10 @@ sudo ./scripts/setup-host.sh
 ./scripts/check-install.sh
 ```
 
+If anything fails at any of these steps, run `./scripts/doctor.sh` as the
+optional diagnostic step: it is read-only, works at any stage, and prints
+the exact recovery command for every failure (see "Install doctor" below).
+
 `setup-host.sh` owns every host mutation: mkcert package + CA trust
 (internal only, with the two-pass CAROOT handoff), Corefile + DNS setup
 (internal only), the compose default docker network on fresh hosts, and
@@ -133,6 +137,7 @@ last line on stdout, on success and on failure (including `set -e` aborts):
 | `start.sh` | `VOIPBIN_START:` | `status=ok services=<running>/<total>` |
 | `check-install.sh` | `VOIPBIN_CHECK:` | `status=pass\|fail passed=N failed=M mode=<m>` |
 | `install-certs.sh` | `VOIPBIN_CERTS:` | `status=ok domain=<d> expires=<date>` |
+| `doctor.sh` | `VOIPBIN_DOCTOR:` | `status=pass\|fail passed=N failed=M warned=K mode=<internal\|external\|unknown>` |
 
 Failure shape for the first, second, third and fifth:
 `status=error reason="..."` (plus `next="..."` where a remedy exists).
@@ -141,6 +146,28 @@ Failure shape for the first, second, third and fifth:
 
 Exit codes: `0` success; `1` validation/user error; `2` environment error.
 `check-install.sh` exits `0` only when every check passes.
+
+### Install doctor (diagnose and prescribe)
+
+`./scripts/doctor.sh` (or `sudo ./voipbin doctor`) is the read-only
+diagnostic superset of `check-install.sh`. It runs at any stage
+(pre-install, mid-install, running stack), never mutates anything, and
+auto-skips whatever cannot be probed at the current stage.
+
+Output grammar: one `DOCTOR <name>: pass|fail|warn|skip <detail>` line per
+check; every fail (and every warn that has a remedy) is followed
+immediately by a `FIX <name>: <exact command or action>` line. The agent
+contract: `grep '^FIX '` on the output yields the ordered recovery
+commands, each exactly once (the summary re-lists them indented, without
+the FIX prefix). The last line is the `VOIPBIN_DOCTOR:` result line from
+the table above; `mode=unknown` appears before an `.env` exists and when
+`DOMAIN_MODE` holds an invalid value.
+
+Exit codes: `0` only when `failed=0` (warns and skips never fail the
+run); `1` when any check failed; `2` when the doctor cannot even start.
+In that last case the result line takes the early-abort shape
+`VOIPBIN_DOCTOR: status=error reason="..."` instead of the pass/fail
+shape, so parsers must handle all three status values.
 
 ### Caveat: mode/domain switching
 
@@ -199,17 +226,32 @@ VoIPBin uses the `.voipbin.test` domain (IANA reserved TLD per RFC 2606) for SIP
 
 ### Architecture
 
-**Linux (CoreDNS on port 53):**
+**Linux (CoreDNS on port 53, with fallback — VOIP-1275, VOIP-1285):**
 ```
 Application / SIP Client
     ↓ DNS query
-/etc/resolv.conf → 127.0.0.1
-    ↓
-CoreDNS (Docker container, port 53)
+/etc/resolv.conf → 127.0.0.1 (primary), captured upstream(s) (fallback)
+    ↓ (CoreDNS reachable)         ↓ (CoreDNS unreachable)
+CoreDNS (Docker container,    original upstream DNS
+port 53)                      (e.g. router/ISP resolver)
     ↓
 *.voipbin.test → host IP (from Corefile)
 other queries  → 8.8.8.8 (forwarded)
 ```
+`/etc/resolv.conf` is not a bare `nameserver 127.0.0.1` — a downed/
+crashed CoreDNS container previously meant *all* host DNS resolution
+failed, not just `*.voipbin.test` (VOIP-1285). It now also carries up to
+two upstream nameservers captured at install time (from
+`/run/systemd/resolve/resolv.conf` when systemd-resolved is active, else
+the pre-existing `/etc/resolv.conf`, else a hardcoded `8.8.8.8`/`8.8.4.4`
+fallback) plus `options timeout:1 attempts:2` to bound worst-case latency
+if CoreDNS is up but unresponsive. **Known residual limitation**: on
+systemd-resolved hosts, this script takes over `/etc/resolv.conf` from
+systemd-resolved directly (not a scoped/cooperative handoff); a
+systemd-resolved restart triggered by something unrelated to this script
+(netplan/NetworkManager reconnect, suspend/resume) can still revert the
+file. `sudo ./scripts/setup-dns.sh --uninstall` is the supported way back
+to systemd-resolved-managed DNS.
 
 **macOS (/etc/resolver):**
 ```
@@ -226,8 +268,9 @@ Returns host IP (from config/coredns/Corefile)
 
 | File | Purpose |
 |------|---------|
-| `/etc/resolv.conf` | Linux: Points to 127.0.0.1 (CoreDNS) |
+| `/etc/resolv.conf` | Linux: Points to 127.0.0.1 (CoreDNS), plus fallback nameservers |
 | `/etc/resolv.conf.voipbin-backup` | Linux: Backup of original resolv.conf |
+| `/etc/resolv.conf.voipbin-upstreams` | Linux: Captured fallback upstream nameservers (VOIP-1285) |
 | `/etc/resolver/voipbin.test` | macOS: Routes .voipbin.test to CoreDNS |
 | `config/coredns/Corefile` | CoreDNS config (wildcard + forwarding) |
 
@@ -245,10 +288,13 @@ dig voipbin.test
 ping registrar.voipbin.test
 
 # Linux: Check resolv.conf
-cat /etc/resolv.conf  # Should show nameserver 127.0.0.1
+cat /etc/resolv.conf  # Should show nameserver 127.0.0.1 first, then fallback upstream(s)
 
 # Linux: Check backup exists
 cat /etc/resolv.conf.voipbin-backup
+
+# Linux: Check captured fallback upstreams
+cat /etc/resolv.conf.voipbin-upstreams
 
 # macOS: Check config
 cat /etc/resolver/voipbin.test

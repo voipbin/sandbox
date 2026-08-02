@@ -294,13 +294,25 @@ check_scheduler() {
 # internal: must point at CoreDNS (127.0.0.1).
 # external: must be untouched — no 127.0.0.1 hijack and no .voipbin-backup.
 check_resolv_conf() {
-    local hijacked="false" backup_exists="false"
+    local hijacked="false" backup_exists="false" upstreams_exists="false" fallback_count=0
     grep -qE "^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.1" "$RESOLV_CONF" 2>/dev/null && hijacked="true"
     [[ -f "$RESOLV_BACKUP" ]] && backup_exists="true"
+    if [[ -f "$RESOLV_UPSTREAMS" ]]; then
+        upstreams_exists="true"
+        # $RESOLV_UPSTREAMS stores bare IPs, one per line (no "nameserver "
+        # prefix — that's added when write_resolv_conf_with_fallback
+        # composes $RESOLV_CONF from this file).
+        # `grep -c` exits 1 on a zero match, and `|| echo 0` inside a
+        # command substitution would then capture BOTH grep's own "0"
+        # stdout and the echo's "0" — a two-line result that corrupts the
+        # single-line CHECK output contract. Split the fallback out.
+        fallback_count=$(grep -c '.' "$RESOLV_UPSTREAMS" 2>/dev/null)
+        fallback_count="${fallback_count:-0}"
+    fi
 
     if [[ "$CHECK_MODE" == "internal" ]]; then
         if [[ "$hijacked" == "true" ]]; then
-            check_result resolv-conf pass "$RESOLV_CONF points at CoreDNS (127.0.0.1)"
+            check_result resolv-conf pass "$RESOLV_CONF points at CoreDNS (127.0.0.1), fallback: $fallback_count upstream(s)"
         else
             check_result resolv-conf fail "$RESOLV_CONF does not point at 127.0.0.1 — run: sudo ./scripts/setup-host.sh"
         fi
@@ -308,10 +320,10 @@ check_resolv_conf() {
     fi
 
     # external: leftover internal-mode DNS hijack state is a failure
-    if [[ "$hijacked" == "true" || "$backup_exists" == "true" ]]; then
-        check_result resolv-conf fail "leftover internal-mode DNS state (hijacked=$hijacked backup=$backup_exists) — run: sudo ./scripts/setup-dns.sh --uninstall"
+    if [[ "$hijacked" == "true" || "$backup_exists" == "true" || "$upstreams_exists" == "true" ]]; then
+        check_result resolv-conf fail "leftover internal-mode DNS state (hijacked=$hijacked backup=$backup_exists upstreams=$upstreams_exists) — run: sudo ./scripts/setup-dns.sh --uninstall"
     else
-        check_result resolv-conf pass "resolv.conf untouched (no hijack, no backup)"
+        check_result resolv-conf pass "resolv.conf untouched (no hijack, no backup, no upstreams state)"
     fi
 }
 

@@ -1714,6 +1714,10 @@ class VoIPBinCLI:
         self.context = None  # None = top-level, or "asterisk", "kamailio", "db", "api"
         self.api_token = None
         self.running = True
+        # Exit code of the last `doctor` run; the non-interactive dispatch in
+        # main() propagates it (the 0/1 exit code is part of the machine
+        # contract for agents scripting `sudo ./voipbin doctor`, design §7).
+        self.last_doctor_rc = 0
 
         # Disable colors if configured
         if not self.config.get("colors", True):
@@ -1725,6 +1729,7 @@ class VoIPBinCLI:
             "?": self.cmd_help,
             "status": self.cmd_status,
             "ps": self.cmd_status,
+            "doctor": self.cmd_doctor,
             "start": self.cmd_start,
             "stop": self.cmd_stop,
             "restart": self.cmd_restart,
@@ -1778,6 +1783,7 @@ class VoIPBinCLI:
         self.help_text = {
             "status": ("Show service status", "status"),
             "ps": ("Alias for status", "ps"),
+            "doctor": ("Diagnose install and runtime state (read-only)", "doctor\n  Runs scripts/doctor.sh at any stage (pre-install, pre-start, running).\n  Prints one 'DOCTOR <name>: pass|fail|warn|skip' line per check and a\n  'FIX <name>: <command>' prescription for every failure.\n  Exit code 0 only when no check failed."),
             "start": ("Start services", "start [service] [--no-pin]\n  start              Start all services (pins versions on first run)\n  start --no-pin     Start without version pinning\n  start api-manager  Start specific service"),
             "stop": ("Stop services", "stop [service] [--all]\n  stop            Stop app services (keeps db/redis/mq/dns running)\n  stop kamailio   Stop specific service\n  stop --all      Stop all services including infrastructure"),
             "restart": ("Restart services (Asterisk owner+proxy sidecars always paired)", "restart [service]"),
@@ -1894,6 +1900,7 @@ class VoIPBinCLI:
 
 {blue('Service Commands:')}
   status, ps        Show service status
+  doctor            Diagnose install and runtime state (read-only)
   start [service]   Start services
   stop [--all]      Stop app services (--all for everything)
   restart [service] Restart services
@@ -4655,6 +4662,24 @@ Type 'registrar <subcommand> help' for more details.
         print("This will generate .env and certificates.\n")
         os.system(script_path)
 
+    def cmd_doctor(self, args):
+        """Run the install doctor (diagnose and prescribe, read-only)"""
+        script_dir = self.config.get("project_dir", ".")
+        script_path = os.path.join(script_dir, "scripts", "doctor.sh")
+
+        if not os.path.exists(script_path):
+            print(red(f"Doctor script not found: {script_path}"))
+            self.last_doctor_rc = 2
+            return
+
+        # subprocess.call returns a real exit code (the cmd_init precedent's
+        # shell-out returns a raw wait status and must not be propagated).
+        # Run via bash so a lost exec bit cannot raise PermissionError.
+        # Only the non-interactive dispatch in main() exits with this value;
+        # a bare sys.exit here would kill the interactive REPL, so the REPL
+        # path just returns to the prompt.
+        self.last_doctor_rc = subprocess.call(["bash", script_path], cwd=script_dir)
+
     def cmd_clean(self, args):
         """Cleanup sandbox"""
         if not args:
@@ -6628,6 +6653,7 @@ Usage:
 
 Commands:
   status              Show service status
+  doctor              Diagnose install/runtime state and print fixes (read-only)
   start [service]     Start all services (or specific service)
   stop [--all]        Stop app services (--all for everything)
   restart [service]   Restart services
@@ -6683,6 +6709,12 @@ def main():
 
         if cmd in cli.commands:
             cli.commands[cmd](args)
+            # doctor's 0/1 exit code is part of the machine contract for
+            # agents scripting `sudo ./voipbin doctor` (design §7). Only this
+            # non-interactive path exits with it; the REPL path returns to
+            # the prompt instead.
+            if cmd == "doctor" and cli.last_doctor_rc:
+                sys.exit(cli.last_doctor_rc)
         else:
             print(red(f"Unknown command: {cmd}"))
             print("Run 'sudo ./voipbin --help' for usage.")
