@@ -156,8 +156,13 @@ sudo ./scripts/setup-host.sh     # 2. The single sudo command (host mutations)
 
 Every entry-point script ends with a machine-parseable result line
 (`VOIPBIN_INIT:`, `VOIPBIN_SETUP_HOST:`, `VOIPBIN_START:`,
-`VOIPBIN_CHECK:`, `VOIPBIN_CERTS:`). The full contract is documented in
-[CLAUDE.md](CLAUDE.md).
+`VOIPBIN_CHECK:`, `VOIPBIN_CERTS:`, `VOIPBIN_DOCTOR:`). The full contract
+is documented in [CLAUDE.md](CLAUDE.md).
+
+If any step fails, `./scripts/doctor.sh` is the recovery entry point: a
+read-only diagnostic that works at any stage (before init, mid-install,
+or against a running stack) and prints a `FIX <name>: <command>` line
+with the exact remedy for every failure it finds.
 
 ---
 
@@ -1010,6 +1015,12 @@ All managers connect to MySQL, Redis, and RabbitMQ. Key services:
 ### Quick Diagnostics
 
 ```bash
+# First thing to run: diagnose everything and get the exact fix per failure
+# (read-only, works at any stage; unprivileged)
+./scripts/doctor.sh
+# or
+sudo ./voipbin doctor
+
 # Check overall status
 sudo ./voipbin status
 

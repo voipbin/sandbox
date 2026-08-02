@@ -274,6 +274,87 @@ def test_crlf_env_values_are_trimmed(cli_module, tmp_dir):
     print("ok test_crlf_env_values_are_trimmed")
 
 
+def write_doctor_stub(project_dir, exit_code):
+    """Write a scripts/doctor.sh stub with the given exit code."""
+    scripts_dir = os.path.join(project_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    path = os.path.join(scripts_dir, "doctor.sh")
+    with open(path, "w") as f:
+        f.write(f"#!/bin/bash\necho DOCTOR-STUB\nexit {exit_code}\n")
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def test_doctor_registered_and_repl_path_returns(cli_module, tmp_dir, log_path):
+    """Doctor scenario 11 (VOIP-1280 design §8): registration in cli.commands
+    (guards against the cmd_hook defined-but-unregistered gap) and the REPL
+    path storing the REAL exit code without exiting the process."""
+    cli, project_dir = make_cli(tmp_dir, INTERNAL_ENV, cli_module)
+
+    # Registered in all lookup surfaces (the anti-cmd_hook assertion)
+    assert "doctor" in cli.commands, sorted(cli.commands)
+    assert cli.commands["doctor"] == cli.cmd_doctor
+    assert "doctor" in cli.help_text, sorted(cli.help_text)
+
+    # REPL path: handler returns normally (no SystemExit) and stores the real
+    # exit code, not a raw shell-out wait status (which would be 256).
+    doctor_path = write_doctor_stub(project_dir, 1)
+    capture(cli.cmd_doctor, [])
+    assert cli.last_doctor_rc == 1, cli.last_doctor_rc
+
+    write_doctor_stub(project_dir, 0)
+    capture(cli.cmd_doctor, [])
+    assert cli.last_doctor_rc == 0, cli.last_doctor_rc
+
+    # Missing script: existence guard, no exception, environment-error code
+    os.remove(doctor_path)
+    out = capture(cli.cmd_doctor, [])
+    assert "not found" in out.lower(), out
+    assert cli.last_doctor_rc == 2, cli.last_doctor_rc
+    print("ok test_doctor_registered_and_repl_path_returns")
+
+
+def test_doctor_noninteractive_dispatch_propagates_exit_code(cli_module, tmp_dir, log_path):
+    """The non-interactive `voipbin doctor` path must exit with doctor.sh's
+    exit code (part of the machine contract); exit 0 stays a plain return."""
+    project_dir = os.path.join(tmp_dir, "project")
+    os.makedirs(project_dir, exist_ok=True)
+    write_env(project_dir, INTERNAL_ENV)
+    prev_project_dir = os.environ.get("VOIPBIN_PROJECT_DIR")
+    os.environ["VOIPBIN_PROJECT_DIR"] = project_dir
+
+    orig_check_root = cli_module.check_root
+    orig_argv = sys.argv
+    prev_cwd = os.getcwd()
+    cli_module.check_root = lambda: None
+    try:
+        write_doctor_stub(project_dir, 1)
+        sys.argv = ["voipbin", "doctor"]
+        raised = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_module.main()
+        except SystemExit as e:
+            raised = e
+        assert raised is not None, "main() did not propagate doctor's exit code"
+        assert raised.code == 1, raised.code
+
+        # exit 0: no SystemExit, main() returns normally
+        os.chdir(prev_cwd)
+        write_doctor_stub(project_dir, 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli_module.main()
+    finally:
+        cli_module.check_root = orig_check_root
+        sys.argv = orig_argv
+        os.chdir(prev_cwd)
+        if prev_project_dir is None:
+            os.environ.pop("VOIPBIN_PROJECT_DIR", None)
+        else:
+            os.environ["VOIPBIN_PROJECT_DIR"] = prev_project_dir
+    print("ok test_doctor_noninteractive_dispatch_propagates_exit_code")
+
+
 def main():
     tmp_dir = tempfile.mkdtemp(prefix="voipbin-cli-mode-test.")
     prev_path = os.environ.get("PATH", "")
@@ -293,6 +374,8 @@ def main():
         test_test_call_defaults_from_env(tmp_dir)
         test_softphone_defaults_from_env(tmp_dir)
         test_crlf_env_values_are_trimmed(cli_module, tmp_dir)
+        test_doctor_registered_and_repl_path_returns(cli_module, tmp_dir, log_path)
+        test_doctor_noninteractive_dispatch_propagates_exit_code(cli_module, tmp_dir, log_path)
 
         print("All test_cli_mode.py tests passed")
     finally:
