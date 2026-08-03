@@ -228,3 +228,125 @@ exit 1'
     last_line=$(echo "$output" | tail -1)
     [[ "$last_line" =~ ^VOIPBIN_START:\ status=error ]]
 }
+
+# =============================================================================
+# check_database_initialized (VOIP-1289): a partial migration must not be
+# mistaken for "done" — bin_manager alone having tables is not sufficient,
+# both schemas must be at some alembic revision.
+# =============================================================================
+
+@test "check_database_initialized fails when only bin_manager has tables (asterisk never migrated)" {
+    load_start_functions
+    mock_command_script "docker" '
+if [[ "$*" == *"bin_manager.alembic_version"* ]]; then
+    echo "a5e6f559299c"
+elif [[ "$*" == *"asterisk.alembic_version"* ]]; then
+    exit 1
+elif [[ "$*" == *"information_schema.TABLES"* ]]; then
+    echo "42"
+fi
+'
+
+    run check_database_initialized
+
+    [[ "$status" -eq 1 ]]
+}
+
+@test "check_database_initialized passes when both schemas have an alembic version" {
+    load_start_functions
+    mock_command_script "docker" '
+if [[ "$*" == *"bin_manager.alembic_version"* ]]; then
+    echo "a5e6f559299c"
+elif [[ "$*" == *"asterisk.alembic_version"* ]]; then
+    echo "c07b40884361"
+elif [[ "$*" == *"information_schema.TABLES"* ]]; then
+    echo "42"
+fi
+'
+
+    run check_database_initialized
+
+    [[ "$status" -eq 0 ]]
+}
+
+@test "check_database_initialized fails on a completely fresh (empty) database" {
+    load_start_functions
+    mock_command_script "docker" '
+if [[ "$*" == *"information_schema.TABLES"* ]]; then
+    echo "0"
+fi
+'
+
+    run check_database_initialized
+
+    [[ "$status" -eq 1 ]]
+}
+
+# =============================================================================
+# setup_test_customer marker gating (VOIP-1289): the .test_data_initialized
+# marker must only be written when all 3 extensions actually got created,
+# so a broken run doesn't defeat the "just re-run start.sh" recovery path.
+# =============================================================================
+
+# Shared docker stub covering every `docker exec` call setup_test_customer
+# makes, other than extension creation (that's over curl, not docker).
+stub_docker_for_test_customer() {
+    mock_command_script "docker" '
+case "$*" in
+    *"customer-control customer create"*) exit 0 ;;
+    *"customer-control customer list"*) echo "[{\"email\":\"admin@localhost\",\"id\":\"cust-1\"}]" ;;
+    *"agent-control agent list"*) echo "[{\"id\":\"agent-1\"}]" ;;
+    *"agent-control agent update-password"*) exit 0 ;;
+    *"customer-control accesskey create"*) echo "token: fake-accesskey" ;;
+    *"billing-control account update-plan-type"*) exit 0 ;;
+    *"billing-control account add-balance"*) exit 0 ;;
+    *) exit 0 ;;
+esac
+'
+}
+
+@test "setup_test_customer writes the marker when all 3 extensions succeed" {
+    load_start_functions
+    stub_docker_for_test_customer
+    mock_command_script "curl" '
+case "$*" in
+    *"/auth/login"*) echo "{\"token\":\"fake-jwt\"}" ;;
+    *"/v1.0/extensions"*)
+        if [[ "$*" == *"-w"* ]]; then printf "{}\n201"; else echo "{}"; fi
+        ;;
+    *"/v1.0/customer"*) echo "{\"billing_account_id\":\"bill-1\"}" ;;
+    *) echo "{}" ;;
+esac
+'
+
+    run setup_test_customer
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$PROJECT_DIR/.test_data_initialized" ]]
+    [[ "$output" == *"Test customer created successfully!"* ]]
+}
+
+@test "setup_test_customer does not write the marker when an extension creation fails" {
+    load_start_functions
+    stub_docker_for_test_customer
+    mock_command_script "curl" '
+case "$*" in
+    *"/auth/login"*) echo "{\"token\":\"fake-jwt\"}" ;;
+    *"/v1.0/extensions"*)
+        if [[ "$*" == *"\"extension\": \"2000\""* ]]; then
+            if [[ "$*" == *"-w"* ]]; then printf "{\"error\":\"boom\"}\n500"; else echo "{\"error\":\"boom\"}"; fi
+        else
+            if [[ "$*" == *"-w"* ]]; then printf "{}\n201"; else echo "{}"; fi
+        fi
+        ;;
+    *"/v1.0/customer"*) echo "{\"billing_account_id\":\"bill-1\"}" ;;
+    *) echo "{}" ;;
+esac
+'
+
+    run setup_test_customer
+
+    [[ ! -f "$PROJECT_DIR/.test_data_initialized" ]]
+    [[ "$output" == *"Could not create extension 2000"* ]]
+    [[ "$output" == *"only 2/3 extensions succeeded"* ]]
+}
