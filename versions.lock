@@ -1,10 +1,10 @@
 {
   "_comment": "Single-commit ancestry pin. All bin-* services share one monorepo lineage.",
   "pin_strategy": "ancestry-based single commit",
-  "target_commit": "d831bb76c3c8a8c56281f420d8aecbd3107f645f",
-  "target_commit_desc": "VOIP-1283-Add-bin-schedule-manager (2026-08-01)",
-  "dbscheme_monorepo_commit": "d831bb76c3c8a8c56281f420d8aecbd3107f645f",
-  "generated": "2026-08-02T01:08:21.603812Z",
+  "target_commit": "27838fb63b47cbb03986f0faccd4fcb8ef8fe58d",
+  "target_commit_desc": "VOIP-1283-Fix-seed-migration-bind-parameter (2026-08-01)",
+  "dbscheme_monorepo_commit": "27838fb63b47cbb03986f0faccd4fcb8ef8fe58d",
+  "generated": "2026-08-03T08:30:00.000000Z",
   "generated_by": "scripts/generate-versions-lock.sh",
   "images": {
     "voipbin/bin-agent-manager": "sha256:c225f5b4884e51f484944ec45e668a56a1c2f9219703e9c13b1e459a8efdaabe",
