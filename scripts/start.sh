@@ -377,13 +377,22 @@ check_host_prereqs() {
     return 0
 }
 
-# Check if database is initialized
+# Check if database is initialized. Mirrors doctor.sh's check_database(): a
+# partial migration (bin_manager gets some tables, then alembic aborts before
+# the asterisk_config stream ever runs) must NOT be mistaken for "done", or
+# every subsequent start.sh run silently skips migrate.sh forever and the
+# asterisk schema (e.g. ps_aors, needed for extension/AOR creation) never
+# gets created.
 check_database_initialized() {
-    local result
-    result=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
+    local tables alembic_bin alembic_ast
+    tables=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
         "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';" 2>/dev/null || echo "0")
+    alembic_bin=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
+        "SELECT version_num FROM bin_manager.alembic_version LIMIT 1;" 2>/dev/null)
+    alembic_ast=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
+        "SELECT version_num FROM asterisk.alembic_version LIMIT 1;" 2>/dev/null)
 
-    if [ "$result" -gt "0" ]; then
+    if [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt "0" ] && [ -n "$alembic_bin" ] && [ -n "$alembic_ast" ]; then
         return 0
     fi
     return 1
@@ -614,12 +623,20 @@ setup_test_customer() {
     fi
 
     # Step 6: Create extensions
+    local extensions_created=0
     for ext in 1000 2000 3000; do
         log_info "  Creating extension: $ext"
-        curl -sk -X POST "https://${api_host}:${api_port}/v1.0/extensions" \
+        local ext_response ext_http_code
+        ext_response=$(curl -sk -w '\n%{http_code}' -X POST "https://${api_host}:${api_port}/v1.0/extensions" \
             -H "Content-Type: application/json" \
                 -H "Authorization: Bearer $token" \
-            -d "{\"extension\": \"$ext\", \"password\": \"pass$ext\", \"name\": \"Extension $ext\"}" > /dev/null 2>&1 || true
+            -d "{\"extension\": \"$ext\", \"password\": \"pass$ext\", \"name\": \"Extension $ext\"}" 2>&1) || true
+        ext_http_code=$(echo "$ext_response" | tail -1)
+        if [ "$ext_http_code" == "200" ] || [ "$ext_http_code" == "201" ]; then
+            extensions_created=$((extensions_created + 1))
+        else
+            log_warn "  Could not create extension $ext (HTTP ${ext_http_code:-?}): $(echo "$ext_response" | head -n -1)"
+        fi
     done
 
     # Step 7: Get billing account ID
@@ -653,10 +670,17 @@ setup_test_customer() {
             --amount 100000 2>&1 | grep -v severity || true
     fi
 
-    # Create marker file to indicate test data was initialized
-    touch "$PROJECT_DIR/.test_data_initialized"
-
-    log_info "  Test customer created successfully!"
+    # Create marker file only when all three extensions actually came up —
+    # an unconditional touch here defeats the obvious recovery path (just
+    # re-run start.sh) when extension creation failed, since a stale marker
+    # makes check_test_data_initialized skip setup_test_customer forever.
+    if [ "$extensions_created" -eq 3 ]; then
+        touch "$PROJECT_DIR/.test_data_initialized"
+        log_info "  Test customer created successfully!"
+    else
+        log_warn "  Test customer created, but only $extensions_created/3 extensions succeeded."
+        log_warn "  Marker file not written; re-run './scripts/start.sh' after fixing the underlying issue (see 'voipbin> doctor')."
+    fi
 }
 
 main() {
