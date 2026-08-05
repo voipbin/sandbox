@@ -69,7 +69,7 @@ docker compose up -d db
 ./scripts/init_database.sh
 
 # Access MySQL directly (for debugging only)
-docker exec -it voipbin-db mysql -uroot -proot_password bin_manager
+docker exec -it voipbin-db mysql -uroot -p"$(grep MYSQL_ROOT_PASSWORD .env | cut -d= -f2)" bin_manager
 ```
 
 The `init_database.sh` script:
@@ -773,10 +773,10 @@ docker compose build api-manager
 docker compose up -d api-manager
 
 # Access MySQL (for debugging only - don't modify data directly)
-docker exec -it voipbin-db mysql -uroot -proot_password bin_manager
+docker exec -it voipbin-db mysql -uroot -p"$(grep MYSQL_ROOT_PASSWORD .env | cut -d= -f2)" bin_manager
 
 # Access RabbitMQ management UI
-# Open http://localhost:15672 (guest/guest)
+# Open http://localhost:15672 (credentials are in your .env file: RABBITMQ_DEFAULT_USER/RABBITMQ_DEFAULT_PASS)
 
 # Check service health
 docker compose ps
