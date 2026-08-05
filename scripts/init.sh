@@ -779,6 +779,11 @@ PSTN_WHITELIST_IPS=
 RAG_TOP_K=5
 EOF
 
+    # .env now holds real, randomly generated credentials (MySQL/RabbitMQ/AMI/
+    # Postgres/JWT) — restrict it to owner-only, matching the treatment
+    # already applied to alembic.ini in migrate.sh's write_alembic_ini().
+    chmod 600 "$ENV_FILE"
+
     log_info "  Created $ENV_FILE"
     echo ""
 

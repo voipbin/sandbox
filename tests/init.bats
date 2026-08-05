@@ -750,3 +750,40 @@ exit 0'
     [[ "$last_line" =~ ^VOIPBIN_INIT:\ status=ok ]]
     [[ "$last_line" == *'next="sudo ./scripts/setup-host.sh"'* ]]
 }
+
+# =============================================================================
+# .env permission hardening (VOIP-1275 follow-up): .env carries real,
+# randomly generated credentials (MySQL/RabbitMQ/AMI/Postgres/JWT), so it
+# must land at mode 600 - matching the chmod 600 treatment already applied
+# to alembic.ini by write_alembic_ini() in migrate.sh.
+# =============================================================================
+
+@test "init.sh writes .env at mode 600" {
+    if [[ $EUID -eq 0 ]]; then
+        skip "test requires an unprivileged user (root bypasses file mode checks)"
+    fi
+    load_init_functions
+    mock_ip_route "192.168.1.100"
+    mock_command_script "mkcert" '
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -cert-file) echo "stub-cert" > "$2"; shift 2 ;;
+        -key-file) echo "stub-key" > "$2"; shift 2 ;;
+        -CAROOT) echo "/stub/caroot"; exit 0 ;;
+        -check) exit 0 ;;
+        -install) exit 0 ;;
+        *) shift ;;
+    esac
+done
+exit 0'
+    setup_mkcert_ca() { :; }
+    setup_dns() { :; }
+
+    run main --yes
+
+    [[ "$status" -eq 0 ]]
+    [[ -f "$TEST_TEMP_DIR/.env" ]]
+    local mode
+    mode="$(stat -c '%a' "$TEST_TEMP_DIR/.env")"
+    [[ "$mode" == "600" ]]
+}
