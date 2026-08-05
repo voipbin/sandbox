@@ -583,6 +583,17 @@ main() {
     log_step "Generating security keys..."
     JWT_KEY=$(generate_random_key)
     log_info "  Generated JWT_KEY"
+
+    MYSQL_ROOT_PASSWORD=$(generate_random_key)
+    log_info "  Generated MYSQL_ROOT_PASSWORD"
+
+    RABBITMQ_DEFAULT_USER="voipbin"
+    RABBITMQ_DEFAULT_PASS=$(generate_random_key)
+    log_info "  Generated RABBITMQ_DEFAULT_PASS"
+
+    AMI_USERNAME="voipbin"
+    AMI_PASSWORD=$(generate_random_key)
+    log_info "  Generated AMI_PASSWORD"
     echo ""
 
     # Step 6: Create dummy GCP credentials file
@@ -735,6 +746,11 @@ AWS_SECRET_KEY=
 # Security & Storage
 # ==============================================================================
 JWT_KEY=$JWT_KEY
+MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER
+RABBITMQ_DEFAULT_PASS=$RABBITMQ_DEFAULT_PASS
+AMI_USERNAME=$AMI_USERNAME
+AMI_PASSWORD=$AMI_PASSWORD
 EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
 
 # ==============================================================================
