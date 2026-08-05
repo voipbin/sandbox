@@ -2649,10 +2649,26 @@ Type 'help <command>' for detailed usage.
         self.db_cmd(query)
 
     def db_cmd(self, query):
-        """Execute MySQL query"""
+        """Run a MySQL query"""
         container = self.config.get("db_container")
-        password = self.config.get("db_password")
-        result = docker_exec(container, f'mysql -u root -p{password} bin_manager -e "{query}"')
+        # Password expands INSIDE the container from its own
+        # MYSQL_ROOT_PASSWORD env var (injected via docker-compose.yml) via
+        # `sh -c`, never built into a host-visible docker exec /
+        # subprocess.run(shell=True) argv (where it would be visible to any
+        # local user via `ps aux`) -- matches the idiom used by
+        # dns_test/run_migrations/_do_backup/cmd_restore elsewhere in this
+        # file, and scripts/migrate.sh's MYSQL_IN_DB.
+        query_escaped = (
+            query.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("$", "\\$")
+            .replace("`", "\\`")
+        )
+        inner_cmd = (
+            'mysql -uroot -p"${MYSQL_ROOT_PASSWORD:-root_password}" '
+            f'bin_manager -e "{query_escaped}"'
+        )
+        result = docker_exec(container, f"sh -c {shlex.quote(inner_cmd)}")
         print(result)
 
     def cmd_api(self, args):

@@ -13,6 +13,17 @@ DB_HOST="127.0.0.1"
 DB_PORT="3306"
 DB_ROOT_USER="root"
 DB_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
+# The docker-exec'd mysql invocations below do NOT use $DB_ROOT_PASSWORD
+# directly on the host's `docker exec` argv (visible to any local user via
+# `ps aux`). Instead, IN_DB_MYSQL expands ${MYSQL_ROOT_PASSWORD} INSIDE the
+# container via `sh -c`, matching migrate.sh's MYSQL_IN_DB idiom. This also
+# means this script does not need MYSQL_ROOT_PASSWORD set in the host shell
+# (it isn't, since this script never sources .env) — the container already
+# has the var injected via docker-compose.yml. DB_ROOT_PASSWORD above is
+# retained only for the legacy configure_alembic()/run_migrations() fallback
+# path below (unused by main(), which delegates to migrate.sh), which writes
+# a DSN into an alembic.ini config file rather than a process argv.
+IN_DB_MYSQL='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}"'
 
 # Monorepo configuration
 MONOREPO_URL="https://github.com/voipbin/monorepo.git"
@@ -58,7 +69,7 @@ wait_for_mysql() {
     log_info "Waiting for MySQL to be ready..."
     while [ $attempt -le $max_attempts ]; do
         # Use actual SELECT query to verify root authentication works
-        if docker exec voipbin-db mysql -u root -p"$DB_ROOT_PASSWORD" -e "SELECT 1" &>/dev/null; then
+        if docker exec voipbin-db sh -c "$IN_DB_MYSQL -e 'SELECT 1'" root &>/dev/null; then
             log_info "MySQL is ready!"
             return 0
         fi
@@ -75,8 +86,7 @@ wait_for_mysql() {
 # Check if databases already exist
 check_databases_exist() {
     local result
-    result=$(docker exec voipbin-db mysql -u root -p"$DB_ROOT_PASSWORD" -N -e \
-        "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ('bin_manager', 'asterisk');" 2>/dev/null)
+    result=$(docker exec voipbin-db sh -c "$IN_DB_MYSQL -N -e \"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ('bin_manager', 'asterisk');\"" root 2>/dev/null)
 
     if [ "$result" == "2" ]; then
         return 0  # Both databases exist
@@ -90,12 +100,10 @@ check_migrations_applied() {
     local asterisk_version
 
     # Check bin_manager
-    bin_manager_version=$(docker exec voipbin-db mysql -u root -p"$DB_ROOT_PASSWORD" -N -e \
-        "SELECT version_num FROM bin_manager.alembic_version LIMIT 1;" 2>/dev/null || echo "")
+    bin_manager_version=$(docker exec voipbin-db sh -c "$IN_DB_MYSQL -N -e 'SELECT version_num FROM bin_manager.alembic_version LIMIT 1;'" root 2>/dev/null || echo "")
 
     # Check asterisk
-    asterisk_version=$(docker exec voipbin-db mysql -u root -p"$DB_ROOT_PASSWORD" -N -e \
-        "SELECT version_num FROM asterisk.alembic_version LIMIT 1;" 2>/dev/null || echo "")
+    asterisk_version=$(docker exec voipbin-db sh -c "$IN_DB_MYSQL -N -e 'SELECT version_num FROM asterisk.alembic_version LIMIT 1;'" root 2>/dev/null || echo "")
 
     if [ -n "$bin_manager_version" ] && [ -n "$asterisk_version" ]; then
         log_info "Migrations already applied:"
@@ -110,12 +118,10 @@ check_migrations_applied() {
 create_databases() {
     log_step "Creating databases..."
 
-    docker exec voipbin-db mysql -u root -p"$DB_ROOT_PASSWORD" -e \
-        "CREATE DATABASE IF NOT EXISTS bin_manager CHARACTER SET utf8 COLLATE utf8_general_ci;"
+    docker exec voipbin-db sh -c "$IN_DB_MYSQL -e 'CREATE DATABASE IF NOT EXISTS bin_manager CHARACTER SET utf8 COLLATE utf8_general_ci;'" root
     log_info "  Created database: bin_manager"
 
-    docker exec voipbin-db mysql -u root -p"$DB_ROOT_PASSWORD" -e \
-        "CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;"
+    docker exec voipbin-db sh -c "$IN_DB_MYSQL -e 'CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8 COLLATE utf8_general_ci;'" root
     log_info "  Created database: asterisk"
 }
 
