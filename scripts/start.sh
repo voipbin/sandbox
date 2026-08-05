@@ -431,6 +431,15 @@ check_test_data_initialized() {
     [ -f "$PROJECT_DIR/.test_data_initialized" ]
 }
 
+# Test/dev seed data (admin@localhost account, extensions 1000/2000/3000 with
+# fixed passwords) is only created when explicitly opted into via
+# VOIPBIN_SANDBOX_DEV_SEED=true in .env. This is now the primary, documented
+# self-install path, including production use — auto-seeding known credentials
+# by default is not acceptable there.
+dev_seed_enabled() {
+    [ "${VOIPBIN_SANDBOX_DEV_SEED:-false}" = "true" ]
+}
+
 # Wait for API to be ready
 wait_for_api() {
     log_info "Waiting for API to be ready..."
@@ -874,9 +883,11 @@ main() {
         log_info "Test data already initialized (delete .test_data_initialized to recreate)"
         # Get customer ID for display (if customer still exists)
         fetch_customer_id
-    else
+    elif dev_seed_enabled; then
         log_info "Creating test customer and extensions..."
         setup_test_customer
+    else
+        log_info "Skipping dev seed data (VOIPBIN_SANDBOX_DEV_SEED not set to true) — no test customer/extensions created."
     fi
 
     # Step 13: Show status
