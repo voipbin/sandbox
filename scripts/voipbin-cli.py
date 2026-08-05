@@ -4536,6 +4536,8 @@ Type 'registrar <subcommand> help' for more details.
 
     def network_status(self):
         """Show VoIP network configuration status"""
+        project_dir = self._project_dir()
+        project = self._compose_project_name(project_dir)
         print(f"\n{bold('VoIP Network Configuration')}")
         print("=" * 60)
 
@@ -4566,7 +4568,7 @@ Type 'registrar <subcommand> help' for more details.
         print("-" * 60)
 
         # Check if voip-internal network exists
-        voip_internal = run_cmd("docker network inspect sandbox_voip-internal --format '{{.Id}}' 2>/dev/null | head -c 12")
+        voip_internal = run_cmd(f"docker network inspect {shlex.quote(project + '_voip-internal')} --format '{{{{.Id}}}}' 2>/dev/null | head -c 12")
         if voip_internal:
             bridge_if = f"br-{voip_internal}"
             bridge_exists = run_cmd(f"ip link show {bridge_if} 2>/dev/null | head -1")
@@ -4577,7 +4579,7 @@ Type 'registrar <subcommand> help' for more details.
         else:
             print(f"  {gray('○')} voip-internal: not created (run 'docker compose up -d' first)")
 
-        default_network = run_cmd("docker network inspect sandbox_default --format '{{.Id}}' 2>/dev/null | head -c 12")
+        default_network = run_cmd(f"docker network inspect {shlex.quote(project + '_default')} --format '{{{{.Id}}}}' 2>/dev/null | head -c 12")
         if default_network:
             print(f"  {green('●')} default:       br-{default_network} (172.28.0.0/16)")
         else:
@@ -5064,13 +5066,22 @@ Type 'registrar <subcommand> help' for more details.
     # -------------------------------------------------------------------------
 
     def _compose_project_name(self, project_dir):
-        """Derive the docker compose project name (for network naming)"""
+        """Derive the docker compose project name (for network naming).
+
+        Mirrors common.sh's derive_compose_project_name(): COMPOSE_PROJECT_NAME
+        when set (validated, used as-is — compose itself does not sanitize an
+        explicit override), else the project directory's basename, lowercased,
+        filtered to [a-z0-9_-], with any leading '-'/'_' stripped.
+        """
         env_name = os.environ.get("COMPOSE_PROJECT_NAME")
         if env_name:
+            if not re.match(r"^[a-z0-9][a-z0-9_-]*$", env_name):
+                raise ValueError(f"Invalid COMPOSE_PROJECT_NAME: {env_name!r}")
             return env_name
         base = os.path.basename(os.path.abspath(project_dir)).lower()
-        name = re.sub(r"[^a-z0-9_-]", "", base)
-        return name or "voipbin"
+        filtered = re.sub(r"[^a-z0-9_-]", "", base)
+        stripped = filtered.lstrip("-_")
+        return stripped or "voipbin"
 
     def _upgrade_pinned(self, project_dir, check_only=False, skip_backup=False,
                         resume_from=None, backup_ts=None):

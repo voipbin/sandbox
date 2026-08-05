@@ -561,6 +561,34 @@ write_resolv_conf_with_fallback() {
 }
 
 # =============================================================================
+# Compose Project Name Derivation
+# =============================================================================
+# Shared by setup-host.sh, setup-voip-network.sh, start.sh, and doctor.sh so a
+# renamed checkout directory (e.g. sandbox -> self-install) derives a
+# consistent Compose project name everywhere, instead of some places
+# hardcoding the literal "sandbox".
+#
+# Mirrors docker compose's own derivation: COMPOSE_PROJECT_NAME when set
+# (compose honors it too), else the project directory's basename. Real
+# compose (v2) does NOT sanitize an explicit COMPOSE_PROJECT_NAME — it
+# hard-errors on invalid values — so an override is validated and used as-is
+# (returns non-zero when invalid; the caller dies mirroring compose's
+# message). Only the directory-basename derivation is normalized to
+# compose's rules (lowercase, keep only [a-z0-9_-], strip leading chars
+# until it starts with [a-z0-9]).
+derive_compose_project_name() {
+    if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+        [[ "$COMPOSE_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || return 1
+        printf '%s' "$COMPOSE_PROJECT_NAME"
+        return 0
+    fi
+    basename "$PROJECT_DIR" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr -cd 'a-z0-9_-' \
+        | sed 's/^[-_]*//'
+}
+
+# =============================================================================
 # OS Detection
 # =============================================================================
 detect_os() {

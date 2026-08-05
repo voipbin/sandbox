@@ -104,13 +104,6 @@ detect_stage() {
     if [[ "$running" -gt 0 ]]; then echo "running"; else echo "prestart"; fi
 }
 
-# Compose project name, mirroring setup-host.sh's derive_compose_project_name
-# (its step_ensure_docker_network owns network creation).
-doctor_compose_project_name() {
-    if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then printf '%s' "$COMPOSE_PROJECT_NAME"; return 0; fi
-    basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | sed 's/^[-_]*//'
-}
-
 # install_gate <name>: category-2 stage gate - skip + return 1 in pre-install.
 install_gate() {
     if [[ "$DOCTOR_STAGE" == "preinstall" ]]; then doctor_result "$1" skip "no .env"; return 1; fi
@@ -530,7 +523,11 @@ check_voip_interfaces() {
 check_compose_network() {
     if [[ "$DOCTOR_DOCKER_OK" != "true" ]]; then doctor_result compose-network skip "docker unavailable"; return; fi
     install_gate compose-network || return
-    local project network_name label; project=$(doctor_compose_project_name)
+    local project network_name label
+    if ! project=$(derive_compose_project_name); then
+        doctor_fail compose-network "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\"" "unset COMPOSE_PROJECT_NAME or set it to lowercase alphanumeric characters, hyphens, and underscores, starting with a letter or number"
+        return
+    fi
     if [[ -z "$project" ]]; then doctor_result compose-network skip "could not derive a compose project name from $PROJECT_DIR"; return; fi
     network_name="${project}_default"
     label=$(docker network inspect -f '{{index .Labels "com.docker.compose.project"}}' "$network_name" 2>/dev/null)

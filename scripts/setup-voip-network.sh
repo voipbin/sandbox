@@ -18,7 +18,9 @@ PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
 
-NETWORK_NAME="sandbox_default"
+# Derived the same way docker compose derives it (shared, common.sh) so a
+# renamed checkout directory doesn't hardcode "sandbox".
+NETWORK_NAME="$(derive_compose_project_name)_default"
 
 # Interface configurations for internal network
 declare -A INTERNAL_INTERFACES=(

@@ -31,27 +31,10 @@ source "$SCRIPT_DIR/common.sh"
 # networks.default definition).
 NETWORK_SUBNET="10.100.0.0/16"
 
-# Compose project name, derived the way docker compose derives it:
-# COMPOSE_PROJECT_NAME when set (compose honors it too), else the project
-# directory's basename. Real compose (v2) does NOT sanitize an explicit
-# COMPOSE_PROJECT_NAME — it hard-errors on invalid values — so an override is
-# validated and used as-is (returns non-zero when invalid; the caller dies
-# mirroring compose's message). Only the directory-basename derivation is
-# normalized to compose's rules (lowercase, keep only [a-z0-9_-], strip
-# leading chars until it starts with [a-z0-9]). The default network is then
-# <project>_default with a com.docker.compose.project=<project> label,
-# exactly what a later `docker compose up` expects to adopt.
-derive_compose_project_name() {
-    if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
-        [[ "$COMPOSE_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || return 1
-        printf '%s' "$COMPOSE_PROJECT_NAME"
-        return 0
-    fi
-    basename "$PROJECT_DIR" \
-        | tr '[:upper:]' '[:lower:]' \
-        | tr -cd 'a-z0-9_-' \
-        | sed 's/^[-_]*//'
-}
+# Compose project name: derive_compose_project_name() (shared, common.sh).
+# The default network is then <project>_default with a
+# com.docker.compose.project=<project> label, exactly what a later
+# `docker compose up` expects to adopt.
 
 # =============================================================================
 # Result line + exit helpers (design §2.2 pattern, shared with init.sh)

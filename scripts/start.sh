@@ -258,7 +258,7 @@ check_first_run() {
     fi
 
     # Check if database volume has data
-    if docker volume ls --format '{{.Name}}' | grep -q 'sandbox_db_data'; then
+    if docker volume ls --format '{{.Name}}' | grep -q "$(derive_compose_project_name)_db_data"; then
         is_first_run=false
     else
         reasons+=("database volume not created")
