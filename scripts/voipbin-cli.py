@@ -2000,7 +2000,7 @@ Type 'help <command>' for detailed usage.
         endpoint_services = {
             "admin": ("Admin Console", f"http://admin.{base_domain}:3003", None),
             "api-mgr": ("API Manager", f"https://api.{base_domain}:8443", None),
-            "mq": ("RabbitMQ", "http://localhost:15672", "guest / guest"),
+            "mq": ("RabbitMQ", "http://localhost:15672", f"{os.environ.get('RABBITMQ_DEFAULT_USER', 'guest')} / {os.environ.get('RABBITMQ_DEFAULT_PASS', 'guest')}"),
             "db": ("MySQL", "localhost:3306", f"root / {os.environ.get('MYSQL_ROOT_PASSWORD', 'root_password')}"),
         }
 
@@ -5412,7 +5412,6 @@ Type 'registrar <subcommand> help' for more details.
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
         backup_dir = os.path.join(backups_base, ts)
-        db_password = self.config.get("db_password", os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"))
 
         def fail(msg):
             print(f"  {red('✗')} {msg}")
@@ -5566,7 +5565,6 @@ Type 'registrar <subcommand> help' for more details.
         """Restore data from a backup (DESTRUCTIVE)"""
         project_dir = self.config.get("project_dir", ".")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
-        db_password = self.config.get("db_password", os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"))
 
         available = []
         if os.path.isdir(backups_base):

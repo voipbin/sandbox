@@ -125,6 +125,8 @@ fetch_dbscheme() {
     rm -rf "$workdir"
     WORKDIR=""
     echo "$DBSCHEME_COMMIT" > "$DBSCHEME_DIR/.pin"
+    # alembic.ini (written below) will carry the real MySQL root password.
+    chmod 700 "$DBSCHEME_DIR"
     log "dbscheme ready at $DBSCHEME_DIR"
 }
 fetch_dbscheme
@@ -203,6 +205,9 @@ formatter = generic
 format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 EOF
+    # alembic.ini now embeds the real MySQL root password - keep it out of
+    # reach of other local users (default umask leaves it world-readable).
+    chmod 600 "$DBSCHEME_DIR/$stream_dir/alembic.ini"
 }
 write_alembic_ini "bin-manager" "bin_manager" "main"
 write_alembic_ini "asterisk_config" "asterisk" "config"

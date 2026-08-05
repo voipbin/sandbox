@@ -159,6 +159,11 @@ setup_dbscheme() {
         fi
     fi
 
+    # configure_alembic() (below) writes alembic.ini files carrying the real
+    # MySQL root DSN into this directory - keep it out of reach of other
+    # local users.
+    chmod 700 "$DBSCHEME_DIR"
+
     log_info "  Database schema files ready at: $DBSCHEME_DIR"
 }
 
@@ -208,6 +213,9 @@ formatter = generic
 format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 EOF
+    # alembic.ini embeds the real MySQL root DSN - keep it out of reach of
+    # other local users (default umask leaves it world-readable).
+    chmod 600 "$DBSCHEME_DIR/bin-manager/alembic.ini"
     log_info "  Configured: bin-manager/alembic.ini"
 
     # Configure asterisk_config alembic
@@ -250,6 +258,7 @@ formatter = generic
 format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 EOF
+    chmod 600 "$DBSCHEME_DIR/asterisk_config/alembic.ini"
     log_info "  Configured: asterisk_config/alembic.ini"
 }
 
