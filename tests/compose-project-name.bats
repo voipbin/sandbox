@@ -48,3 +48,12 @@ teardown() {
     run derive_compose_project_name
     [ "$status" -ne 0 ]
 }
+
+@test "derive_compose_project_name: fails on a basename that filters down to empty" {
+    load_common
+    unset COMPOSE_PROJECT_NAME
+    PROJECT_DIR="/tmp/---"
+    run derive_compose_project_name
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}

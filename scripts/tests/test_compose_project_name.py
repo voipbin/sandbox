@@ -93,6 +93,20 @@ except ValueError:
     check("invalid COMPOSE_PROJECT_NAME raises ValueError", True)
 del os.environ["COMPOSE_PROJECT_NAME"]
 
+# --- basename that filters down to empty (mirrors the bats case) ---
+# Must raise, not silently fall back to a fixed name like "voipbin" — that
+# fallback used to mask exactly this kind of degenerate input.
+os.environ.pop("COMPOSE_PROJECT_NAME", None)
+try:
+    result = cli._compose_project_name("/tmp/---")
+    check(
+        "basename filtering down to empty raises ValueError",
+        False,
+        f"no exception raised, returned {result!r}",
+    )
+except ValueError:
+    check("basename filtering down to empty raises ValueError", True)
+
 print()
 failed = [r for r in results if not r[1]]
 print(f"{len(results) - len(failed)}/{len(results)} passed")

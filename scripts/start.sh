@@ -258,7 +258,16 @@ check_first_run() {
     fi
 
     # Check if database volume has data
-    if docker volume ls --format '{{.Name}}' | grep -q "$(derive_compose_project_name)_db_data"; then
+    local compose_project
+    if ! compose_project="$(derive_compose_project_name)"; then
+        log_error "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
+        exit 1
+    fi
+    if [[ -z "$compose_project" ]]; then
+        log_error "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+        exit 1
+    fi
+    if docker volume ls --format '{{.Name}}' | grep -q "${compose_project}_db_data"; then
         is_first_run=false
     else
         reasons+=("database volume not created")

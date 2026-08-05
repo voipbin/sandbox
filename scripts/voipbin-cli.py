@@ -5071,7 +5071,12 @@ Type 'registrar <subcommand> help' for more details.
         Mirrors common.sh's derive_compose_project_name(): COMPOSE_PROJECT_NAME
         when set (validated, used as-is — compose itself does not sanitize an
         explicit override), else the project directory's basename, lowercased,
-        filtered to [a-z0-9_-], with any leading '-'/'_' stripped.
+        filtered to [a-z0-9_-], with any leading '-'/'_' stripped. A basename
+        that filters down to nothing (e.g. "---" or "!!!") raises the same
+        ValueError as an invalid explicit COMPOSE_PROJECT_NAME, rather than
+        silently falling back to a fixed name — the bash side
+        (derive_compose_project_name) fails the same way, and callers already
+        need to handle failure here.
         """
         env_name = os.environ.get("COMPOSE_PROJECT_NAME")
         if env_name:
@@ -5081,7 +5086,12 @@ Type 'registrar <subcommand> help' for more details.
         base = os.path.basename(os.path.abspath(project_dir)).lower()
         filtered = re.sub(r"[^a-z0-9_-]", "", base)
         stripped = filtered.lstrip("-_")
-        return stripped or "voipbin"
+        if not stripped:
+            raise ValueError(
+                f"Could not derive a compose project name from {project_dir!r} "
+                "(set COMPOSE_PROJECT_NAME)"
+            )
+        return stripped
 
     def _upgrade_pinned(self, project_dir, check_only=False, skip_backup=False,
                         resume_from=None, backup_ts=None):

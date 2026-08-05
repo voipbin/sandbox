@@ -20,7 +20,15 @@ source "$SCRIPT_DIR/common.sh"
 
 # Derived the same way docker compose derives it (shared, common.sh) so a
 # renamed checkout directory doesn't hardcode "sandbox".
-NETWORK_NAME="$(derive_compose_project_name)_default"
+COMPOSE_PROJECT="$(derive_compose_project_name)" || {
+    log_error "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
+    exit 1
+}
+if [[ -z "$COMPOSE_PROJECT" ]]; then
+    log_error "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+    exit 1
+fi
+NETWORK_NAME="${COMPOSE_PROJECT}_default"
 
 # Interface configurations for internal network
 declare -A INTERNAL_INTERFACES=(

@@ -582,10 +582,16 @@ derive_compose_project_name() {
         printf '%s' "$COMPOSE_PROJECT_NAME"
         return 0
     fi
-    basename "$PROJECT_DIR" \
+    local derived
+    derived=$(basename "$PROJECT_DIR" \
         | tr '[:upper:]' '[:lower:]' \
         | tr -cd 'a-z0-9_-' \
-        | sed 's/^[-_]*//'
+        | sed 's/^[-_]*//')
+    # A basename that filters down to nothing (e.g. "---" or "!!!") must not
+    # silently produce an empty project name — fail loudly instead, mirroring
+    # the invalid-explicit-COMPOSE_PROJECT_NAME case above.
+    [[ -n "$derived" ]] || return 1
+    printf '%s' "$derived"
 }
 
 # =============================================================================
