@@ -38,7 +38,7 @@ cli.config = {
     "project_dir": WORKTREE,
     "db_container": DB,
     "redis_container": REDIS,
-    "db_password": "root_password",
+    "db_password": os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"),
 }
 
 results = []
@@ -47,8 +47,15 @@ def check(name, cond, detail=""):
     print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f" ({detail})" if detail and not cond else ""))
 
 def mysql(q):
+    # Password expands INSIDE the container from its own MYSQL_ROOT_PASSWORD
+    # env var (injected via docker-compose.yml), never on this process's own
+    # docker exec argv (visible to any local user on the host via `ps aux`) -
+    # matches the idiom voipbin-cli.py's _do_backup/cmd_restore use (see
+    # commit 42b9d60). $0 is a throwaway arg name; the query itself is passed
+    # positionally as $1 rather than interpolated into the shell string.
     return subprocess.run(
-        ["docker", "exec", DB, "mysql", "-uroot", "-proot_password", "-N", "-e", q],
+        ["docker", "exec", DB, "sh", "-c",
+         'exec mysql -uroot -p"${MYSQL_ROOT_PASSWORD:-root_password}" -N -e "$1"', "_", q],
         capture_output=True, text=True).stdout.strip()
 
 # make the test project's compose ps see only db/redis running
