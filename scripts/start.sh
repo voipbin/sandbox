@@ -967,20 +967,22 @@ main() {
         echo "  To verify: voipbin> customer accesskey list"
         echo ""
     fi
-    echo "-----------------------------------------------"
-    echo "  Default SIP Extensions (created on first run)"
-    echo "-----------------------------------------------"
-    echo "  1000 / pass1000"
-    echo "  2000 / pass2000"
-    echo "  3000 / pass3000"
-    if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
+    if dev_seed_enabled; then
+        echo "-----------------------------------------------"
+        echo "  Default SIP Extensions (created on first run)"
+        echo "-----------------------------------------------"
+        echo "  1000 / pass1000"
+        echo "  2000 / pass2000"
+        echo "  3000 / pass3000"
+        if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
+            echo ""
+            echo "  SIP Domain:    ${CUSTOMER_ID}.${ext_domain}"
+            echo "  SIP Server:    $(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1):5060"
+        fi
         echo ""
-        echo "  SIP Domain:    ${CUSTOMER_ID}.${ext_domain}"
-        echo "  SIP Server:    $(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1):5060"
+        echo "  To verify: voipbin> registrar extension list --customer_id <id>"
+        echo ""
     fi
-    echo ""
-    echo "  To verify: voipbin> registrar extension list --customer_id <id>"
-    echo ""
     echo "-----------------------------------------------"
     echo "  Useful Commands"
     echo "-----------------------------------------------"
