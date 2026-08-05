@@ -594,6 +594,9 @@ main() {
     AMI_USERNAME="voipbin"
     AMI_PASSWORD=$(generate_random_key)
     log_info "  Generated AMI_PASSWORD"
+
+    POSTGRES_PASSWORD=$(generate_random_key)
+    log_info "  Generated POSTGRES_PASSWORD"
     echo ""
 
     # Step 6: Create dummy GCP credentials file
@@ -751,6 +754,7 @@ RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER
 RABBITMQ_DEFAULT_PASS=$RABBITMQ_DEFAULT_PASS
 AMI_USERNAME=$AMI_USERNAME
 AMI_PASSWORD=$AMI_PASSWORD
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
 
 # ==============================================================================
