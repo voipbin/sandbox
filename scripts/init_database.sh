@@ -141,9 +141,9 @@ setup_dbscheme() {
         cd "$PROJECT_DIR/tmp"
         git clone --filter=blob:none --sparse "$MONOREPO_URL" bin-dbscheme-manager-repo 2>/dev/null && (cd bin-dbscheme-manager-repo && git checkout -q "$MONOREPO_PIN" 2>/dev/null || true) || {
             # Fallback: clone from local monorepo if available
-            if [ -d "/home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager" ]; then
+            if [ -d "$HOME/gitvoipbin/monorepo/bin-dbscheme-manager" ]; then
                 log_info "  Using local monorepo..."
-                cp -r /home/pchero/gitvoipbin/monorepo/bin-dbscheme-manager "$DBSCHEME_DIR"
+                cp -r "$HOME/gitvoipbin/monorepo/bin-dbscheme-manager" "$DBSCHEME_DIR"
             else
                 log_error "Could not clone monorepo and local copy not found"
                 return 1
