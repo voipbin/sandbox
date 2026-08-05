@@ -385,11 +385,11 @@ check_host_prereqs() {
 # gets created.
 check_database_initialized() {
     local tables alembic_bin alembic_ast
-    tables=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
+    tables=$(docker exec voipbin-db mysql -u root -p"${MYSQL_ROOT_PASSWORD:-root_password}" -N -e \
         "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';" 2>/dev/null || echo "0")
-    alembic_bin=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
+    alembic_bin=$(docker exec voipbin-db mysql -u root -p"${MYSQL_ROOT_PASSWORD:-root_password}" -N -e \
         "SELECT version_num FROM bin_manager.alembic_version LIMIT 1;" 2>/dev/null)
-    alembic_ast=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
+    alembic_ast=$(docker exec voipbin-db mysql -u root -p"${MYSQL_ROOT_PASSWORD:-root_password}" -N -e \
         "SELECT version_num FROM asterisk.alembic_version LIMIT 1;" 2>/dev/null)
 
     if [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt "0" ] && [ -n "$alembic_bin" ] && [ -n "$alembic_ast" ]; then
@@ -406,7 +406,7 @@ wait_for_database() {
 
     while [ $waited -lt $max_wait ]; do
         # Use actual SELECT query to verify root authentication works
-        if docker exec voipbin-db mysql -u root -proot_password -e "SELECT 1" &>/dev/null; then
+        if docker exec voipbin-db mysql -u root -p"${MYSQL_ROOT_PASSWORD:-root_password}" -e "SELECT 1" &>/dev/null; then
             log_info "Database is ready!"
             return 0
         fi

@@ -24,7 +24,7 @@ DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 
 DB_CONTAINER="${VOIPBIN_DB_CONTAINER:-voipbin-db}"
 DB_USER="root"
-DB_PASSWORD="root_password"
+DB_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
 # All mysql invocations read the password from the CONTAINER's env
 # (MYSQL_ROOT_PASSWORD) instead of putting it on the host argv, where it
 # would be visible to every user via 'ps aux'.

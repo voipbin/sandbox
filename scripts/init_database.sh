@@ -12,7 +12,7 @@ DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 DB_HOST="127.0.0.1"
 DB_PORT="3306"
 DB_ROOT_USER="root"
-DB_ROOT_PASSWORD="root_password"
+DB_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
 
 # Monorepo configuration
 MONOREPO_URL="https://github.com/voipbin/monorepo.git"

@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
     "registrar_container": "voipbin-ast-registrar",
     "kamailio_container": "voipbin-kamailio",
     "db_container": "voipbin-db",
-    "db_password": "root_password",
+    "db_password": os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"),
     "project_dir": str(Path(__file__).parent.parent),
 }
 
@@ -2001,7 +2001,7 @@ Type 'help <command>' for detailed usage.
             "admin": ("Admin Console", f"http://admin.{base_domain}:3003", None),
             "api-mgr": ("API Manager", f"https://api.{base_domain}:8443", None),
             "mq": ("RabbitMQ", "http://localhost:15672", "guest / guest"),
-            "db": ("MySQL", "localhost:3306", "root / root_password"),
+            "db": ("MySQL", "localhost:3306", f"root / {os.environ.get('MYSQL_ROOT_PASSWORD', 'root_password')}"),
         }
 
         # SIP/VoIP endpoints (shown separately)
@@ -4293,8 +4293,8 @@ Type 'registrar <subcommand> help' for more details.
 
         # Get a customer ID if available
         customer_id = run_cmd(
-            "docker exec voipbin-db mysql -u root -proot_password -N -e "
-            "\"SELECT id FROM bin_manager.customer LIMIT 1\" 2>/dev/null"
+            "docker exec voipbin-db sh -c 'exec mysql -u root -p\"${MYSQL_ROOT_PASSWORD:-root_password}\" -N "
+            "-e \"SELECT id FROM bin_manager.customer LIMIT 1\"' 2>/dev/null"
         ) or "f1504bd0-9fd4-495b-a360-a73a6fa088b0"
 
         print(f"\n{bold('Testing DNS Domain Resolution')}")
@@ -5375,7 +5375,7 @@ Type 'registrar <subcommand> help' for more details.
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
         backup_dir = os.path.join(backups_base, ts)
-        db_password = self.config.get("db_password", "root_password")
+        db_password = self.config.get("db_password", os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"))
 
         def fail(msg):
             print(f"  {red('✗')} {msg}")
@@ -5529,7 +5529,7 @@ Type 'registrar <subcommand> help' for more details.
         """Restore data from a backup (DESTRUCTIVE)"""
         project_dir = self.config.get("project_dir", ".")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
-        db_password = self.config.get("db_password", "root_password")
+        db_password = self.config.get("db_password", os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"))
 
         available = []
         if os.path.isdir(backups_base):
@@ -5860,7 +5860,10 @@ Type 'registrar <subcommand> help' for more details.
             if not os.path.exists(os.path.join(project_dir, "versions.lock")):
                 return "skip", "No versions.lock (unpinned repo) - run scripts/migrate.sh manually if needed"
             db_container = self.config.get("db_container", "voipbin-db")
-            db_check = run_cmd(f"docker exec {shlex.quote(db_container)} mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
+            db_check = run_cmd(
+                f"docker exec {shlex.quote(db_container)} sh -c "
+                "'exec mysql -u root -p\"${MYSQL_ROOT_PASSWORD:-root_password}\" -e \"SELECT 1\"' 2>/dev/null"
+            )
             if not db_check:
                 return "skip", "Database not running"
 
