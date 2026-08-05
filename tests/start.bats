@@ -350,3 +350,147 @@ esac
     [[ "$output" == *"Could not create extension 2000"* ]]
     [[ "$output" == *"only 2/3 extensions succeeded"* ]]
 }
+
+# =============================================================================
+# main()'s dev-seed gating (Step 12): VOIPBIN_SANDBOX_DEV_SEED defaults to
+# false, so a fresh install must NOT call setup_test_customer unless the
+# operator opted in. main() itself pulls in the full startup sequence
+# (docker compose, wait_for_api, etc.), so instead of mocking all of that we
+# extract main()'s actual Step 12 if/elif/else block verbatim from start.sh
+# and eval it against the real check_test_data_initialized/dev_seed_enabled
+# functions — this fails if the extracted block ever drifts from the real
+# gating logic, same as testing main() directly would.
+# =============================================================================
+
+# Extracts the literal "# Step 12: Setup test data if needed" block from
+# start.sh (up to but excluding "# Step 13: Show status") and defines it as
+# a function named run_step12_gate, so tests can invoke the exact production
+# control flow without mocking the rest of main().
+load_step12_gate() {
+    local extracted="$TEST_TEMP_DIR/step12_gate.sh"
+    sed -n '/# Step 12: Setup test data if needed/,/# Step 13: Show status/p' "$SCRIPTS_DIR/start.sh" \
+        | sed '$d' \
+        > "$extracted"
+
+    {
+        echo 'run_step12_gate() {'
+        cat "$extracted"
+        echo '}'
+    } > "$extracted.fn"
+
+    source "$extracted.fn"
+}
+
+@test "Step 12 gate skips setup_test_customer when VOIPBIN_SANDBOX_DEV_SEED is unset (default)" {
+    load_start_functions
+    load_step12_gate
+    unset VOIPBIN_SANDBOX_DEV_SEED
+    rm -f "$PROJECT_DIR/.test_data_initialized"
+    setup_test_customer() { echo "SHOULD NOT BE CALLED" >> "$TEST_TEMP_DIR/setup_test_customer_calls.log"; }
+
+    run run_step12_gate
+
+    [[ ! -f "$TEST_TEMP_DIR/setup_test_customer_calls.log" ]]
+    [[ "$output" == *"Skipping dev seed data"* ]]
+}
+
+@test "Step 12 gate skips setup_test_customer when VOIPBIN_SANDBOX_DEV_SEED=false" {
+    load_start_functions
+    load_step12_gate
+    export VOIPBIN_SANDBOX_DEV_SEED=false
+    rm -f "$PROJECT_DIR/.test_data_initialized"
+    setup_test_customer() { echo "SHOULD NOT BE CALLED" >> "$TEST_TEMP_DIR/setup_test_customer_calls.log"; }
+
+    run run_step12_gate
+
+    [[ ! -f "$TEST_TEMP_DIR/setup_test_customer_calls.log" ]]
+    [[ "$output" == *"Skipping dev seed data"* ]]
+}
+
+@test "Step 12 gate calls setup_test_customer when VOIPBIN_SANDBOX_DEV_SEED=true and no marker exists" {
+    load_start_functions
+    load_step12_gate
+    export VOIPBIN_SANDBOX_DEV_SEED=true
+    rm -f "$PROJECT_DIR/.test_data_initialized"
+    setup_test_customer() { echo "CALLED" >> "$TEST_TEMP_DIR/setup_test_customer_calls.log"; }
+
+    run run_step12_gate
+
+    [[ -f "$TEST_TEMP_DIR/setup_test_customer_calls.log" ]]
+    [[ "$output" == *"Creating test customer and extensions..."* ]]
+}
+
+# =============================================================================
+# main()'s startup-summary dev-seed gating (Step 13): the "Default SIP
+# Extensions" block (and the $CUSTOMER_ID-conditional SIP Domain/Server lines
+# nested inside it) must not print when VOIPBIN_SANDBOX_DEV_SEED is off, since
+# no extensions were created in that case — same bug class as the already-
+# gated "Default Admin Account" block just above it. Extracted verbatim from
+# start.sh the same way load_step12_gate is, so this fails if the extracted
+# block ever drifts from the real gating logic.
+# =============================================================================
+
+# Extracts the literal "Default SIP Extensions" if-block from start.sh's
+# Step 13 summary (from its "if dev_seed_enabled; then" line down to the
+# matching outer "fi") and defines it as a function named
+# run_sip_extensions_summary_gate. The "Default SIP Extensions" echo is two
+# lines after the relevant "if dev_seed_enabled; then" (the other occurrence
+# guards "Default Admin Account" instead), so locating it by line number and
+# stepping back two lines pins the correct block even though the guard text
+# itself is not unique in the file.
+load_sip_extensions_summary_gate() {
+    local extracted="$TEST_TEMP_DIR/sip_extensions_summary_gate.sh"
+    local marker_line start_line
+    marker_line=$(grep -n 'Default SIP Extensions (created on first run)' "$SCRIPTS_DIR/start.sh" | head -1 | cut -d: -f1)
+    start_line=$((marker_line - 2))
+
+    sed -n "${start_line},/^    fi\$/p" "$SCRIPTS_DIR/start.sh" > "$extracted"
+
+    {
+        echo 'run_sip_extensions_summary_gate() {'
+        echo 'local ext_domain="${DOMAIN_NAME_EXTENSION:-registrar.voipbin.test}"'
+        cat "$extracted"
+        echo '}'
+    } > "$extracted.fn"
+
+    source "$extracted.fn"
+}
+
+@test "Step 13 summary skips Default SIP Extensions block when VOIPBIN_SANDBOX_DEV_SEED is unset (default)" {
+    load_start_functions
+    load_sip_extensions_summary_gate
+    unset VOIPBIN_SANDBOX_DEV_SEED
+    CUSTOMER_ID=""
+
+    run run_sip_extensions_summary_gate
+
+    [[ "$output" != *"Default SIP Extensions"* ]]
+    [[ "$output" != *"pass1000"* ]]
+    [[ "$output" != *"SIP Domain:"* ]]
+}
+
+@test "Step 13 summary skips Default SIP Extensions block when VOIPBIN_SANDBOX_DEV_SEED=false" {
+    load_start_functions
+    load_sip_extensions_summary_gate
+    export VOIPBIN_SANDBOX_DEV_SEED=false
+    CUSTOMER_ID="some-leftover-id"
+
+    run run_sip_extensions_summary_gate
+
+    [[ "$output" != *"Default SIP Extensions"* ]]
+    [[ "$output" != *"pass1000"* ]]
+    [[ "$output" != *"SIP Domain:"* ]]
+}
+
+@test "Step 13 summary shows Default SIP Extensions block (with SIP Domain) when VOIPBIN_SANDBOX_DEV_SEED=true" {
+    load_start_functions
+    load_sip_extensions_summary_gate
+    export VOIPBIN_SANDBOX_DEV_SEED=true
+    CUSTOMER_ID="cust-123"
+
+    run run_sip_extensions_summary_gate
+
+    [[ "$output" == *"Default SIP Extensions"* ]]
+    [[ "$output" == *"1000 / pass1000"* ]]
+    [[ "$output" == *"SIP Domain:    cust-123.registrar.voipbin.test"* ]]
+}

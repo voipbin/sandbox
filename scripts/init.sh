@@ -583,6 +583,20 @@ main() {
     log_step "Generating security keys..."
     JWT_KEY=$(generate_random_key)
     log_info "  Generated JWT_KEY"
+
+    MYSQL_ROOT_PASSWORD=$(generate_random_key)
+    log_info "  Generated MYSQL_ROOT_PASSWORD"
+
+    RABBITMQ_DEFAULT_USER="voipbin"
+    RABBITMQ_DEFAULT_PASS=$(generate_random_key)
+    log_info "  Generated RABBITMQ_DEFAULT_PASS"
+
+    AMI_USERNAME="voipbin"
+    AMI_PASSWORD=$(generate_random_key)
+    log_info "  Generated AMI_PASSWORD"
+
+    POSTGRES_PASSWORD=$(generate_random_key)
+    log_info "  Generated POSTGRES_PASSWORD"
     echo ""
 
     # Step 6: Create dummy GCP credentials file
@@ -735,6 +749,12 @@ AWS_SECRET_KEY=
 # Security & Storage
 # ==============================================================================
 JWT_KEY=$JWT_KEY
+MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+RABBITMQ_DEFAULT_USER=$RABBITMQ_DEFAULT_USER
+RABBITMQ_DEFAULT_PASS=$RABBITMQ_DEFAULT_PASS
+AMI_USERNAME=$AMI_USERNAME
+AMI_PASSWORD=$AMI_PASSWORD
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 EMAIL_VERIFY_BASE_URL=$DERIVED_EMAIL_VERIFY_BASE_URL
 
 # ==============================================================================
@@ -758,6 +778,11 @@ PSTN_WHITELIST_IPS=
 # docker-compose.yml; RAG_TOP_K is the only rag-specific knob left here.
 RAG_TOP_K=5
 EOF
+
+    # .env now holds real, randomly generated credentials (MySQL/RabbitMQ/AMI/
+    # Postgres/JWT) — restrict it to owner-only, matching the treatment
+    # already applied to alembic.ini in migrate.sh's write_alembic_ini().
+    chmod 600 "$ENV_FILE"
 
     log_info "  Created $ENV_FILE"
     echo ""

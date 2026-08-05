@@ -21,11 +21,11 @@ services:
     ports:
       - "3306:3306"
     environment:
-      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot_password"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -72,8 +72,8 @@ services:
       exec docker-entrypoint.sh rabbitmq-server
       "
     environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
       - RABBITMQ_PLUGINS_DIR=/opt/rabbitmq/plugins:/opt/rabbitmq-extra-plugins
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -104,7 +104,7 @@ services:
     logging: *default-logging
     environment:
       - POSTGRES_USER=voipbin
-      - POSTGRES_PASSWORD=voipbin
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=rag
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -251,7 +251,7 @@ services:
       # preserves today's single-node behavior; operators splitting the state
       # layer onto a separate host override KAMAILIO_DB_HOST/KAMAILIO_REDIS_HOST
       # in .env instead of editing compose (Phase 1, address externalization).
-      - KAMAILIO_AUTH_DB_URL=mysql://root:root_password@${KAMAILIO_DB_HOST:-127.0.0.1}:3306/bin_manager
+      - KAMAILIO_AUTH_DB_URL=mysql://root:${MYSQL_ROOT_PASSWORD}@${KAMAILIO_DB_HOST:-127.0.0.1}:3306/bin_manager
       - KAMAILIO_AUTH_USER_COLUMN=username
       - KAMAILIO_AUTH_DOMAIN_COLUMN=realm
       - KAMAILIO_AUTH_PASSWORD_COLUMN=password
@@ -345,17 +345,17 @@ services:
       - TARGET_SERVICE=call
       - AMI_EVENT_FILTER=
       - AMI_HOST=127.0.0.1
-      - AMI_PASSWORD=asterisk
+      - AMI_PASSWORD=${AMI_PASSWORD}
       - AMI_PORT=5038
-      - AMI_USERNAME=asterisk
-      - ARI_ACCOUNT=asterisk:asterisk
+      - AMI_USERNAME=${AMI_USERNAME}
+      - ARI_ACCOUNT=${AMI_USERNAME}:${AMI_PASSWORD}
       - ARI_ADDRESS=localhost:8088
       - ARI_APPLICATION=voipbin
       - ARI_SUBSCRIBE_ALL=true
       - ASTERISK_ID=${ASTERISK_CALL_ID:-voipbin-ast-call}
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2113
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - RABBITMQ_QUEUE_LISTEN=asterisk.call.request
       - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
       - RECORDING_BUCKET_DIRECTORY=recording
@@ -413,17 +413,17 @@ services:
       - TARGET_SERVICE=conference
       - AMI_EVENT_FILTER=
       - AMI_HOST=127.0.0.1
-      - AMI_PASSWORD=asterisk
+      - AMI_PASSWORD=${AMI_PASSWORD}
       - AMI_PORT=5038
-      - AMI_USERNAME=asterisk
-      - ARI_ACCOUNT=asterisk:asterisk
+      - AMI_USERNAME=${AMI_USERNAME}
+      - ARI_ACCOUNT=${AMI_USERNAME}:${AMI_PASSWORD}
       - ARI_ADDRESS=localhost:8088
       - ARI_APPLICATION=voipbin
       - ARI_SUBSCRIBE_ALL=true
       - ASTERISK_ID=${ASTERISK_CONF_ID:-voipbin-ast-conf}
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2113
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - RABBITMQ_QUEUE_LISTEN=asterisk.conference.request
       - RECORDING_ASTERISK_DIRECTORY=/var/spool/asterisk/recording
       - RECORDING_BUCKET_DIRECTORY=recording
@@ -451,7 +451,7 @@ services:
       - DATABASE_ASTERISK_PORT=3306
       - DATABASE_ASTERISK_DATABASE=asterisk
       - DATABASE_ASTERISK_USERNAME=root
-      - DATABASE_ASTERISK_PASSWORD=root_password
+      - DATABASE_ASTERISK_PASSWORD=${MYSQL_ROOT_PASSWORD}
     healthcheck:
       test: ["CMD", "asterisk", "-rx", "core show help"]
       interval: 10s
@@ -486,17 +486,17 @@ services:
       - TARGET_SERVICE=registrar
       - AMI_EVENT_FILTER=
       - AMI_HOST=127.0.0.1
-      - AMI_PASSWORD=asterisk
+      - AMI_PASSWORD=${AMI_PASSWORD}
       - AMI_PORT=5038
-      - AMI_USERNAME=asterisk
-      - ARI_ACCOUNT=asterisk:asterisk
+      - AMI_USERNAME=${AMI_USERNAME}
+      - ARI_ACCOUNT=${AMI_USERNAME}:${AMI_PASSWORD}
       - ARI_ADDRESS=localhost:8088
       - ARI_APPLICATION=voipbin
       - ARI_SUBSCRIBE_ALL=true
       - ASTERISK_ID=${ASTERISK_REGISTRAR_ID:-voipbin-ast-registrar}
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2113
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - RABBITMQ_QUEUE_LISTEN=asterisk.registrar.request
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
@@ -526,8 +526,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -552,8 +552,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -582,8 +582,8 @@ services:
     networks:
       - default
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -619,8 +619,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -648,8 +648,8 @@ services:
       asterisk-call-proxy:
         condition: service_started
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -681,8 +681,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -707,8 +707,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -734,8 +734,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -761,8 +761,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -788,8 +788,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -821,8 +821,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -847,8 +847,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -876,8 +876,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -903,8 +903,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -931,8 +931,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -960,8 +960,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -992,8 +992,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1019,8 +1019,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1052,8 +1052,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1090,11 +1090,11 @@ services:
     # at Vertex AI / GCS until a real GCP project and service-account key are
     # supplied.
     environment:
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - GCP_PROJECT_ID=${GCP_PROJECT_ID:-sandbox-placeholder}
       - GCP_REGION=${GCP_REGION:-us-central1}
       - GCP_BUCKET_NAME_MEDIA=${GCP_BUCKET_NAME_MEDIA:-sandbox-placeholder-media}
-      - POSTGRESQL_DSN=postgres://voipbin:voipbin@postgres:5432/rag?sslmode=disable
+      - POSTGRESQL_DSN=postgres://voipbin:${POSTGRES_PASSWORD}@postgres:5432/rag?sslmode=disable
       - RAG_TOP_K=${RAG_TOP_K:-5}
       - PROMETHEUS_ENDPOINT=/metrics
       - PROMETHEUS_LISTEN_ADDRESS=:2112
@@ -1122,9 +1122,9 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN_BIN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - DATABASE_DSN_ASTERISK=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/asterisk
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN_BIN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - DATABASE_DSN_ASTERISK=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/asterisk
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1152,8 +1152,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1179,8 +1179,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1221,8 +1221,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1262,8 +1262,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1289,8 +1289,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1317,7 +1317,7 @@ services:
       clickhouse:
         condition: service_healthy
     environment:
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       # 9000 is ClickHouse's native protocol port (clickhouse-go/v2), not HTTP.
       - CLICKHOUSE_ADDRESS=${CLICKHOUSE_ADDRESS:-clickhouse:9000}
       - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-default}
@@ -1345,8 +1345,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1378,8 +1378,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1405,8 +1405,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1439,8 +1439,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics
@@ -1466,8 +1466,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
-      - DATABASE_DSN=root:root_password@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
-      - RABBITMQ_ADDRESS=amqp://guest:guest@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
+      - DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(${DB_HOST:-db}:${DB_PORT:-3306})/bin_manager
+      - RABBITMQ_ADDRESS=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST:-rabbitmq}:${RABBITMQ_PORT:-5672}
       - REDIS_ADDRESS=${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_DATABASE=1
       - PROMETHEUS_ENDPOINT=/metrics

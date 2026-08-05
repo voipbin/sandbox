@@ -154,13 +154,17 @@ teardown() {
 # an operator splitting the state layer onto a separate host only needs to
 # change .env (no compose edits). Verifies zero hardcoded stragglers remain.
 
-@test "docker-compose.yml has no hardcoded DATABASE_DSN (all externalized via DB_HOST)" {
-    run grep -c "DATABASE_DSN=root:root_password@tcp(db:3306)" "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml uses \${MYSQL_ROOT_PASSWORD} in DATABASE_DSN (not hardcoded root_password)" {
+    run grep -c 'DATABASE_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp' "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -ge 1 ]
+    run grep -c "DATABASE_DSN=root:root_password@" "$PROJECT_ROOT/docker-compose.yml"
     [ "$output" -eq 0 ]
 }
 
-@test "docker-compose.yml has no hardcoded DATABASE_DSN_BIN/DATABASE_DSN_ASTERISK (registrar-manager, externalized via DB_HOST)" {
-    run grep -cE "DATABASE_DSN_(BIN|ASTERISK)=root:root_password@tcp\(db:3306\)" "$PROJECT_ROOT/docker-compose.yml"
+@test "docker-compose.yml uses \${MYSQL_ROOT_PASSWORD} in DATABASE_DSN_BIN/DATABASE_DSN_ASTERISK (registrar-manager, not hardcoded root_password)" {
+    run grep -cE 'DATABASE_DSN_(BIN|ASTERISK)=root:\$\{MYSQL_ROOT_PASSWORD\}@tcp' "$PROJECT_ROOT/docker-compose.yml"
+    [ "$output" -ge 1 ]
+    run grep -cE "DATABASE_DSN_(BIN|ASTERISK)=root:root_password@" "$PROJECT_ROOT/docker-compose.yml"
     [ "$output" -eq 0 ]
 }
 

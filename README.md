@@ -82,9 +82,12 @@ The `start` command handles **everything** after initialization:
 5. Configures DNS resolution for `*.voipbin.test`
 6. Sets up VoIP network interfaces
 7. Starts all 25+ microservices
-8. Creates test account and extensions
+8. Creates test account and extensions (opt-in, off by default — see below)
 
 ### What Gets Created
+
+Test account seeding only runs when `VOIPBIN_SANDBOX_DEV_SEED=true` is set (off by
+default). When enabled, `start` creates:
 
 | Resource | Value |
 |----------|-------|
@@ -355,7 +358,7 @@ Meet provides simple voice conferencing:
 - WebRTC-powered for easy access
 - Dial-in via SIP supported
 
-**Default Credentials:** `admin@localhost` / `admin@localhost`
+**Default Credentials:** `admin@localhost` / `admin@localhost` (requires opt-in test-account seeding via `VOIPBIN_SANDBOX_DEV_SEED=true`)
 
 ---
 
@@ -455,14 +458,14 @@ mkcert -install
 
 > **⚠️ SECURITY WARNING: Local Development Only**
 >
-> This sandbox uses **default credentials** for ease of development:
+> This sandbox uses **local-only credentials** for ease of development:
 >
 > | Service | Credentials |
 > |---------|-------------|
-> | MySQL | `root` / `root_password` |
-> | RabbitMQ | `guest` / `guest` |
-> | Admin Account | `admin@localhost` / `admin@localhost` |
-> | Extensions | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
+> | MySQL | Randomly generated per install, in `.env` (`MYSQL_ROOT_PASSWORD`) |
+> | RabbitMQ | Randomly generated per install, in `.env` (`RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS`) |
+> | Admin Account (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `admin@localhost` / `admin@localhost` |
+> | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
 >
 > **DO NOT expose this sandbox to the public internet.** All ports, credentials, and secrets are meant for local development only. For production deployments, use the official VoIPBin cloud service or contact us for on-premise licensing.
@@ -935,6 +938,10 @@ sudo ./voipbin restart tts-manager
 
 ## Developer's Playground
 
+> The `admin@localhost` credentials and extensions 1000/2000/3000 used in the
+> examples below only exist if the stack was started with
+> `VOIPBIN_SANDBOX_DEV_SEED=true` (opt-in, off by default).
+
 ### REST API Access
 
 The API Manager exposes a full REST API at `https://api.voipbin.test:8443`.
@@ -1032,12 +1039,15 @@ MAILGUN_API_KEY=...
 
 ### Web Interfaces
 
+Admin/Talk/Meet credentials below require opt-in test-account seeding
+(`VOIPBIN_SANDBOX_DEV_SEED=true`, off by default).
+
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | **Admin Console** | http://admin.voipbin.test:3003 | admin@localhost / admin@localhost |
 | **Talk (Voice Client)** | http://talk.voipbin.test:3005 | admin@localhost / admin@localhost |
 | **Meet (Conferencing)** | http://meet.voipbin.test:3004 | admin@localhost / admin@localhost |
-| **RabbitMQ Management** | http://localhost:15672 | guest / guest |
+| **RabbitMQ Management** | http://localhost:15672 | Randomly generated per install, in `.env` (`RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS`) |
 
 ---
 

@@ -500,3 +500,29 @@ load_network_functions() {
     PROJECT_DIR="$TEST_TEMP_DIR"
     SCRIPT_DIR="$SCRIPTS_DIR"
 }
+
+# Load migrate.sh's fetch_dbscheme() and write_alembic_ini() functions
+# without running the rest of the script (dbscheme pin resolution via
+# versions.lock/python3, docker container checks, actual migrations).
+# migrate.sh has no main() wrapper — it is top-to-bottom procedural — so
+# instead of stripping a trailing invocation line, we extract each target
+# function verbatim by its "name() {" ... "^}" boundaries. This fails loudly
+# (empty extraction) if either function is ever renamed or restructured so
+# its closing brace no longer sits at column 0.
+load_migrate_functions() {
+    local temp_migrate="$TEST_TEMP_DIR/migrate_functions.sh"
+
+    {
+        echo 'log()  { echo "[migrate] $1"; }'
+        echo 'err()  { echo "[migrate:ERROR] $1" >&2; }'
+        awk '/^fetch_dbscheme\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
+        awk '/^write_alembic_ini\(\) \{/,/^}/' "$SCRIPTS_DIR/migrate.sh"
+    } > "$temp_migrate"
+
+    if ! grep -q '^fetch_dbscheme() {' "$temp_migrate" || ! grep -q '^write_alembic_ini() {' "$temp_migrate"; then
+        echo "load_migrate_functions: failed to extract fetch_dbscheme/write_alembic_ini from migrate.sh" >&2
+        return 1
+    fi
+
+    source "$temp_migrate"
+}

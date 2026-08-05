@@ -17,6 +17,14 @@ PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
 # resolv.conf path (overridable so tests can stub host probes)
 RESOLV_CONF="${RESOLV_CONF:-/etc/resolv.conf}"
 
+# All mysql invocations against voipbin-db read the password from the
+# CONTAINER's env (MYSQL_ROOT_PASSWORD, injected via docker-compose.yml)
+# inside a `sh -c`, never on the host's `docker exec` argv — the naive
+# `-p"${MYSQL_ROOT_PASSWORD:-root_password}"` substitution expands on the
+# HOST shell and puts the real password in `docker exec`'s argv, visible to
+# any local user via `ps aux`. Matches migrate.sh's MYSQL_IN_DB idiom.
+START_MYSQL_IN_DB='exec mysql -u"$0" -p"${MYSQL_ROOT_PASSWORD:-root_password}"'
+
 # Source common functions
 source "$SCRIPT_DIR/common.sh"
 
@@ -250,7 +258,18 @@ check_first_run() {
     fi
 
     # Check if database volume has data
-    if docker volume ls --format '{{.Name}}' | grep -q 'sandbox_db_data'; then
+    local compose_project derive_rc
+    compose_project="$(derive_compose_project_name)"
+    derive_rc=$?
+    if [[ "$derive_rc" -ne 0 ]]; then
+        if [[ "$derive_rc" -eq 2 ]]; then
+            log_error "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
+        else
+            log_error "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+        fi
+        exit 1
+    fi
+    if docker volume ls --format '{{.Name}}' | grep -q "${compose_project}_db_data"; then
         is_first_run=false
     else
         reasons+=("database volume not created")
@@ -385,12 +404,9 @@ check_host_prereqs() {
 # gets created.
 check_database_initialized() {
     local tables alembic_bin alembic_ast
-    tables=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
-        "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';" 2>/dev/null || echo "0")
-    alembic_bin=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
-        "SELECT version_num FROM bin_manager.alembic_version LIMIT 1;" 2>/dev/null)
-    alembic_ast=$(docker exec voipbin-db mysql -u root -proot_password -N -e \
-        "SELECT version_num FROM asterisk.alembic_version LIMIT 1;" 2>/dev/null)
+    tables=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e \"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'bin_manager';\"" root 2>/dev/null || echo "0")
+    alembic_bin=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e 'SELECT version_num FROM bin_manager.alembic_version LIMIT 1;'" root 2>/dev/null)
+    alembic_ast=$(docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -N -e 'SELECT version_num FROM asterisk.alembic_version LIMIT 1;'" root 2>/dev/null)
 
     if [[ "$tables" =~ ^[0-9]+$ ]] && [ "$tables" -gt "0" ] && [ -n "$alembic_bin" ] && [ -n "$alembic_ast" ]; then
         return 0
@@ -406,7 +422,7 @@ wait_for_database() {
 
     while [ $waited -lt $max_wait ]; do
         # Use actual SELECT query to verify root authentication works
-        if docker exec voipbin-db mysql -u root -proot_password -e "SELECT 1" &>/dev/null; then
+        if docker exec voipbin-db sh -c "$START_MYSQL_IN_DB -e 'SELECT 1'" root &>/dev/null; then
             log_info "Database is ready!"
             return 0
         fi
@@ -424,6 +440,15 @@ wait_for_database() {
 # This allows users to delete the test customer without it being recreated
 check_test_data_initialized() {
     [ -f "$PROJECT_DIR/.test_data_initialized" ]
+}
+
+# Test/dev seed data (admin@localhost account, extensions 1000/2000/3000 with
+# fixed passwords) is only created when explicitly opted into via
+# VOIPBIN_SANDBOX_DEV_SEED=true in .env. This is now the primary, documented
+# self-install path, including production use — auto-seeding known credentials
+# by default is not acceptable there.
+dev_seed_enabled() {
+    [ "${VOIPBIN_SANDBOX_DEV_SEED:-false}" = "true" ]
 }
 
 # Wait for API to be ready
@@ -869,9 +894,11 @@ main() {
         log_info "Test data already initialized (delete .test_data_initialized to recreate)"
         # Get customer ID for display (if customer still exists)
         fetch_customer_id
-    else
+    elif dev_seed_enabled; then
         log_info "Creating test customer and extensions..."
         setup_test_customer
+    else
+        log_info "Skipping dev seed data (VOIPBIN_SANDBOX_DEV_SEED not set to true) — no test customer/extensions created."
     fi
 
     # Step 13: Show status
@@ -914,19 +941,21 @@ main() {
     echo "  Meet:          http://meet.${base_domain}:3004"
     echo "  Talk:          http://talk.${base_domain}:3005"
     echo "  API Manager:   https://api.${base_domain}:8443"
-    echo "  RabbitMQ:      http://localhost:15672 (guest / guest)"
+    echo "  RabbitMQ:      http://localhost:15672 (${RABBITMQ_DEFAULT_USER:-guest} / ${RABBITMQ_DEFAULT_PASS:-guest})"
     echo ""
     echo "  NOTE: If you see ERR_CERT_AUTHORITY_INVALID, visit"
     echo "        https://api.${base_domain}:8443 first and accept the certificate."
     echo ""
-    echo "-----------------------------------------------"
-    echo "  Default Admin Account (created on first run)"
-    echo "-----------------------------------------------"
-    echo "  Username:      admin@localhost"
-    echo "  Password:      admin@localhost"
-    echo ""
-    echo "  To verify: voipbin> customer list"
-    echo ""
+    if dev_seed_enabled; then
+        echo "-----------------------------------------------"
+        echo "  Default Admin Account (created on first run)"
+        echo "-----------------------------------------------"
+        echo "  Username:      admin@localhost"
+        echo "  Password:      admin@localhost"
+        echo ""
+        echo "  To verify: voipbin> customer list"
+        echo ""
+    fi
     if [ -n "$ACCESSKEY_TOKEN" ] && [ "$ACCESSKEY_TOKEN" != "null" ]; then
         echo "-----------------------------------------------"
         echo "  Default API Key (created on first run)"
@@ -938,20 +967,22 @@ main() {
         echo "  To verify: voipbin> customer accesskey list"
         echo ""
     fi
-    echo "-----------------------------------------------"
-    echo "  Default SIP Extensions (created on first run)"
-    echo "-----------------------------------------------"
-    echo "  1000 / pass1000"
-    echo "  2000 / pass2000"
-    echo "  3000 / pass3000"
-    if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
+    if dev_seed_enabled; then
+        echo "-----------------------------------------------"
+        echo "  Default SIP Extensions (created on first run)"
+        echo "-----------------------------------------------"
+        echo "  1000 / pass1000"
+        echo "  2000 / pass2000"
+        echo "  3000 / pass3000"
+        if [ -n "$CUSTOMER_ID" ] && [ "$CUSTOMER_ID" != "null" ]; then
+            echo ""
+            echo "  SIP Domain:    ${CUSTOMER_ID}.${ext_domain}"
+            echo "  SIP Server:    $(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1):5060"
+        fi
         echo ""
-        echo "  SIP Domain:    ${CUSTOMER_ID}.${ext_domain}"
-        echo "  SIP Server:    $(grep HOST_EXTERNAL_IP "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | head -1):5060"
+        echo "  To verify: voipbin> registrar extension list --customer_id <id>"
+        echo ""
     fi
-    echo ""
-    echo "  To verify: voipbin> registrar extension list --customer_id <id>"
-    echo ""
     echo "-----------------------------------------------"
     echo "  Useful Commands"
     echo "-----------------------------------------------"

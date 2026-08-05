@@ -24,7 +24,7 @@ DBSCHEME_DIR="$PROJECT_DIR/tmp/bin-dbscheme-manager"
 
 DB_CONTAINER="${VOIPBIN_DB_CONTAINER:-voipbin-db}"
 DB_USER="root"
-DB_PASSWORD="root_password"
+DB_PASSWORD="${MYSQL_ROOT_PASSWORD:-root_password}"
 # All mysql invocations read the password from the CONTAINER's env
 # (MYSQL_ROOT_PASSWORD) instead of putting it on the host argv, where it
 # would be visible to every user via 'ps aux'.
@@ -77,6 +77,9 @@ fetch_dbscheme() {
     if [ -f "$DBSCHEME_DIR/.pin" ]; then
         if [ "$(cat "$DBSCHEME_DIR/.pin" 2>/dev/null)" = "$DBSCHEME_COMMIT" ]; then
             log "dbscheme already at pinned commit (cached)."
+            # alembic.ini (written below) carries the real MySQL root password -
+            # keep the cached path's permissions as tight as a fresh fetch's.
+            chmod 700 "$DBSCHEME_DIR"
             return 0
         fi
     fi
@@ -125,6 +128,8 @@ fetch_dbscheme() {
     rm -rf "$workdir"
     WORKDIR=""
     echo "$DBSCHEME_COMMIT" > "$DBSCHEME_DIR/.pin"
+    # alembic.ini (written below) will carry the real MySQL root password.
+    chmod 700 "$DBSCHEME_DIR"
     log "dbscheme ready at $DBSCHEME_DIR"
 }
 fetch_dbscheme
@@ -203,6 +208,9 @@ formatter = generic
 format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 EOF
+    # alembic.ini now embeds the real MySQL root password - keep it out of
+    # reach of other local users (default umask leaves it world-readable).
+    chmod 600 "$DBSCHEME_DIR/$stream_dir/alembic.ini"
 }
 write_alembic_ini "bin-manager" "bin_manager" "main"
 write_alembic_ini "asterisk_config" "asterisk" "config"

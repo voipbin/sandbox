@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
     "registrar_container": "voipbin-ast-registrar",
     "kamailio_container": "voipbin-kamailio",
     "db_container": "voipbin-db",
-    "db_password": "root_password",
+    "db_password": os.environ.get("MYSQL_ROOT_PASSWORD", "root_password"),
     "project_dir": str(Path(__file__).parent.parent),
 }
 
@@ -2000,8 +2000,8 @@ Type 'help <command>' for detailed usage.
         endpoint_services = {
             "admin": ("Admin Console", f"http://admin.{base_domain}:3003", None),
             "api-mgr": ("API Manager", f"https://api.{base_domain}:8443", None),
-            "mq": ("RabbitMQ", "http://localhost:15672", "guest / guest"),
-            "db": ("MySQL", "localhost:3306", "root / root_password"),
+            "mq": ("RabbitMQ", "http://localhost:15672", f"{os.environ.get('RABBITMQ_DEFAULT_USER', 'guest')} / {os.environ.get('RABBITMQ_DEFAULT_PASS', 'guest')}"),
+            "db": ("MySQL", "localhost:3306", f"root / {os.environ.get('MYSQL_ROOT_PASSWORD', 'root_password')}"),
         }
 
         # SIP/VoIP endpoints (shown separately)
@@ -2649,10 +2649,26 @@ Type 'help <command>' for detailed usage.
         self.db_cmd(query)
 
     def db_cmd(self, query):
-        """Execute MySQL query"""
+        """Run a MySQL query"""
         container = self.config.get("db_container")
-        password = self.config.get("db_password")
-        result = docker_exec(container, f'mysql -u root -p{password} bin_manager -e "{query}"')
+        # Password expands INSIDE the container from its own
+        # MYSQL_ROOT_PASSWORD env var (injected via docker-compose.yml) via
+        # `sh -c`, never built into a host-visible docker exec /
+        # subprocess.run(shell=True) argv (where it would be visible to any
+        # local user via `ps aux`) -- matches the idiom used by
+        # dns_test/run_migrations/_do_backup/cmd_restore elsewhere in this
+        # file, and scripts/migrate.sh's MYSQL_IN_DB.
+        query_escaped = (
+            query.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("$", "\\$")
+            .replace("`", "\\`")
+        )
+        inner_cmd = (
+            'mysql -uroot -p"${MYSQL_ROOT_PASSWORD:-root_password}" '
+            f'bin_manager -e "{query_escaped}"'
+        )
+        result = docker_exec(container, f"sh -c {shlex.quote(inner_cmd)}")
         print(result)
 
     def cmd_api(self, args):
@@ -4293,8 +4309,8 @@ Type 'registrar <subcommand> help' for more details.
 
         # Get a customer ID if available
         customer_id = run_cmd(
-            "docker exec voipbin-db mysql -u root -proot_password -N -e "
-            "\"SELECT id FROM bin_manager.customer LIMIT 1\" 2>/dev/null"
+            "docker exec voipbin-db sh -c 'exec mysql -u root -p\"${MYSQL_ROOT_PASSWORD:-root_password}\" -N "
+            "-e \"SELECT id FROM bin_manager.customer LIMIT 1\"' 2>/dev/null"
         ) or "f1504bd0-9fd4-495b-a360-a73a6fa088b0"
 
         print(f"\n{bold('Testing DNS Domain Resolution')}")
@@ -4520,6 +4536,8 @@ Type 'registrar <subcommand> help' for more details.
 
     def network_status(self):
         """Show VoIP network configuration status"""
+        project_dir = self._project_dir()
+        project = self._compose_project_name(project_dir)
         print(f"\n{bold('VoIP Network Configuration')}")
         print("=" * 60)
 
@@ -4550,7 +4568,7 @@ Type 'registrar <subcommand> help' for more details.
         print("-" * 60)
 
         # Check if voip-internal network exists
-        voip_internal = run_cmd("docker network inspect sandbox_voip-internal --format '{{.Id}}' 2>/dev/null | head -c 12")
+        voip_internal = run_cmd(f"docker network inspect {shlex.quote(project + '_voip-internal')} --format '{{{{.Id}}}}' 2>/dev/null | head -c 12")
         if voip_internal:
             bridge_if = f"br-{voip_internal}"
             bridge_exists = run_cmd(f"ip link show {bridge_if} 2>/dev/null | head -1")
@@ -4561,7 +4579,7 @@ Type 'registrar <subcommand> help' for more details.
         else:
             print(f"  {gray('○')} voip-internal: not created (run 'docker compose up -d' first)")
 
-        default_network = run_cmd("docker network inspect sandbox_default --format '{{.Id}}' 2>/dev/null | head -c 12")
+        default_network = run_cmd(f"docker network inspect {shlex.quote(project + '_default')} --format '{{{{.Id}}}}' 2>/dev/null | head -c 12")
         if default_network:
             print(f"  {green('●')} default:       br-{default_network} (172.28.0.0/16)")
         else:
@@ -5048,13 +5066,32 @@ Type 'registrar <subcommand> help' for more details.
     # -------------------------------------------------------------------------
 
     def _compose_project_name(self, project_dir):
-        """Derive the docker compose project name (for network naming)"""
+        """Derive the docker compose project name (for network naming).
+
+        Mirrors common.sh's derive_compose_project_name(): COMPOSE_PROJECT_NAME
+        when set (validated, used as-is — compose itself does not sanitize an
+        explicit override), else the project directory's basename, lowercased,
+        filtered to [a-z0-9_-], with any leading '-'/'_' stripped. A basename
+        that filters down to nothing (e.g. "---" or "!!!") raises the same
+        ValueError as an invalid explicit COMPOSE_PROJECT_NAME, rather than
+        silently falling back to a fixed name — the bash side
+        (derive_compose_project_name) fails the same way, and callers already
+        need to handle failure here.
+        """
         env_name = os.environ.get("COMPOSE_PROJECT_NAME")
         if env_name:
+            if not re.match(r"^[a-z0-9][a-z0-9_-]*$", env_name):
+                raise ValueError(f"Invalid COMPOSE_PROJECT_NAME: {env_name!r}")
             return env_name
         base = os.path.basename(os.path.abspath(project_dir)).lower()
-        name = re.sub(r"[^a-z0-9_-]", "", base)
-        return name or "voipbin"
+        filtered = re.sub(r"[^a-z0-9_-]", "", base)
+        stripped = filtered.lstrip("-_")
+        if not stripped:
+            raise ValueError(
+                f"Could not derive a compose project name from {project_dir!r} "
+                "(set COMPOSE_PROJECT_NAME)"
+            )
+        return stripped
 
     def _upgrade_pinned(self, project_dir, check_only=False, skip_backup=False,
                         resume_from=None, backup_ts=None):
@@ -5375,7 +5412,6 @@ Type 'registrar <subcommand> help' for more details.
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
         backup_dir = os.path.join(backups_base, ts)
-        db_password = self.config.get("db_password", "root_password")
 
         def fail(msg):
             print(f"  {red('✗')} {msg}")
@@ -5529,7 +5565,6 @@ Type 'registrar <subcommand> help' for more details.
         """Restore data from a backup (DESTRUCTIVE)"""
         project_dir = self.config.get("project_dir", ".")
         backups_base = os.path.join(project_dir, self.DATA_BACKUP_DIR)
-        db_password = self.config.get("db_password", "root_password")
 
         available = []
         if os.path.isdir(backups_base):
@@ -5860,7 +5895,10 @@ Type 'registrar <subcommand> help' for more details.
             if not os.path.exists(os.path.join(project_dir, "versions.lock")):
                 return "skip", "No versions.lock (unpinned repo) - run scripts/migrate.sh manually if needed"
             db_container = self.config.get("db_container", "voipbin-db")
-            db_check = run_cmd(f"docker exec {shlex.quote(db_container)} mysql -u root -proot_password -e 'SELECT 1' 2>/dev/null")
+            db_check = run_cmd(
+                f"docker exec {shlex.quote(db_container)} sh -c "
+                "'exec mysql -u root -p\"${MYSQL_ROOT_PASSWORD:-root_password}\" -e \"SELECT 1\"' 2>/dev/null"
+            )
             if not db_check:
                 return "skip", "Database not running"
 
