@@ -523,12 +523,17 @@ check_voip_interfaces() {
 check_compose_network() {
     if [[ "$DOCTOR_DOCKER_OK" != "true" ]]; then doctor_result compose-network skip "docker unavailable"; return; fi
     install_gate compose-network || return
-    local project network_name label
-    if ! project=$(derive_compose_project_name); then
-        doctor_fail compose-network "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\"" "unset COMPOSE_PROJECT_NAME or set it to lowercase alphanumeric characters, hyphens, and underscores, starting with a letter or number"
+    local project network_name label derive_rc
+    project=$(derive_compose_project_name)
+    derive_rc=$?
+    if [[ "$derive_rc" -ne 0 ]]; then
+        if [[ "$derive_rc" -eq 2 ]]; then
+            doctor_fail compose-network "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\"" "unset COMPOSE_PROJECT_NAME or set it to lowercase alphanumeric characters, hyphens, and underscores, starting with a letter or number"
+        else
+            doctor_result compose-network skip "could not derive a compose project name from $PROJECT_DIR"
+        fi
         return
     fi
-    if [[ -z "$project" ]]; then doctor_result compose-network skip "could not derive a compose project name from $PROJECT_DIR"; return; fi
     network_name="${project}_default"
     label=$(docker network inspect -f '{{index .Labels "com.docker.compose.project"}}' "$network_name" 2>/dev/null)
     if [[ -n "$label" ]]; then

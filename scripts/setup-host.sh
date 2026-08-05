@@ -218,12 +218,15 @@ step_setup_dns() {
 # compose hard-errors ("was found but has incorrect label"), with them it
 # adopts silently and even owns the network on `compose down`.
 step_ensure_docker_network() {
-    local project network_name
-    if ! project="$(derive_compose_project_name)"; then
-        die 1 "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
-    fi
-    if [[ -z "$project" ]]; then
-        die 1 "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+    local project network_name derive_rc
+    project="$(derive_compose_project_name)"
+    derive_rc=$?
+    if [[ "$derive_rc" -ne 0 ]]; then
+        if [[ "$derive_rc" -eq 2 ]]; then
+            die 1 "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
+        else
+            die 1 "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+        fi
     fi
     network_name="${project}_default"
 

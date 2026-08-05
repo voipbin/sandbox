@@ -258,13 +258,15 @@ check_first_run() {
     fi
 
     # Check if database volume has data
-    local compose_project
-    if ! compose_project="$(derive_compose_project_name)"; then
-        log_error "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
-        exit 1
-    fi
-    if [[ -z "$compose_project" ]]; then
-        log_error "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+    local compose_project derive_rc
+    compose_project="$(derive_compose_project_name)"
+    derive_rc=$?
+    if [[ "$derive_rc" -ne 0 ]]; then
+        if [[ "$derive_rc" -eq 2 ]]; then
+            log_error "invalid COMPOSE_PROJECT_NAME \"${COMPOSE_PROJECT_NAME:-}\": project names must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number"
+        else
+            log_error "could not derive a compose project name from $PROJECT_DIR (set COMPOSE_PROJECT_NAME)"
+        fi
         exit 1
     fi
     if docker volume ls --format '{{.Name}}' | grep -q "${compose_project}_db_data"; then
@@ -939,19 +941,21 @@ main() {
     echo "  Meet:          http://meet.${base_domain}:3004"
     echo "  Talk:          http://talk.${base_domain}:3005"
     echo "  API Manager:   https://api.${base_domain}:8443"
-    echo "  RabbitMQ:      http://localhost:15672 (guest / guest)"
+    echo "  RabbitMQ:      http://localhost:15672 (${RABBITMQ_DEFAULT_USER:-guest} / ${RABBITMQ_DEFAULT_PASS:-guest})"
     echo ""
     echo "  NOTE: If you see ERR_CERT_AUTHORITY_INVALID, visit"
     echo "        https://api.${base_domain}:8443 first and accept the certificate."
     echo ""
-    echo "-----------------------------------------------"
-    echo "  Default Admin Account (created on first run)"
-    echo "-----------------------------------------------"
-    echo "  Username:      admin@localhost"
-    echo "  Password:      admin@localhost"
-    echo ""
-    echo "  To verify: voipbin> customer list"
-    echo ""
+    if dev_seed_enabled; then
+        echo "-----------------------------------------------"
+        echo "  Default Admin Account (created on first run)"
+        echo "-----------------------------------------------"
+        echo "  Username:      admin@localhost"
+        echo "  Password:      admin@localhost"
+        echo ""
+        echo "  To verify: voipbin> customer list"
+        echo ""
+    fi
     if [ -n "$ACCESSKEY_TOKEN" ] && [ "$ACCESSKEY_TOKEN" != "null" ]; then
         echo "-----------------------------------------------"
         echo "  Default API Key (created on first run)"

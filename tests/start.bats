@@ -350,3 +350,72 @@ esac
     [[ "$output" == *"Could not create extension 2000"* ]]
     [[ "$output" == *"only 2/3 extensions succeeded"* ]]
 }
+
+# =============================================================================
+# main()'s dev-seed gating (Step 12): VOIPBIN_SANDBOX_DEV_SEED defaults to
+# false, so a fresh install must NOT call setup_test_customer unless the
+# operator opted in. main() itself pulls in the full startup sequence
+# (docker compose, wait_for_api, etc.), so instead of mocking all of that we
+# extract main()'s actual Step 12 if/elif/else block verbatim from start.sh
+# and eval it against the real check_test_data_initialized/dev_seed_enabled
+# functions — this fails if the extracted block ever drifts from the real
+# gating logic, same as testing main() directly would.
+# =============================================================================
+
+# Extracts the literal "# Step 12: Setup test data if needed" block from
+# start.sh (up to but excluding "# Step 13: Show status") and defines it as
+# a function named run_step12_gate, so tests can invoke the exact production
+# control flow without mocking the rest of main().
+load_step12_gate() {
+    local extracted="$TEST_TEMP_DIR/step12_gate.sh"
+    sed -n '/# Step 12: Setup test data if needed/,/# Step 13: Show status/p' "$SCRIPTS_DIR/start.sh" \
+        | sed '$d' \
+        > "$extracted"
+
+    {
+        echo 'run_step12_gate() {'
+        cat "$extracted"
+        echo '}'
+    } > "$extracted.fn"
+
+    source "$extracted.fn"
+}
+
+@test "Step 12 gate skips setup_test_customer when VOIPBIN_SANDBOX_DEV_SEED is unset (default)" {
+    load_start_functions
+    load_step12_gate
+    unset VOIPBIN_SANDBOX_DEV_SEED
+    rm -f "$PROJECT_DIR/.test_data_initialized"
+    setup_test_customer() { echo "SHOULD NOT BE CALLED" >> "$TEST_TEMP_DIR/setup_test_customer_calls.log"; }
+
+    run run_step12_gate
+
+    [[ ! -f "$TEST_TEMP_DIR/setup_test_customer_calls.log" ]]
+    [[ "$output" == *"Skipping dev seed data"* ]]
+}
+
+@test "Step 12 gate skips setup_test_customer when VOIPBIN_SANDBOX_DEV_SEED=false" {
+    load_start_functions
+    load_step12_gate
+    export VOIPBIN_SANDBOX_DEV_SEED=false
+    rm -f "$PROJECT_DIR/.test_data_initialized"
+    setup_test_customer() { echo "SHOULD NOT BE CALLED" >> "$TEST_TEMP_DIR/setup_test_customer_calls.log"; }
+
+    run run_step12_gate
+
+    [[ ! -f "$TEST_TEMP_DIR/setup_test_customer_calls.log" ]]
+    [[ "$output" == *"Skipping dev seed data"* ]]
+}
+
+@test "Step 12 gate calls setup_test_customer when VOIPBIN_SANDBOX_DEV_SEED=true and no marker exists" {
+    load_start_functions
+    load_step12_gate
+    export VOIPBIN_SANDBOX_DEV_SEED=true
+    rm -f "$PROJECT_DIR/.test_data_initialized"
+    setup_test_customer() { echo "CALLED" >> "$TEST_TEMP_DIR/setup_test_customer_calls.log"; }
+
+    run run_step12_gate
+
+    [[ -f "$TEST_TEMP_DIR/setup_test_customer_calls.log" ]]
+    [[ "$output" == *"Creating test customer and extensions..."* ]]
+}

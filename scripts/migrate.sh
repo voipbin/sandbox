@@ -77,6 +77,9 @@ fetch_dbscheme() {
     if [ -f "$DBSCHEME_DIR/.pin" ]; then
         if [ "$(cat "$DBSCHEME_DIR/.pin" 2>/dev/null)" = "$DBSCHEME_COMMIT" ]; then
             log "dbscheme already at pinned commit (cached)."
+            # alembic.ini (written below) carries the real MySQL root password -
+            # keep the cached path's permissions as tight as a fresh fetch's.
+            chmod 700 "$DBSCHEME_DIR"
             return 0
         fi
     fi

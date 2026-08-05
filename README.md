@@ -458,12 +458,12 @@ mkcert -install
 
 > **⚠️ SECURITY WARNING: Local Development Only**
 >
-> This sandbox uses **default credentials** for ease of development:
+> This sandbox uses **local-only credentials** for ease of development:
 >
 > | Service | Credentials |
 > |---------|-------------|
-> | MySQL | `root` / `root_password` |
-> | RabbitMQ | `guest` / `guest` |
+> | MySQL | Randomly generated per install, in `.env` (`MYSQL_ROOT_PASSWORD`) |
+> | RabbitMQ | Randomly generated per install, in `.env` (`RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS`) |
 > | Admin Account (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `admin@localhost` / `admin@localhost` |
 > | Extensions (opt-in, `VOIPBIN_SANDBOX_DEV_SEED=true`) | `1000` / `pass1000`, `2000` / `pass2000`, `3000` / `pass3000` |
 > | JWT Secret | Auto-generated in `.env` |
@@ -1047,7 +1047,7 @@ Admin/Talk/Meet credentials below require opt-in test-account seeding
 | **Admin Console** | http://admin.voipbin.test:3003 | admin@localhost / admin@localhost |
 | **Talk (Voice Client)** | http://talk.voipbin.test:3005 | admin@localhost / admin@localhost |
 | **Meet (Conferencing)** | http://meet.voipbin.test:3004 | admin@localhost / admin@localhost |
-| **RabbitMQ Management** | http://localhost:15672 | guest / guest |
+| **RabbitMQ Management** | http://localhost:15672 | Randomly generated per install, in `.env` (`RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS`) |
 
 ---
 
