@@ -18,14 +18,14 @@ The `start.sh` script handles everything:
 - Database startup and schema migration
 - Starting all 25+ services
 - VoIP network interface setup (prompts for sudo password)
-- Creating test account and extensions automatically
+- Creating test account and extensions (opt-in, see [Test Data Setup](#test-data-setup))
 
 ### Step-by-Step Alternative
 
 ```bash
 ./scripts/init.sh              # 1. Generate .env and certificates
 nano .env                      # 2. Add your API keys (GCP, OpenAI, etc.)
-./scripts/start.sh             # 3. Start all services + create test data
+./scripts/start.sh             # 3. Start all services (test data seeding is opt-in)
 ```
 
 ### Other Useful Commands
@@ -653,7 +653,7 @@ After this, `https://api.voipbin.test` will be trusted automatically.
 
 ## Test Data Setup
 
-The `start.sh` script automatically creates a test account on first run:
+The `start.sh` script creates a test account on first run when opted in via `VOIPBIN_SANDBOX_DEV_SEED=true` (off by default):
 - **Customer:** admin@localhost (login: admin@localhost / admin@localhost)
 - **Extensions:** 1000, 2000, 3000 (passwords: pass1000, pass2000, pass3000)
 
