@@ -14,6 +14,12 @@
    ██████████████████████   
 ```
 
+> **This repository is deprecated.** Its Docker Compose installer now lives directly in
+> [voipbin/voipbin's `install/`](https://github.com/voipbin/voipbin/tree/main/install), which is
+> also VoIPBin's primary, documented self-hosting method going forward. This repository will be
+> archived; existing local checkouts continue to work, but new development happens in
+> `voipbin/voipbin`.
+
 **Your Private AI-Powered CPaaS Laboratory** — A complete Docker Compose environment for building AI voice agents and communications applications. Deploy 25+ microservices with built-in AI capabilities: real-time speech-to-text, text-to-speech, LLM-powered conversations, and programmable voice workflows.
 
 ### Why VoIPBin Sandbox?
