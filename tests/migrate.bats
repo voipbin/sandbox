@@ -104,7 +104,7 @@ esac
     local mode
     mode="$(stat -c '%a' "$ini")"
     [[ "$mode" == "600" ]]
-    grep -q "sqlalchemy.url = mysql+pymysql://$DB_USER:$DB_PASSWORD@db:3306/bin_manager" "$ini"
+    grep -q "sqlalchemy.url = mysql+pymysql://$DB_USER:$DB_PASSWORD@127.0.0.1:3306/bin_manager" "$ini"
 }
 
 @test "write_alembic_ini writes alembic.ini at mode 600 (cached-fetch path)" {
