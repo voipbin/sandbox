@@ -172,7 +172,7 @@ write_alembic_ini() {
     cat > "$DBSCHEME_DIR/$stream_dir/alembic.ini" <<EOF
 [alembic]
 script_location = $script_location
-sqlalchemy.url = mysql+pymysql://$DB_USER:$DB_PASSWORD@db:3306/$dbname
+sqlalchemy.url = mysql+pymysql://$DB_USER:$DB_PASSWORD@127.0.0.1:3306/$dbname
 
 [loggers]
 keys = root,sqlalchemy,alembic
@@ -216,16 +216,37 @@ write_alembic_ini "bin-manager" "bin_manager" "main"
 write_alembic_ini "asterisk_config" "asterisk" "config"
 
 # --- 6. Run migrations sequentially in a container (abort on first failure) ---
+# Use the HOST network instead of the compose bridge ($NETWORK). On this
+# sandbox host, outbound traffic through the docker bridge (br-*, NAT'd via
+# MASQUERADE) has been observed to intermittently black-hole new connections
+# (pip installs failing with "Network is unreachable", 0-100% failure rate
+# depending on bridge/conntrack state) while the host's own network path is
+# always reliable. Host networking sidesteps the bridge entirely for this
+# short-lived, throwaway migration container; the DB is reached via its
+# published host port (127.0.0.1:3306, see docker-compose.yml `db` ports)
+# instead of the compose-DNS hostname `db` (see write_alembic_ini above).
+# Kept as a retry loop too, in case host-level flakiness ever resurfaces.
 run_stream() {
     local stream_dir="$1" label="$2"
+    local attempt max_attempts=3
     log "alembic upgrade head: $label ..."
-    docker run --rm \
-        --network "$NETWORK" \
-        -v "$DBSCHEME_DIR:/dbscheme:ro" \
-        -w "/dbscheme/$stream_dir" \
-        "$MIGRATE_IMAGE" \
-        /bin/sh -c "pip install -q --no-deps $PIP_PINS && alembic -c alembic.ini upgrade head"
-    log "$label: OK"
+    for attempt in $(seq 1 "$max_attempts"); do
+        if docker run --rm \
+            --network host \
+            -v "$DBSCHEME_DIR:/dbscheme:ro" \
+            -w "/dbscheme/$stream_dir" \
+            "$MIGRATE_IMAGE" \
+            /bin/sh -c "pip install -q --no-deps $PIP_PINS && alembic -c alembic.ini upgrade head"; then
+            log "$label: OK"
+            return 0
+        fi
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            log "$label: attempt $attempt/$max_attempts failed, retrying in 5s..."
+            sleep 5
+        fi
+    done
+    err "$label: failed after $max_attempts attempts."
+    return 1
 }
 
 run_stream "bin-manager" "bin_manager (voipbin core)"
